@@ -1,0 +1,4 @@
+# pnpm 10+ 的构建脚本白名单（`pnpm approve-builds` 写在这里）。
+# esbuild 需要跑安装脚本才能拿到平台二进制——不批准它，客户端打包会失败。
+allowBuilds:
+  esbuild: true

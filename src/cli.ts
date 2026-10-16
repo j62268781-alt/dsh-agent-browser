@@ -1,0 +1,491 @@
+/**
+ * `agent-browser` CLI 的薄封装：spawn + JSON 信封解析 + 版本锁。
+ *
+ * 纪律（DESIGN v2 §3）：
+ * - **不碰 CDP、不引 Playwright**：引擎永远是 CLI，这里只负责拼参数、收输出、判错误。
+ * - **只用有结构输出的命令**：`--json` 是全局开关，但不是每个子命令都真有结构化结果；
+ *   解析失败**明确报错**，绝不猜（`parsed.data` 缺失 = `CliError('bad-output')`）。
+ * - **版本锁**：v0.38.2 上实测过 refs 的身份绑定行为（DESIGN §1.1）；越界版本拒绝启动。
+ */
+
+import { spawn } from 'node:child_process'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { dirname, join } from 'node:path'
+
+/** CLI 发回来的统一信封：`{ success, data, error }`（0.38.2 实测）。 */
+export interface CliEnvelope<T> {
+  readonly success: boolean
+  readonly data: T | null
+  readonly error: string | null
+}
+
+/** `snapshot --json` 的 `data.refs` 条目。 */
+export interface RefInfo {
+  readonly name: string
+  readonly role: string
+}
+
+/** 归一化后的快照（只保留我们真正用到的字段）。 */
+export interface Snapshot {
+  /** CLI 的 `data.origin`（0.38.2 上 `data.url` 不存在）。 */
+  readonly origin: string
+  /** 无障碍树文本（带 `[ref=eN]`）。 */
+  readonly snapshot: string
+  readonly refs: Readonly<Record<string, RefInfo>>
+  /** 本次快照相对上次消失的 ref（CLI 直接给，用于新鲜度判断的辅助信号）。 */
+  readonly removedRefs: readonly string[]
+  /** `origin + snapshot` 的指纹：执行前比对"页面是否变了"。 */
+  readonly digest: string
+}
+
+/** 支持的版本区间（含）。 */
+export const SUPPORTED_MIN = '0.38.0'
+export const SUPPORTED_MAX_EXCLUSIVE = '0.39.0'
+
+export class CliError extends Error {
+  readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'CliError'
+    this.code = code
+  }
+}
+
+export interface CliRunOptions {
+  readonly stdin?: string
+  readonly signal?: AbortSignal
+  /** 覆盖默认超时（少数命令需要更长，例如 `install`）。 */
+  readonly timeoutMs?: number
+}
+
+export interface AgentBrowserOptions {
+  /** `agent-browser` 可执行文件；空 = 走 PATH，并自动跳过 JS 包装层（见 `resolveCommand`）。 */
+  readonly command: string
+  /** 每次调用都会带的全局参数（`--session` 等）。 */
+  readonly globalArgs: readonly string[]
+  readonly timeoutMs: number
+}
+
+/** 命令是怎么定下来的——诊断要能说清"到底跑了哪个二进制"。 */
+export interface ResolvedCommand {
+  readonly command: string
+  readonly kind: 'configured' | 'native' | 'wrapper' | 'name'
+  readonly detail: string
+}
+
+/** PATH 里按名字找可执行文件（不做 shell 展开，也不需要 shell）。 */
+function which(name: string): string | undefined {
+  if (name.includes('/')) return existsSync(name) ? name : undefined
+  for (const dir of (process.env.PATH ?? '').split(':')) {
+    if (dir === '') continue
+    const candidate = join(dir, name)
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {
+      // 这个目录没有：看下一个。
+    }
+  }
+  return undefined
+}
+
+/**
+ * musl libc 探测（Alpine 等）。**只查文件，不 exec `ldd`**：包装层用 `execSync`，
+ * 我们不想为了判断一个文件名再起一个进程。
+ */
+function isMusl(platform: string): boolean {
+  if (platform !== 'linux') return false
+  return existsSync('/lib/ld-musl-x86_64.so.1') || existsSync('/lib/ld-musl-aarch64.so.1')
+}
+
+/**
+ * 原生二进制的**文件名规则**——逐条移植 CLI 自带包装层 `bin/agent-browser.js` 的
+ * `getBinaryName()`，不靠我们自己发明：
+ *
+ *   os:   darwin → darwin · linux → linux（musl → linux-musl）· win32 → win32
+ *   arch: x64/x86_64 → x64 · arm64/aarch64 → arm64
+ *   win32 + arm64：先看有没有 `agent-browser-win32-arm64.exe`，没有就退 x64（走系统模拟）
+ *   后缀：win32 加 `.exe`
+ *
+ * **与版本无关**：这里没有任何版本号，规则跟着**已安装的那份 CLI** 走。
+ */
+export function nativeBinaryName(dir: string, platform: string, arch: string): string | undefined {
+  const osKey = platform === 'darwin' ? 'darwin'
+    : platform === 'linux' ? (isMusl(platform) ? 'linux-musl' : 'linux')
+      : platform === 'win32' ? 'win32'
+        : undefined
+  if (osKey === undefined) return undefined
+  const archKey = arch === 'x64' || arch === 'x86_64' ? 'x64'
+    : arch === 'arm64' || arch === 'aarch64' ? 'arm64'
+      : undefined
+  if (archKey === undefined) return undefined
+
+  if (osKey === 'win32' && archKey === 'arm64') {
+    const native = 'agent-browser-win32-arm64.exe'
+    return existsSync(join(dir, native)) ? native : 'agent-browser-win32-x64.exe'
+  }
+  return `agent-browser-${osKey}-${archKey}${platform === 'win32' ? '.exe' : ''}`
+}
+
+/** 同目录的原生二进制路径：`…/agent-browser/bin/agent-browser.js` → `…/bin/agent-browser-<os>-<arch>`。 */
+export function nativeSiblingPath(scriptPath: string, platform: string, arch: string): string | undefined {
+  const name = nativeBinaryName(dirname(scriptPath), platform, arch)
+  return name === undefined ? undefined : join(dirname(scriptPath), name)
+}
+
+export function nativeSiblingOf(scriptPath: string, platform: string, arch: string): string | undefined {
+  const candidate = nativeSiblingPath(scriptPath, platform, arch)
+  return candidate !== undefined && existsSync(candidate) ? candidate : undefined
+}
+
+/**
+ * 解析真正要 spawn 的二进制。
+ *
+ * 实测（本机 0.38.2，见 DESIGN §3.1）：PATH 上的 `agent-browser` 是一个 **Node 包装脚本**
+ * （Homebrew 与 npx 都如此），它再 spawn 一份原生二进制——每次调用白付一份 Node 启动：
+ *
+ *   走包装层（`agent-browser`）      --version 57.3ms · get title 57.1ms · snapshot -i 57.9ms
+ *   直接原生二进制                   --version  3.1ms · get title  3.7ms · snapshot -i  5.1ms · click @e2 16.8ms
+ *
+ * 所以默认就走到原生二进制。这是**纯收益**：同一个二进制、同一个版本，少一层进程。
+ * 找不到就诚实退回包装层（宁可慢，不可猜）。
+ */
+export function resolveCommand(configured: string, platform = process.platform, arch = process.arch): ResolvedCommand {
+  // 带路径的配置是**显式选择**：原样用（用户可能就是要指包装层或某个自带构建）。
+  if (configured !== '' && configured.includes('/')) {
+    return { command: configured, kind: 'configured', detail: `${configured}（配置里显式指定）` }
+  }
+  // 裸名字（含默认的 `agent-browser`）统一走 PATH 解析：只有这样才能发现"它其实是个 JS 包装层"。
+  const name = configured === '' ? 'agent-browser' : configured
+  const found = which(name)
+  if (found === undefined) {
+    return { command: name, kind: 'name', detail: `PATH 上没找到 ${name}：交给 spawn 报错，错误信息会说明` }
+  }
+  let real = found
+  try {
+    real = realpathSync(found)
+  } catch {
+    // 解析不了符号链接就用原路径。
+  }
+  if (/\.(?:js|cjs|mjs)$/.test(real)) {
+    const native = nativeSiblingOf(real, platform, arch)
+    if (native !== undefined) return { command: native, kind: 'native', detail: `${native}（跳过 ${real} 的 Node 包装层）` }
+    return { command: real, kind: 'wrapper', detail: `${real}（JS 包装层；同目录没有原生二进制，将多付一份 Node 启动）` }
+  }
+  return { command: real, kind: 'native', detail: real }
+}
+
+/** 语义化版本比较：只支持 `X.Y.Z`（CLI 输出就是它）。 */
+function parseVersion(text: string): readonly [number, number, number] | undefined {
+  const match = text.match(/(\d+)\.(\d+)\.(\d+)/)
+  if (match === null) return undefined
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function compare(a: readonly [number, number, number], b: readonly [number, number, number]): number {
+  for (let index = 0; index < 3; index += 1) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0)
+    if (delta !== 0) return delta
+  }
+  return 0
+}
+
+/** 版本是否落在支持区间 `[SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE)`。 */
+export function isSupportedVersion(version: string): boolean {
+  const parsed = parseVersion(version)
+  if (parsed === undefined) return false
+  return compare(parsed, parseVersion(SUPPORTED_MIN)!) >= 0 && compare(parsed, parseVersion(SUPPORTED_MAX_EXCLUSIVE)!) < 0
+}
+
+export class AgentBrowser {
+  /** 实际 spawn 的二进制（默认会自动跳过 JS 包装层）。 */
+  private resolved: ResolvedCommand
+  /** 命令是**自动解析**来的（可以重新解析），还是配置里显式写死的。 */
+  private readonly autoResolved: boolean
+
+  constructor(private readonly options: AgentBrowserOptions) {
+    this.resolved = resolveCommand(options.command)
+    // 带 `/` 的配置是显式选择，不自动改；裸名字才允许重解析。
+    this.autoResolved = !options.command.includes('/')
+  }
+
+  /** 实际 spawn 的二进制。 */
+  get command(): string {
+    return this.resolved.command
+  }
+
+  /** 命令是怎么定下来的，给日志与探针看。 */
+  get commandDetail(): string {
+    return this.resolved.detail
+  }
+
+  /** `native` = 直接跑原生二进制；`wrapper` = 还在付 Node 包装层的启动开销。 */
+  get commandKind(): ResolvedCommand['kind'] {
+    return this.resolved.kind
+  }
+
+  /** 会话参数（`--session` 等）——诊断信息里要能看出"这个 agent 用哪个会话"。 */
+  get globalArgs(): readonly string[] {
+    return this.options.globalArgs
+  }
+
+  /** 重新解析一次；命令真的变了才返回 true。 */
+  private refresh(): boolean {
+    if (!this.autoResolved) return false
+    const next = resolveCommand(this.options.command)
+    if (next.command === this.resolved.command) return false
+    this.resolved = next
+    return true
+  }
+
+  /**
+   * 跑一条命令。**非零退出码一律抛错**：CLI 的失败是类型化事件，不能吞成空输出。
+   * stderr 只作为诊断附注——0.38.2 上错误信息主要走 JSON 信封的 `error`。
+   *
+   * `brew upgrade` 会让上一次解析出的 Cellar 绝对路径消失（`spawn` 报 ENOENT）：
+   * 自动重解析一次再试，而不是让用户看到一条"找不到文件"然后自己去重启 DSH。
+   */
+  async run(args: readonly string[], options: CliRunOptions = {}): Promise<string> {
+    try {
+      return await this.spawnOnce(args, options)
+    } catch (error) {
+      if (error instanceof CliError && error.code === 'spawn-failed' && this.refresh()) {
+        return await this.spawnOnce(args, options)
+      }
+      throw error
+    }
+  }
+
+  private async spawnOnce(args: readonly string[], options: CliRunOptions): Promise<string> {
+    const timeoutMs = options.timeoutMs ?? this.options.timeoutMs
+    const child = spawn(this.command, [...this.options.globalArgs, ...args], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env,
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    const result = await new Promise<{ code: number | null; failed?: Error }>((resolve) => {
+      const finish = (value: { code: number | null; failed?: Error }): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        options.signal?.removeEventListener('abort', abort)
+        resolve(value)
+      }
+      const abort = (): void => {
+        child.kill('SIGTERM')
+        finish({ code: null, failed: new CliError('aborted', '浏览器命令被取消') })
+      }
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM')
+        finish({ code: null, failed: new CliError('timeout', `浏览器命令超过 ${timeoutMs}ms 未返回`) })
+      }, timeoutMs)
+
+      if (options.signal?.aborted === true) {
+        abort()
+        return
+      }
+      options.signal?.addEventListener('abort', abort, { once: true })
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+      child.on('error', (error: Error) => {
+        finish({ code: null, failed: new CliError('spawn-failed', `无法启动 ${this.command}：${error.message}`) })
+      })
+      child.on('close', (code: number | null) => finish({ code }))
+      child.stdin.end(options.stdin ?? '')
+    })
+
+    if (result.failed !== undefined) throw result.failed
+    if (result.code !== 0) {
+      const detail = [stdout.trim(), stderr.trim()].filter((part) => part !== '').join('\n')
+      throw new CliError('cli-failed', `agent-browser ${args[0] ?? ''} 退出码 ${result.code}${detail === '' ? '' : `：${detail.slice(0, 800)}`}`)
+    }
+    return stdout
+  }
+
+  /**
+   * 跑一条命令并解 JSON 信封。`success: false` → `CliError('cli-error')`，
+   * 正文带上 CLI 自己的 `error` 文案（"Unknown ref: e2" 这类要原样保留给模型）。
+   */
+  async json<T>(args: readonly string[], options: CliRunOptions = {}): Promise<T> {
+    const stdout = await this.run([...args, '--json'], options)
+    let envelope: CliEnvelope<T>
+    try {
+      envelope = JSON.parse(stdout) as CliEnvelope<T>
+    } catch {
+      throw new CliError('bad-output', `agent-browser ${args[0] ?? ''} 的输出不是 JSON：${stdout.slice(0, 300)}`)
+    }
+    if (envelope.success !== true || envelope.data === null) {
+      throw new CliError('cli-error', envelope.error ?? `agent-browser ${args[0] ?? ''} 返回 success=false 但没有 error 文案`)
+    }
+    return envelope.data
+  }
+
+  /** CLI 版本（`agent-browser 0.38.2` → `0.38.2`）。 */
+  async version(options: CliRunOptions = {}): Promise<string> {
+    const stdout = await this.run(['--version'], options)
+    const match = stdout.match(/(\d+\.\d+\.\d+)/)
+    if (match === null) throw new CliError('bad-output', `无法解析 agent-browser --version 的输出：${stdout.trim()}`)
+    return match[1]!
+  }
+
+  /**
+   * 版本锁。**越界即拒**：DESIGN §1.1 的实测结论只对 0.38.x 成立，
+   * 换了版本就该重新验证，而不是继续假设 refs 还是身份绑定的。
+   */
+  async assertSupported(options: CliRunOptions = {}): Promise<string> {
+    const raw = await this.version(options)
+    if (!isSupportedVersion(raw)) {
+      throw new CliError(
+        'unsupported-version',
+        `agent-browser ${raw} 不在支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})：` +
+        '本插件的 ref 陈旧性结论是在 0.38.2 上实测的，升级后请重跑 DESIGN §1.1 的实验再放宽版本锁',
+      )
+    }
+    return raw
+  }
+
+  /** 取一次无障碍树快照。 */
+  async snapshot(
+    options: { interactiveOnly?: boolean; depth?: number; selector?: string; urls?: boolean } = {},
+    run: CliRunOptions = {},
+  ): Promise<Snapshot> {
+    const args = ['snapshot']
+    if (options.interactiveOnly === true) args.push('-i')
+    if (options.urls === true) args.push('-u')
+    if (options.depth !== undefined) args.push('-d', String(options.depth))
+    if (options.selector !== undefined && options.selector !== '') args.push('-s', options.selector)
+
+    const data = await this.json<{
+      origin?: string
+      url?: string
+      snapshot?: string
+      refs?: Record<string, { name?: string; role?: string }>
+      removedRefs?: string[]
+    }>(args, run)
+
+    const origin = String(data.origin ?? data.url ?? '')
+    const text = String(data.snapshot ?? '')
+    if (text === '') throw new CliError('bad-output', 'snapshot --json 没有返回 data.snapshot')
+    const refs: Record<string, RefInfo> = {}
+    for (const [ref, value] of Object.entries(data.refs ?? {})) {
+      refs[ref] = { name: String(value?.name ?? ''), role: String(value?.role ?? '') }
+    }
+    return {
+      origin,
+      snapshot: text,
+      refs,
+      removedRefs: (data.removedRefs ?? []).map(String),
+      digest: createHash('sha1').update(`${origin}\n${text}`).digest('hex').slice(0, 16),
+    }
+  }
+
+  /** 一个变更类动作 → CLI 子命令。**一次一个**，永远不串。 */
+  async act(
+    action: string,
+    target: string,
+    payload: { value?: string; values?: readonly string[]; direction?: string; amount?: number } = {},
+    run: CliRunOptions = {},
+  ): Promise<void> {
+    const args = actionArgs(action, target, payload)
+    await this.json(args, run)
+  }
+
+  /** `read [url]`：URL 协商 markdown / llms.txt；不给 URL 读当前页。 */
+  async read(url: string | undefined, run: CliRunOptions = {}): Promise<string> {
+    const args = url === undefined || url === '' ? ['read'] : ['read', url]
+    return this.run(args, run)
+  }
+
+  /** `get <what> [selector]`。CLI 的 `--json` 在 data 里附了 `lifecycle`，这里只取有用的那部分。 */
+  async get(what: string, selector: string | undefined, attrName: string | undefined, run: CliRunOptions = {}): Promise<string> {
+    const args = ['get', what]
+    if (selector !== undefined && selector !== '') args.push(selector)
+    if (what === 'attr') {
+      if (attrName === undefined || attrName === '') throw new CliError('bad-request', 'get attr 需要 attr 参数')
+      args.push(attrName)
+    }
+    const data = await this.json<unknown>(args, run)
+    if (typeof data === 'string' || typeof data === 'number' || typeof data === 'boolean') return String(data)
+    if (data !== null && typeof data === 'object') {
+      const record = data as Record<string, unknown>
+      for (const key of [what, 'text', 'value', 'html', 'title', 'url', 'count', 'box', 'styles', 'attr']) {
+        const value = record[key]
+        if (value !== undefined && value !== null && typeof value !== 'object') return String(value)
+        if (value !== null && typeof value === 'object') return JSON.stringify(value, null, 2)
+      }
+    }
+    return JSON.stringify(data ?? null)
+  }
+
+  async open(url: string, run: CliRunOptions = {}): Promise<void> {
+    await this.json(['open', url], run)
+  }
+
+  async close(run: CliRunOptions = {}): Promise<void> {
+    await this.json(['close'], run)
+  }
+
+  async screenshot(path: string | undefined, fullPage: boolean, run: CliRunOptions = {}): Promise<string> {
+    const args = ['screenshot']
+    if (fullPage) args.push('--full')
+    if (path !== undefined && path !== '') args.push(path)
+    const data = await this.json<{ path?: string } | string>(args, run)
+    return typeof data === 'string' ? data : String(data.path ?? JSON.stringify(data))
+  }
+
+  async tabs(run: CliRunOptions = {}): Promise<string> {
+    const data = await this.json<unknown>(['tab', 'list'], run)
+    return typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+  }
+}
+
+/** 动作 → CLI 参数。未知动作在这里就被拒（不是等到 CLI 报错）。 */
+export function actionArgs(
+  action: string,
+  target: string,
+  payload: { value?: string; values?: readonly string[]; direction?: string; amount?: number } = {},
+): string[] {
+  const values = payload.values ?? (payload.value === undefined ? [] : [payload.value])
+  switch (action) {
+    case 'click': return ['click', target]
+    case 'dblclick': return ['dblclick', target]
+    case 'hover': return ['hover', target]
+    case 'focus': return ['focus', target]
+    case 'check': return ['check', target]
+    case 'uncheck': return ['uncheck', target]
+    case 'fill': return withValue(['fill', target], payload.value, action)
+    case 'type': return withValue(['type', target], payload.value, action)
+    case 'select': return ['select', target, ...requireValues(values, action)]
+    case 'upload': return ['upload', target, ...requireValues(values, action)]
+    case 'press': return ['press', requireString(payload.value, 'press 需要 value（键名）')]
+    case 'scroll': {
+      const direction = payload.direction ?? 'down'
+      const args = ['scroll', direction]
+      if (payload.amount !== undefined) args.push(String(payload.amount))
+      return args
+    }
+    case 'scrollintoview': return ['scrollintoview', target]
+    // `wait` 的参数是"选择器或毫秒数"：优先 value，其次 target（真机踩过：把 ms 硬塞进 ref 很难看）。
+    case 'wait': return ['wait', requireString(payload.value ?? (target === '' ? undefined : target), 'wait 需要 value（毫秒数，如 800，或选择器）')]
+    default: throw new CliError('bad-request', `不支持的动作 "${action}"`)
+  }
+}
+
+function requireString(value: string | undefined, message: string): string {
+  if (value === undefined || value === '') throw new CliError('bad-request', message)
+  return value
+}
+
+function requireValues(values: readonly string[], action: string): string[] {
+  if (values.length === 0) throw new CliError('bad-request', `${action} 需要至少一个 value`)
+  return [...values]
+}
+
+function withValue(args: string[], value: string | undefined, action: string): string[] {
+  return [...args, requireString(value, `${action} 需要 value（要填入的文本）`)]
+}

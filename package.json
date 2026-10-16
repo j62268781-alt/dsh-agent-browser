@@ -1,0 +1,80 @@
+{
+  "name": "dsh-agent-browser",
+  "version": "0.1.0",
+  "description": "Browser automation for DeepSeek Harness: a narrow tool surface over the agent-browser CLI (Rust + CDP accessibility snapshots and @eN refs), with a settings page and an optional in-plugin goal loop judged by ctx.judgment. Zero MCP tools injected into the prompt.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "cordis-plugin",
+    "browser-automation",
+    "agent-browser",
+    "cdp",
+    "judgment"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "pnpm build:host && pnpm build:client",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "node client/esbuild.config.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test tests/*.test.mjs",
+    "probe": "pnpm build:host && node scripts/probe.mjs",
+    "verify:remote": "pnpm build && node scripts/verify-remote.mjs",
+    "verify:served": "node scripts/verify-served.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "dsh-judgment": "*"
+  },
+  "peerDependenciesMeta": {
+    "dsh-judgment": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^22.10.0",
+    "dsh-judgment": "file:../dsh-judgment",
+    "esbuild": "^0.25.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.7.0"
+  }
+}

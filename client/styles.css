@@ -1,0 +1,70 @@
+/*
+ * 浏览器设置页样式。类名一律 ab- 前缀：样式是页面挂载时全局注入的，别的设置页
+ * （jdg-、smp-）可能同时挂载，不能共用类名。
+ *
+ * 尺寸事实来自 DSH「通用设置」面板（dsh-client-ui-settings-general 的 DeveloperToolsRow）：
+ *   行      justify-content:space-between; align-items:center; gap:24px;
+ *           padding:16px 0; border-bottom:.5px solid var(--dsw-alias-border-l2)
+ *   标题    14px / 20px
+ *   子标题  12px / 18px + --dsw-alias-label-secondary，margin-top:4px
+ * 页头沿用本插件族既有约定（dsh-judgment 的 .jdg-pageTitle/.jdg-pageIntro）：
+ *   标题 18px/500 · 副标题 13px/20px secondary
+ */
+
+.ab-page{box-sizing:border-box;width:100%;color:var(--dsw-alias-label-primary);flex-direction:column;align-items:center;gap:18px;display:flex}
+.ab-page>*{width:100%;max-width:960px}
+
+.ab-pageHead{box-sizing:border-box;display:flex;flex-direction:column;gap:4px}
+.ab-pageTitle{margin:0;font-size:18px;font-weight:500;line-height:26px}
+.ab-pageIntro{color:var(--dsw-alias-label-secondary);margin:0;font-size:13px;line-height:20px}
+
+.ab-section{display:flex;flex-direction:column}
+.ab-groupTitle{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;padding-top:8px}
+
+.ab-row{box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:24px;padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.ab-section>.ab-row:last-child{border-bottom:none}
+.ab-row[data-disabled=true]{opacity:.55}
+.ab-rowText{display:flex;flex-direction:column;min-width:0}
+.ab-rowTitle{font-size:14px;line-height:20px}
+.ab-rowSubtitle{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px}
+.ab-rowControl{display:inline-flex;align-items:center;gap:8px;flex:none}
+/* 进阶项：输入框要占一列宽度，但行仍然是「文字在左、控件在右」的同一条基线。 */
+.ab-rowField{align-items:flex-start}
+.ab-rowControlWide{flex:0 1 280px;min-width:180px;justify-content:flex-end}
+
+.ab-input{box-sizing:border-box;width:100%;height:32px;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:0 10px}
+.ab-input::placeholder{color:var(--dsw-alias-label-tertiary)}
+.ab-input:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
+.ab-input:disabled{cursor:not-allowed}
+
+.ab-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 14px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
+.ab-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ab-button:disabled{opacity:.4;cursor:not-allowed}
+
+.ab-note{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:0}
+.ab-error{color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-primary));font-size:12px;line-height:18px;margin:0}
+
+/* 安装自检的 summary：左边一个状态点 + 一句话 + 右侧动作；有问题的项直接摊开。 */
+.ab-summary{box-sizing:border-box;display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:.5px solid var(--dsw-alias-settings-card-stroke,var(--dsw-alias-border-l2));border-radius:var(--dsw-radius-xl,var(--dsw-radius-md));background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-1))}
+.ab-summary[data-tone=ok]{border-color:var(--dsw-alias-state-success-primary,#12805c)}
+.ab-summary[data-tone=warn]{border-color:var(--dsw-alias-state-warn-primary,#b54708)}
+.ab-summary[data-tone=danger]{border-color:var(--dsw-alias-state-error-primary,#d92d20)}
+.ab-summaryRow{display:flex;align-items:flex-start;gap:10px}
+.ab-summaryText{display:flex;flex-direction:column;min-width:0;flex:1 1 auto}
+.ab-summaryTitle{font-size:14px;line-height:20px}
+.ab-summarySub{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px;overflow-wrap:anywhere}
+
+.ab-dot{flex:none;width:8px;height:8px;margin-top:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#9aa4b2)}
+.ab-dot[data-dot=ok]{background:var(--dsw-alias-state-success-primary,#067647)}
+.ab-dot[data-dot=warn]{background:var(--dsw-alias-state-warn-primary,#b54708)}
+.ab-dot[data-dot=danger]{background:var(--dsw-alias-state-error-primary,#d92d20)}
+
+.ab-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ab-check{display:flex;flex-direction:column;gap:2px;padding-left:18px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.ab-check[data-status=fail]{color:var(--dsw-alias-state-error-primary,#d92d20)}
+.ab-check[data-status=warn]{color:var(--dsw-alias-state-warn-primary,#b54708)}
+.ab-checkFix{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+.ab-details{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.ab-details>summary{cursor:pointer}
+.ab-details .ab-checks{margin-top:6px}
+
