@@ -192,6 +192,7 @@ export function Panel(props) {
             />
           )}
         />
+        <h3 className="ab-groupTitle">工具面</h3>
         <Row
           title="截图工具"
           subtitle="browser_screenshot：视觉兜底，或把页面给你看。"
@@ -218,6 +219,7 @@ export function Panel(props) {
             />
           )}
         />
+        <h3 className="ab-groupTitle">进阶</h3>
         <Row
           title="允许域名"
           subtitle="--allowed-domains：逗号分隔，如 a.com, *.b.com。留空 = 不限制。设了它就不能再用 profile（CLI 的 fail-closed）。"
@@ -339,6 +341,7 @@ export function Panel(props) {
             />
           )}
         />
+        <h3 className="ab-groupTitle">配置文件</h3>
         <Row
           title="打开配置文件"
           subtitle={props.hasDocument

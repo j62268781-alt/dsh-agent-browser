@@ -227,8 +227,10 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 
 [浏览器功能        Switch]  ← 14px 标题 + 12px 子标题；每行 16px 竖距 + .5px 下边框
 [决策              Switch]
+工具面                      ← 分组标题（12px secondary），保留
 [截图工具          Switch]
 [逃生舱 browser_raw Switch]
+进阶                        ← 分组标题
 [允许域名          input]  → --allowed-domains
 [会话名            input]  → --session
 [有头模式          Switch] → --headed
@@ -236,14 +238,21 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 [最大输出(字符)    input]  → --max-output
 [空闲超时          input]  → --idle-timeout
 [内容边界标记      Switch] → --content-boundaries
+配置文件                    ← 分组标题
 [打开配置文件      按钮]   在系统文本编辑器中打开宿主设置文档（本插件配置就在里面）
 ```
 
-**为什么要拉平**：分组标题（工具面/进阶/配置文件）会打断"每一行都一样"的节奏。
-General 的设置页就是一条平铺的行流：**同一条 16px 竖距 + 同一条 `.5px` 下边框，
-只有整页最后一行没有**（General 的 `:last-child{border-bottom:none}`）。我们照抄，
-按钮也照抄 skills-mcp 的 `.smp-button`（**`flex:none` 是重点**——少了它，按钮会被
-左列 `flex:1` 的文本挤成"检/查/安/装"竖排，这是真机截图里出现过的）。
+**三条行距规则**（第 2、3 条来自真机反馈后的修正）：
+
+1. 每一行都是**同一条 16px 竖距 + 同一条 `.5px` 下边框**，只有整页最后一行没有
+   （General 的 `:last-child{border-bottom:none}`）。
+2. **整页第一行不留上内边距**（`.ab-section > .ab-row:first-child{padding-top:0}`）——否则
+   summary → 第一行会比「副标题 → summary」多出一份 16px，看起来"这里特别大"。
+3. **分组标题保留**（工具面 / 进阶 / 配置文件）：上内边距 12px（上面一行自带 16px 下内边距 →
+   24px），下面那一行自带 16px 上内边距 → 16px。于是标题离**它标注的那一组更近**，归属看得出来。
+
+按钮照抄 skills-mcp 的 `.smp-button`（**`flex:none` 是重点**——少了它，按钮会被左列 `flex:1`
+的文本挤成"检/查/安/装"竖排，真机截图里出现过）。
 
 ### 4.3 实现事实（都已核对）
 

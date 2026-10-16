@@ -70,7 +70,14 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   // 每一行都是同一条 .ab-row（16px 竖距 + 下边框由 CSS 保证；这里断言结构一致）
   const rows = html.match(/class="ab-row"/g) ?? []
   assert.ok(rows.length >= 12, `期望至少 12 行统一的行，实际 ${rows.length}`)
-  assert.ok(!html.includes('ab-groupTitle'), '分组标题会打断"每行都一样"的节奏，已去掉')
+  // 分组标题要在（用户要求保留）：工具面 / 进阶 / 配置文件
+  for (const group of ['工具面', '进阶', '配置文件']) {
+    assert.match(html, new RegExp(`class="ab-groupTitle">${group}<`))
+  }
+  // 第一行必须是 row（这样 `.ab-row:first-child{padding-top:0}` 才能把 summary 下方的间距
+  // 压成与「副标题→summary」同一个 flex gap）
+  const firstChild = html.slice(html.indexOf('<section class="ab-section">'))
+  assert.match(firstChild, /^<section class="ab-section"><div class="ab-row">/)
   // 工具面 / 进阶 / 配置文件（现在都是普通行，靠标题自解释）
   assert.match(html, /逃生舱/)
   assert.match(html, /允许域名/)

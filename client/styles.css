@@ -25,6 +25,13 @@
 /* 每一行都长一样：同一条 16px 竖距 + 同一条下边框；只有整页最后一行没有。 */
 .ab-row{box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:24px;padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
 .ab-section>.ab-row:last-child{border-bottom:none}
+/* 整页第一行不留上内边距：summary → 第一行的视觉间距就等于「副标题 → summary」的 flex gap，
+   否则会多出一份 16px（真机反馈：那里显得太大）。 */
+.ab-section>.ab-row:first-child{padding-top:0}
+
+/* 分组标题：留着它，行才不是一条无法阅读的长流水。它到**下面**那一组的距离要比到上面一行近，
+   所以上内边距给 12px（上一行自带 16px 下内边距 → 24px），下面一行自带 16px 上内边距 → 16px。 */
+.ab-groupTitle{margin:0;padding:12px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .ab-rowText{display:flex;flex-direction:column;min-width:0}
 .ab-rowTitle{font-size:14px;line-height:20px}
 .ab-rowSubtitle{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px}
