@@ -385,6 +385,15 @@ export function InstallSummary({ probe, probing, error, installing, note, onChec
         ? '安装自检需要重启 DSH'
         : String(probe.title ?? (ok ? '浏览器环境就绪' : '浏览器环境不完整'))
 
+  /**
+   * 按钮只有两个状态（用户口径）：
+   * - **环境可用**（两项都过）→ `已安装`，**置灰不可点**——没问题就不该给一个"再检查一次"的诱惑；
+   * - **环境不可用**（或还没检查过）→ `检查安装`，可点（修完环境后能重新确认）。
+   */
+  const needsCheck = probe === null || mismatched || !ok
+  const buttonLabel = probing ? '检查中…' : needsCheck ? '检查安装' : '已安装'
+  const buttonDisabled = probing || !needsCheck
+
   return (
     <section className="ab-summary" data-tone={tone}>
       <div className="ab-summaryHead">
@@ -395,10 +404,11 @@ export function InstallSummary({ probe, probing, error, installing, note, onChec
             type="button"
             className="ab-button"
             data-variant="primary"
-            disabled={probing}
+            disabled={buttonDisabled}
+            title={needsCheck ? '检查本机的 agent-browser 与 Chrome' : '环境已就绪，无需检查'}
             onClick={onCheck}
           >
-            {probing ? '检查中…' : '检查安装'}
+            {buttonLabel}
           </button>
         </div>
       </div>

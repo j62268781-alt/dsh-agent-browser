@@ -217,7 +217,9 @@ ctx.skills.register({ name, description, whenToUse, content, source: 'dsh-agent-
 浏览器                                    ← 18px/500
 agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 
-┌ ● 浏览器环境就绪                              [检查安装] ┐   ← summary：绿（两项都过）/ 红
+┌ ● 浏览器环境就绪                            [已安装·灰] ┐   ← summary：绿（两项都过）/ 红
+│                                                          │     可用 → 按钮置灰「已安装」不可点
+│                                                          │     不可用/未检查 → 「检查安装」可点
 │   ✓ agent-browser   已安装 0.38.2                      │     检查就**两项**，路径之类的细节不显示
 │   ✗ Chrome          没找到                             │     缺 CLI 时右侧多一个 [安装]（用户点击才跑）
 │     修法：装 Chrome：https://www.google.com/chrome/     │

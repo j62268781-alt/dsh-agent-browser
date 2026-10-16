@@ -103,8 +103,9 @@ test('自检卡片：两项、成功/失败各自的说明与"帮忙安装"，�
   assert.match(ok, /浏览器环境就绪/)
   assert.match(ok, /已安装 0\.38\.2/)
   assert.match(ok, /Chrome/)
-  assert.match(ok, /data-variant="primary"/)      // 检查安装按钮是 primary，且 flex:none 不会换行由 CSS 保证
-  assert.match(ok, /检查安装/)
+  // 环境可用 → 按钮是**置灰的「已安装」**，不给"再检查一次"的诱惑
+  assert.match(ok, /disabled=""[^>]*>已安装</)
+  assert.ok(!ok.includes('检查安装'), '环境就绪时不该出现"检查安装"')
   assert.ok(!ok.includes('/opt/'), '不该显示可执行文件路径')
 
   const missing = render({
@@ -143,7 +144,7 @@ test('还没检查时给一句明确的下一步，而不是空白', async () =>
     primitives: undefined, probe: null, probing: false, error: '', installing: false, note: '', onCheck: () => {}, onInstall: () => {},
   }))
   assert.match(html, /还没有检查过浏览器环境/)
-  assert.match(html, /检查安装/)
+  assert.match(html, /title="检查本机的 agent-browser 与 Chrome">检查安装</)
 })
 
 test('自检通路报错时把原因显示出来（不让页面默默失败）', async () => {

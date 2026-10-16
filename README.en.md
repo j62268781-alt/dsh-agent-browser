@@ -25,7 +25,9 @@ goal loop judged by [`dsh-judgment`](../dsh-judgment/README.en.md).
 
 ### Install self-check
 
-Opening **Settings → Browser** runs the check automatically; "检查安装" re-runs it. Exactly **two items**
+Opening **Settings → Browser** runs the check automatically. The button has two states: **environment
+ready → a disabled grey "已安装"**, **environment unusable (or not checked yet) → an enabled "检查安装"**.
+Exactly **two items**
 (no paths, no wrapper/doctor noise): **agent-browser** (`已安装 0.38.2`, or `本机没安装` plus an
 **[安装]** button that runs `brew install agent-browser` / `npm i -g agent-browser` on click) and
 **Chrome** (`已就绪`, or `没找到` with a download link — Chrome is mandatory). Both pass → green card;
