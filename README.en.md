@@ -14,8 +14,8 @@ goal loop judged by [`dsh-judgment`](../dsh-judgment/README.en.md).
 
 | Item | State |
 |---|---|
-| Settings page (install self-check + two switches + tool rows + advanced + open config file) | ✅ |
-| Install self-check: version / binary / native layer, optional deep Chrome + daemon check | ✅ (host `@Remote` + hand-written client contribution, cross-verified by `pnpm verify:remote`) |
+| Settings page (install self-check + flat row list + open config file) | ✅ |
+| Install self-check: **two items** (CLI / Chrome) + one-click CLI install | ✅ (host `@Remote probe/installCli` + hand-written client contribution, cross-verified by `pnpm verify:remote`) |
 | Bundled skill (`skills/agent-browser/`: core commands + 5 references) | ✅ (runtime `ctx.skills.register()`, no separate install) |
 | `browser_snapshot` / `browser_act` / `browser_read` / `browser_session` / `browser_screenshot` | ✅ |
 | `browser_raw` escape hatch (allowlist), default off | ✅ |
@@ -25,11 +25,13 @@ goal loop judged by [`dsh-judgment`](../dsh-judgment/README.en.md).
 
 ### Install self-check
 
-Opening **Settings → Browser** runs a lightweight check automatically; "检查安装" adds the deep pass.
-Green = found, version in range, native binary. Yellow = usable but discounted (e.g. still going
-through the Node wrapper, ~54ms per call). Red = missing / out of range / not runnable — with an
-actionable fix. The deep pass reuses `agent-browser doctor --quick --json` (~0.5s) and keeps only
-what affects browser availability.
+Opening **Settings → Browser** runs the check automatically; "检查安装" re-runs it. Exactly **two items**
+(no paths, no wrapper/doctor noise): **agent-browser** (`已安装 0.38.2`, or `本机没安装` plus an
+**[安装]** button that runs `brew install agent-browser` / `npm i -g agent-browser` on click) and
+**Chrome** (`已就绪`, or `没找到` with a download link — Chrome is mandatory). Both pass → green card;
+otherwise red with the reason and the fix. Chrome is deliberately **not** auto-installed:
+`brew install --cask google-chrome` needs an admin password, and a background process waiting for
+one is the worst possible interaction.
 
 ### Bundled skill
 

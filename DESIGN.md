@@ -217,34 +217,31 @@ ctx.skills.register({ name, description, whenToUse, content, source: 'dsh-agent-
 浏览器                                    ← 18px/500
 agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 
-● agent-browser 0.38.2 已就绪 · 原生二进制 · 会话 dsh-agent-browser   [检查安装]  ← summary（绿/黄/红）
-  <只有 warn/fail 直接摊开；通过的项收进「全部检查」>
-  · 没找到 → 红，附 `brew install agent-browser`
-  · 版本越界 → 红，附"重跑 DESIGN §1.1 实验再放宽版本锁"
-  · 走 Node 包装层 → 黄，附"清空 executablePath 让插件自动解析"
+┌ ● 浏览器环境就绪                              [检查安装] ┐   ← summary：绿（两项都过）/ 红
+│   ✓ agent-browser   已安装 0.38.2                      │     检查就**两项**，路径之类的细节不显示
+│   ✗ Chrome          没找到                             │     缺 CLI 时右侧多一个 [安装]（用户点击才跑）
+│     修法：装 Chrome：https://www.google.com/chrome/     │
+└────────────────────────────────────────────────────────┘
 
-[浏览器功能            Switch]             ← 14px 标题
- 关闭后不注册任何工具（模型面前零成本），也不再启动会话      ← 12px secondary
-[决策                  Switch]             ← 14px 标题
- 开启后多一个 browser_run：每步由 ctx.judgment 判断       ← 12px secondary
- 判断走「设置 → 决策」里用途名 browser.action 的连接
-
-工具面                                     ← 分组标题
-[截图工具        Switch]  browser_screenshot
-[逃生舱 browser_raw Switch]  白名单内的其它 CLI 子命令
-
-进阶                                       ← 分组标题
-[允许域名        input]  → --allowed-domains
-[会话名          input]  → --session
-[有头模式        Switch] → --headed
-[命令超时(ms)    input]  → 我们的 spawn 超时
-[最大输出(字符)  input]  → --max-output
-[空闲超时        input]  → --idle-timeout
-[内容边界标记    Switch] → --content-boundaries
-
-配置文件                                   ← 分组标题
-[打开配置文件    按钮]   在系统文本编辑器中打开宿主设置文档（本插件配置就在里面）
+[浏览器功能        Switch]  ← 14px 标题 + 12px 子标题；每行 16px 竖距 + .5px 下边框
+[决策              Switch]
+[截图工具          Switch]
+[逃生舱 browser_raw Switch]
+[允许域名          input]  → --allowed-domains
+[会话名            input]  → --session
+[有头模式          Switch] → --headed
+[命令超时(ms)      input]  → 我们的 spawn 超时
+[最大输出(字符)    input]  → --max-output
+[空闲超时          input]  → --idle-timeout
+[内容边界标记      Switch] → --content-boundaries
+[打开配置文件      按钮]   在系统文本编辑器中打开宿主设置文档（本插件配置就在里面）
 ```
+
+**为什么要拉平**：分组标题（工具面/进阶/配置文件）会打断"每一行都一样"的节奏。
+General 的设置页就是一条平铺的行流：**同一条 16px 竖距 + 同一条 `.5px` 下边框，
+只有整页最后一行没有**（General 的 `:last-child{border-bottom:none}`）。我们照抄，
+按钮也照抄 skills-mcp 的 `.smp-button`（**`flex:none` 是重点**——少了它，按钮会被
+左列 `flex:1` 的文本挤成"检/查/安/装"竖排，这是真机截图里出现过的）。
 
 ### 4.3 实现事实（都已核对）
 
@@ -254,28 +251,33 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
   → 我们的做法：**注入 `remote.settings`，页面上放一行同款入口**（`hasDocument` 为假时禁用并说明），打开的就是宿主持有的设置文档——本插件的配置段就在里面。**不假装**能打开一个我们私有的文件。
 - 依赖注入：`export const inject = ['slots','configForms','remote']`；`remote.settings` 与 `remote.browser` 都用 `ctx.get()` 取（它们可能缺席，写进静态 inject 会把整个客户端半挡住）。
 
-### 4.4 安装自检（summary 绿 / 黄 / 红）
+### 4.4 安装自检（summary 绿 / 红）
 
-浏览器侧 **spawn 不了进程**，所以"装好没有"这个问题只能问宿主——这也是本插件唯一的 Remote：
+浏览器侧 **spawn 不了进程、也读不了文件系统**，所以"本机环境行不行"只能问宿主——这是本插件唯一的 Remote。
+自检**只有两项**（用户口径）：本机有没有 CLI、有没有 Chrome；路径 / 包装层 / doctor 的 ffmpeg、
+密钥、云 provider 之类一律不进面板（留在宿主日志里）。
 
-- **host**：`AgentBrowserService extends TypertRemoteService`（服务名 `browser`）+ `@Remote async probe(deep)`。
-  返回 `{ status: 'ok'|'warn'|'error', summary, command, commandDetail, native, version, checks[], checkedAt }`，
-  每条 check 带 `status`（pass/warn/fail/info）与可执行的 `fix`。
-- **检查项**：① 命令解析（`cli.found`）② 版本区间（`cli.version`）③ 是否原生二进制（`cli.native`）。
-  `deep=true` 再跑 CLI 自己的 `doctor --quick --json`（实测 ~0.5s），只取 `env.version` /
-  `chrome.installed` / `daemon.*` 与**任何 fail**——doctor 还会报 ffmpeg、加密密钥、云 provider
-  之类与我们无关的项，不进 summary。
-- **client**：手写 contribution（`client/browser-remote.js`），照 dsh-judgment 的同款通路。
-  **wire 必须逐字等于形参名 `deep`**（host 半不能被压缩改名）。
-- **实测的行为差**（写进注释，免得下次踩）：**host 对缺参是宽容的**（`deep` → `undefined` → 走轻量分支），
-  **卡实参个数的是客户端**（`expected 1 argument(s), got 0`）→ 页面每次都显式传 `probe(false|true)`。
-- **验证**：`pnpm verify:remote` 用真 `dsh-typert-registry` + `dsh-api-gateway` 跑两端并交叉验证
-  （未标 `@Remote` 的 `sessionInfo` 不被暴露、多余 args 被拒、客户端发出的 args 原样喂给 host 也能过）。
-
-失败时的页面表现：**红**（没装/版本越界）直接摊开原因 + 修法；**黄**（还在走 Node 包装层）说明
-每次多付 ~54ms 并给出解法；**绿**一句话说清版本 + 二进制 + 会话名。通过的项收进「全部检查」折叠区。
-
----
+- **host**：`AgentBrowserService extends TypertRemoteService`（服务名 `browser`）
+  - `@Remote async probe()` —— **零实参**。返回 `{ ok, title, checks[2], checkedAt }`，
+    两项各是 `{ id:'cli'|'chrome', label, status:'pass'|'fail', message, fix?, installable? }`。
+    - `cli`：没装 → fail + `fix`（`brew install agent-browser` 或 `npm i -g agent-browser`）+ `installable`；
+      装了但版本越界 → fail + "重跑 DESIGN §1.1 实验再放宽版本锁"。
+    - `chrome`：**必须项**。CLI 可用时以它自己的 `doctor --quick --json` 为准（它认得环境变量、engine、
+      自定义路径）；问不了 CLI 就退回文件系统 / PATH 探测，消息写"没找到"而不是"没有"。
+  - `@Remote async installCli(target)` —— 帮忙装 **CLI**（Homebrew 优先，否则 npm 全局）。
+    **Chrome 明确拒装**：`brew install --cask google-chrome` 在 macOS 上要管理员密码，
+    一个后台进程挂着等密码是最糟的交互——Chrome 只给命令与下载入口。
+- **client**：手写 contribution（`client/browser-remote.js`）。两个实测过的硬约束：
+  1. **wire 名必须逐字等于形参名**（`target`）；
+  2. **方法名不能与命名空间服务自身的方法冲突**——`install` 就是保留名，`$mount` 会直接抛
+     `method "browser/install" conflicts with its namespace service`；所以叫 `installCli`。
+     `pnpm verify:remote` 会把这条当场拦下来（这就是它存在的意义）。
+- **载荷版本戳**：`probe()` 返回里带 `apiVersion`。客户端半热更新、host 半要重启，两侧错配时
+  页面直接说"客户端半已是新版本，但 host 半还是旧代码 → 重启 DSH"，而不是把旧形状画成一张看不懂的卡片。
+- **实参个数**：`probe()` 零参、`installCli(target)` 一参；**host 对缺参宽容**
+  （`target` → undefined → 落到"只支持 CLI"分支），**卡实参个数的是客户端**——
+  页面因此永远显式传参。
+- **验证**：`pnpm verify:remote` 用真 `dsh-typert-registry` + `dsh-api-gateway` 跑两端并交叉验证（17 项）。
 
 ## 5. 决策形态（v2 定稿）
 

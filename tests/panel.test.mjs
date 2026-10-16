@@ -47,7 +47,7 @@ const fakeForm = (value = VALUE) => ({
   set: async () => {},
 })
 
-test('设置页画出了页头、两行开关、工具面与进阶项（标题 + 子标题）', async () => {
+test('设置页画出了页头、所有行（标题 + 子标题）与两行开关', async () => {
   const { Panel } = await loadModule('client/panel.jsx')
   const html = renderToStaticMarkup(React.createElement(Panel, {
     form: fakeForm(),
@@ -67,7 +67,11 @@ test('设置页画出了页头、两行开关、工具面与进阶项（标题 +
   assert.match(html, /决策/)
   assert.match(html, /browser_run/)
   assert.match(html, /browser\.action/)          // 用途名进子标题
-  // 工具面 / 进阶 / 配置文件
+  // 每一行都是同一条 .ab-row（16px 竖距 + 下边框由 CSS 保证；这里断言结构一致）
+  const rows = html.match(/class="ab-row"/g) ?? []
+  assert.ok(rows.length >= 12, `期望至少 12 行统一的行，实际 ${rows.length}`)
+  assert.ok(!html.includes('ab-groupTitle'), '分组标题会打断"每行都一样"的节奏，已去掉')
+  // 工具面 / 进阶 / 配置文件（现在都是普通行，靠标题自解释）
   assert.match(html, /逃生舱/)
   assert.match(html, /允许域名/)
   assert.match(html, /example\.com/)             // 配置值真的渲染出来了
@@ -79,68 +83,73 @@ test('设置页画出了页头、两行开关、工具面与进阶项（标题 +
   assert.match(html, /<button/)
 })
 
-test('summary 三态：绿/黄/红各自的语气与修法', async () => {
+test('自检卡片：两项、成功/失败各自的说明与"帮忙安装"，且不含路径', async () => {
   const { InstallSummary } = await loadModule('client/panel.jsx')
-  const render = (probe) => renderToStaticMarkup(React.createElement(InstallSummary, {
-    primitives: undefined, probe, probing: false, error: '', onCheck: () => {},
+  const render = (probe, extra = {}) => renderToStaticMarkup(React.createElement(InstallSummary, {
+    primitives: undefined, probe, probing: false, error: '', installing: false, note: '', onCheck: () => {}, onInstall: () => {}, ...extra,
   }))
 
   const ok = render({
-    status: 'ok',
-    summary: 'agent-browser 0.38.2 已就绪 · 原生二进制 · 会话 dsh-agent-browser',
-    command: '/opt/homebrew/.../agent-browser-darwin-arm64',
-    native: true,
-    version: '0.38.2',
+    apiVersion: 1,
+    ok: true,
+    title: '浏览器环境就绪',
     checkedAt: new Date().toISOString(),
     checks: [
-      { id: 'cli.found', status: 'pass', message: '可执行文件：/opt/.../agent-browser-darwin-arm64' },
-      { id: 'cli.version', status: 'pass', message: '版本 0.38.2（支持区间 [0.38.0, 0.39.0)）' },
+      { id: 'cli', label: 'agent-browser', status: 'pass', message: '已安装 0.38.2' },
+      { id: 'chrome', label: 'Chrome', status: 'pass', message: '已就绪（Google Chrome 155.0.8059.84）' },
     ],
   })
   assert.match(ok, /data-tone="ok"/)
-  assert.match(ok, /已就绪/)
-  assert.match(ok, /原生二进制/)
-  assert.match(ok, /全部检查（2）/)   // 通过的项收进折叠区
+  assert.match(ok, /浏览器环境就绪/)
+  assert.match(ok, /已安装 0\.38\.2/)
+  assert.match(ok, /Chrome/)
+  assert.match(ok, /data-variant="primary"/)      // 检查安装按钮是 primary，且 flex:none 不会换行由 CSS 保证
+  assert.match(ok, /检查安装/)
+  assert.ok(!ok.includes('/opt/'), '不该显示可执行文件路径')
 
-  const warn = render({
-    status: 'warn',
-    summary: 'agent-browser 0.38.2 可用，但有折扣项（见下）',
-    command: '/usr/local/bin/agent-browser',
-    native: false,
-    version: '0.38.2',
+  const missing = render({
+    apiVersion: 1,
+    ok: false,
+    title: '浏览器环境不完整',
     checkedAt: new Date().toISOString(),
-    checks: [{ id: 'cli.native', status: 'warn', message: '当前是 CLI 的 Node 包装层：每次调用多付一份 Node 启动', fix: '清空 executablePath' }],
+    checks: [
+      { id: 'cli', label: 'agent-browser', status: 'fail', message: '本机没安装', fix: 'brew install agent-browser', installable: true },
+      { id: 'chrome', label: 'Chrome', status: 'pass', message: '已就绪' },
+    ],
   })
-  assert.match(warn, /data-tone="warn"/)
-  assert.match(warn, /有折扣项/)
-  assert.match(warn, /修法：清空 executablePath/)
+  assert.match(missing, /data-tone="danger"/)
+  assert.match(missing, /浏览器环境不完整/)
+  assert.match(missing, /本机没安装/)
+  assert.match(missing, /修法：brew install agent-browser/)
+  assert.match(missing, />安装</)                  // 失败项带"安装"按钮
+  assert.ok(!missing.includes('修法：brew install agent-browser</div><div class="ab-checkFix">修法'), '修法只出现一次')
+})
 
-  const error = render({
-    status: 'error',
-    summary: '没找到 agent-browser：浏览器功能不可用',
-    command: 'agent-browser',
-    native: false,
-    checkedAt: new Date().toISOString(),
-    checks: [{ id: 'cli.found', status: 'fail', message: 'PATH 上没找到', fix: 'brew install agent-browser' }],
-  })
-  assert.match(error, /data-tone="danger"/)
-  assert.match(error, /不可用/)
-  assert.match(error, /修法：brew install agent-browser/)
+test('host 半是旧版本时，把"重启 DSH"说清楚（而不是画一张看不懂的卡片）', async () => {
+  const { InstallSummary } = await loadModule('client/panel.jsx')
+  const html = renderToStaticMarkup(React.createElement(InstallSummary, {
+    primitives: undefined,
+    probing: false, error: '', installing: false, note: '', onCheck: () => {}, onInstall: () => {},
+    probe: { status: 'ok', summary: 'agent-browser 0.38.2 已就绪', checks: [{ id: 'cli.found', status: 'pass', message: '路径' }] },
+  }))
+  assert.match(html, /安装自检需要重启 DSH/)
+  assert.match(html, /客户端半已是新版本，但 host 半还是旧代码/)
+  assert.ok(!html.includes('cli.found'), '错配时不该把旧形状的 check id 画出来')
 })
 
 test('还没检查时给一句明确的下一步，而不是空白', async () => {
   const { InstallSummary } = await loadModule('client/panel.jsx')
   const html = renderToStaticMarkup(React.createElement(InstallSummary, {
-    primitives: undefined, probe: null, probing: false, error: '', onCheck: () => {},
+    primitives: undefined, probe: null, probing: false, error: '', installing: false, note: '', onCheck: () => {}, onInstall: () => {},
   }))
-  assert.match(html, /还没有检查过 agent-browser/)
+  assert.match(html, /还没有检查过浏览器环境/)
   assert.match(html, /检查安装/)
 })
 
 test('自检通路报错时把原因显示出来（不让页面默默失败）', async () => {
   const { InstallSummary } = await loadModule('client/panel.jsx')
   const html = renderToStaticMarkup(React.createElement(InstallSummary, {
-    primitives: undefined, probe: null, probing: false, error: '自检通路不可用（host 半未加载）', onCheck: () => {},
+    primitives: undefined, probe: null, probing: false, error: '自检通路不可用（host 半未加载）', installing: false, note: '', onCheck: () => {}, onInstall: () => {},
   }))
   assert.match(html, /role="alert"/)
   assert.match(html, /自检通路不可用/)

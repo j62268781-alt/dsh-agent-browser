@@ -65,22 +65,24 @@ check(
   Boolean(hostCtx.get('typert') && hostCtx.get('typertGateway') && hostCtx.get('browser')),
 )
 
-const probeCall = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: { deep: false } }, undefined, undefined)
+const probeCall = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: {} }, undefined, undefined)
 check('browser/probe 可按 @Remote 暴露并被调用', probeCall?.ok === true, JSON.stringify(probeCall)?.slice(0, 200))
-check('probe 返回可判读的自检结果', typeof probeCall?.value?.status === 'string' && Array.isArray(probeCall.value?.checks), JSON.stringify(probeCall?.value)?.slice(0, 200))
-check('probe 报了版本与所用二进制', typeof probeCall?.value?.command === 'string' && probeCall.value.command.length > 0)
+check('probe 恰好两项检查（cli / chrome）', Array.isArray(probeCall?.value?.checks) && probeCall.value.checks.length === 2 && probeCall.value.checks.map((c) => c.id).join(',') === 'cli,chrome', JSON.stringify(probeCall?.value)?.slice(0, 240))
+check('probe 返回值不含可执行文件路径', typeof probeCall?.value?.title === 'string' && probeCall?.value?.command === undefined)
+check('probe 带载荷版本号（两侧错配时客户端能说出来）', probeCall?.value?.apiVersion === 1)
 
 const unmarked = await hostCtx.typertGateway.invokeRpc('browser/sessionInfo', { args: {} }, undefined, undefined)
 check('未标 @Remote 的 sessionInfo 不会被暴露', unmarked?.ok === false, JSON.stringify(unmarked)?.slice(0, 160))
 
-// 实测：**host 对缺参是宽容的**（`deep` 变成 undefined，走 falsy 分支 = 轻量检查），
-// 卡住实参个数的是**客户端**（见下面 "漏传实参会被客户端拦下"）。两条都值得记下来，
-// 因为"客户端必须显式传"这件事没有别的证据来源。
-const missing = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: {} }, undefined, undefined)
-check('host 对缺参宽容（deep=undefined → 只做轻量检查）', missing?.ok === true, JSON.stringify(missing)?.slice(0, 160))
+const extra = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: { bogus: 1 } }, undefined, undefined)
+check('probe 多余的 args 键被 host 拒绝', extra?.ok === false, JSON.stringify(extra)?.slice(0, 160))
 
-const extra = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: { deep: false, bogus: 1 } }, undefined, undefined)
-check('多余的 args 键被 host 拒绝', extra?.ok === false, JSON.stringify(extra)?.slice(0, 160))
+const installCall = await hostCtx.typertGateway.invokeRpc('browser/installCli', { args: { target: 'chrome' } }, undefined, undefined)
+check('browser/installCli 可调用，且拒装 Chrome（只帮忙装 CLI）', installCall?.ok === true && installCall.value?.ok === false, JSON.stringify(installCall)?.slice(0, 200))
+
+// 实测：host 对缺参宽容（target=undefined → 落到"只支持 CLI"的分支），卡实参个数的是客户端。
+const installMissing = await hostCtx.typertGateway.invokeRpc('browser/installCli', { args: {} }, undefined, undefined)
+check('installCli 缺参时 host 仍可调用（返回 not-ok 而不是崩）', installMissing?.ok === true && installMissing.value?.ok === false, JSON.stringify(installMissing)?.slice(0, 160))
 
 /* ───────────────────────── client 半 ───────────────────────── */
 
@@ -101,7 +103,7 @@ const connection = {
     open: undefined,
     call: async (mount, endpoint, payload) => {
       wires.push({ mount, endpoint, args: payload.args })
-      return { ok: true, value: { status: 'ok', summary: 'stub', command: '/stub/agent-browser', commandDetail: '/stub', native: true, checks: [], checkedAt: new Date().toISOString() } }
+      return { ok: true, value: { apiVersion: 1, ok: true, title: '浏览器环境就绪', checks: [], checkedAt: new Date().toISOString() } }
     },
   },
   start: () => ({ stop() {} }),
@@ -123,18 +125,21 @@ const { browserContribution } = await import(`${REPO}/client/browser-remote.js`)
 console.log('\nclient 半（手写 contribution 过 Gateway 校验）')
 const dispose = await clientCtx.remote.$mount(browserContribution())
 check('$mount 成功并返回 disposer', typeof dispose === 'function')
-check('命名空间暴露了 probe', typeof clientCtx.remote.browser?.probe === 'function')
+check('命名空间暴露了 probe 与 installCli', typeof clientCtx.remote.browser?.probe === 'function' && typeof clientCtx.remote.browser?.installCli === 'function')
 
-const clientProbe = await clientCtx.remote.browser.probe(false)
-check('客户端调用 probe(false) 拿到信封', clientProbe?.ok === true)
+const clientProbe = await clientCtx.remote.browser.probe()
+check('客户端调用 probe() 拿到信封', clientProbe?.ok === true)
 
 const probeWire = wires.at(-1)
-check('probe 的 wire 名是 deep', JSON.stringify(Object.keys(probeWire.args)) === '["deep"]', JSON.stringify(probeWire.args))
-check('probe 的实参是布尔', probeWire.args.deep === false)
+check('probe 走零实参的 wire 调用', JSON.stringify(probeWire.args) === '{}', JSON.stringify(probeWire))
+
+const clientInstall = await clientCtx.remote.browser.installCli('cli')
+check('客户端调用 installCli("cli") 拿到信封', clientInstall?.ok === true)
+check('installCli 的 wire 名是 target', JSON.stringify(Object.keys(wires.at(-1).args)) === '["target"]', JSON.stringify(wires.at(-1).args))
 
 let zeroArgsMessage = ''
 try {
-  await clientCtx.remote.browser.probe()
+  await clientCtx.remote.browser.installCli()
 } catch (error) {
   zeroArgsMessage = String(error?.message ?? error)
 }
@@ -145,7 +150,7 @@ check('漏传实参会被客户端拦下（说明必须显式传）', /expected 
 console.log('\n交叉验证（两端线契约必须逐字一致）')
 const piped = await hostCtx.typertGateway.invokeRpc('browser/probe', { args: probeWire.args }, undefined, undefined)
 check('客户端 args 能被 host 直接接受', piped?.ok === true, JSON.stringify(piped)?.slice(0, 200))
-check('喂进去的那次真的跑到了自检', typeof piped?.value?.status === 'string')
+check('喂进去的那次真的跑到了自检', Array.isArray(piped?.value?.checks))
 
 await dispose()
 check('dispose 之后命名空间消失', clientCtx.remote?.browser === undefined)

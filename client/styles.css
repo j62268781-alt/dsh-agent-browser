@@ -7,8 +7,10 @@
  *           padding:16px 0; border-bottom:.5px solid var(--dsw-alias-border-l2)
  *   标题    14px / 20px
  *   子标题  12px / 18px + --dsw-alias-label-secondary，margin-top:4px
+ *   末行    General 的 `:last-child{border-bottom:none}` —— 我们也只在整页最后一行去掉
  * 页头沿用本插件族既有约定（dsh-judgment 的 .jdg-pageTitle/.jdg-pageIntro）：
  *   标题 18px/500 · 副标题 13px/20px secondary
+ * 按钮逐字抄 skills-mcp 的 `.smp-button`（含 `flex:none`——少了它会被左列挤成竖排）。
  */
 
 .ab-page{box-sizing:border-box;width:100%;color:var(--dsw-alias-label-primary);flex-direction:column;align-items:center;gap:18px;display:flex}
@@ -19,52 +21,52 @@
 .ab-pageIntro{color:var(--dsw-alias-label-secondary);margin:0;font-size:13px;line-height:20px}
 
 .ab-section{display:flex;flex-direction:column}
-.ab-groupTitle{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;padding-top:8px}
 
+/* 每一行都长一样：同一条 16px 竖距 + 同一条下边框；只有整页最后一行没有。 */
 .ab-row{box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:24px;padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
 .ab-section>.ab-row:last-child{border-bottom:none}
-.ab-row[data-disabled=true]{opacity:.55}
 .ab-rowText{display:flex;flex-direction:column;min-width:0}
 .ab-rowTitle{font-size:14px;line-height:20px}
 .ab-rowSubtitle{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px}
-.ab-rowControl{display:inline-flex;align-items:center;gap:8px;flex:none}
-/* 进阶项：输入框要占一列宽度，但行仍然是「文字在左、控件在右」的同一条基线。 */
-.ab-rowField{align-items:flex-start}
-.ab-rowControlWide{flex:0 1 280px;min-width:180px;justify-content:flex-end}
+.ab-rowControl{display:inline-flex;align-items:center;gap:8px;flex:none;max-width:320px}
+.ab-rowControl>*{width:100%}
 
 .ab-input{box-sizing:border-box;width:100%;height:32px;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:0 10px}
 .ab-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .ab-input:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
 .ab-input:disabled{cursor:not-allowed}
 
-.ab-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 14px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
+/* 与 skills-mcp 的 .smp-button 同一条规则；`flex:none` 是重点（否则会被挤成竖排）。 */
+.ab-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:32px;padding:0 14px;border:.5px solid transparent;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer;flex:none;white-space:nowrap}
 .ab-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ab-button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
+.ab-button[data-variant=outline]{border-color:var(--dsw-alias-border-l3)}
+.ab-button[data-variant=primary]{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
+.ab-button[data-variant=primary]:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}
 .ab-button:disabled{opacity:.4;cursor:not-allowed}
+
+/* 安装自检卡片：一句话标题 + 右侧动作，下面就是那两项检查。 */
+.ab-summary{box-sizing:border-box;display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:.5px solid var(--dsw-alias-settings-card-stroke,var(--dsw-alias-border-l2));border-radius:var(--dsw-radius-xl,var(--dsw-radius-md));background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-1))}
+.ab-summary[data-tone=ok]{border-color:var(--dsw-alias-state-success-primary,#12805c)}
+.ab-summary[data-tone=danger]{border-color:var(--dsw-alias-state-error-primary,#d92d20)}
+.ab-summaryHead{display:flex;align-items:center;gap:10px}
+.ab-summaryTitle{flex:1 1 auto;min-width:0;font-size:14px;line-height:20px}
+.ab-summaryAction{flex:none;display:inline-flex}
+
+.ab-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#9aa4b2)}
+.ab-dot[data-dot=ok]{background:var(--dsw-alias-state-success-primary,#067647)}
+.ab-dot[data-dot=danger]{background:var(--dsw-alias-state-error-primary,#d92d20)}
+
+/* 一项检查 = 一行：✓/✗ + 名字 + 结论（+ 需要时右侧"安装"）。 */
+.ab-check{display:flex;flex-direction:column;gap:2px;padding-left:18px}
+.ab-checkHead{display:flex;align-items:center;gap:8px;min-width:0}
+.ab-checkMark{flex:none;width:12px;font-size:12px;line-height:18px;color:var(--dsw-alias-state-success-primary,#067647)}
+.ab-check[data-status=fail] .ab-checkMark{color:var(--dsw-alias-state-error-primary,#d92d20)}
+.ab-checkLabel{flex:none;width:104px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ab-checkMessage{flex:1 1 auto;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+.ab-check[data-status=fail] .ab-checkMessage{color:var(--dsw-alias-state-error-primary,#d92d20)}
+.ab-checkAction{flex:none;display:inline-flex;margin-left:auto}
+.ab-checkFix{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
 
 .ab-note{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:0}
 .ab-error{color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-primary));font-size:12px;line-height:18px;margin:0}
-
-/* 安装自检的 summary：左边一个状态点 + 一句话 + 右侧动作；有问题的项直接摊开。 */
-.ab-summary{box-sizing:border-box;display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:.5px solid var(--dsw-alias-settings-card-stroke,var(--dsw-alias-border-l2));border-radius:var(--dsw-radius-xl,var(--dsw-radius-md));background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-1))}
-.ab-summary[data-tone=ok]{border-color:var(--dsw-alias-state-success-primary,#12805c)}
-.ab-summary[data-tone=warn]{border-color:var(--dsw-alias-state-warn-primary,#b54708)}
-.ab-summary[data-tone=danger]{border-color:var(--dsw-alias-state-error-primary,#d92d20)}
-.ab-summaryRow{display:flex;align-items:flex-start;gap:10px}
-.ab-summaryText{display:flex;flex-direction:column;min-width:0;flex:1 1 auto}
-.ab-summaryTitle{font-size:14px;line-height:20px}
-.ab-summarySub{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px;overflow-wrap:anywhere}
-
-.ab-dot{flex:none;width:8px;height:8px;margin-top:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#9aa4b2)}
-.ab-dot[data-dot=ok]{background:var(--dsw-alias-state-success-primary,#067647)}
-.ab-dot[data-dot=warn]{background:var(--dsw-alias-state-warn-primary,#b54708)}
-.ab-dot[data-dot=danger]{background:var(--dsw-alias-state-error-primary,#d92d20)}
-
-.ab-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.ab-check{display:flex;flex-direction:column;gap:2px;padding-left:18px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
-.ab-check[data-status=fail]{color:var(--dsw-alias-state-error-primary,#d92d20)}
-.ab-check[data-status=warn]{color:var(--dsw-alias-state-warn-primary,#b54708)}
-.ab-checkFix{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
-.ab-details{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
-.ab-details>summary{cursor:pointer}
-.ab-details .ab-checks{margin-top:6px}
-

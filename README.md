@@ -17,8 +17,8 @@
 
 | 项 | 状态 |
 |---|---|
-| 设置页（安装自检 summary + 两行开关 + 工具面 + 进阶项 + 打开配置文件） | ✅ 已实现 |
-| 安装自检：版本 / 二进制 / 原生层（可选深检 Chrome 与守护进程） | ✅ 已实现（host `@Remote` + 客户端手写 contribution，`pnpm verify:remote` 交叉验证） |
+| 设置页（安装自检 summary + 平铺行流 + 开关/输入 + 打开配置文件） | ✅ 已实现 |
+| 安装自检：**两项**（CLI / Chrome）+ 帮忙装 CLI | ✅ 已实现（host `@Remote probe/installCli` + 客户端手写 contribution，`pnpm verify:remote` 交叉验证） |
 | 内置 skill（`skills/agent-browser/`：核心命令 + 5 份 references） | ✅ 已实现（`ctx.skills.register()` 运行时注册，装插件即得） |
 | `browser_snapshot` / `browser_act` / `browser_read` / `browser_session` / `browser_screenshot` | ✅ 已实现 |
 | `browser_raw` 逃生舱（白名单） | ✅ 已实现，默认关 |
@@ -93,19 +93,20 @@ dogfood …）很全，但不适合作为常驻目录；需要时仍可用 `agen
 
 ## 安装自检（设置页顶部 summary）
 
-进「设置 → 浏览器」会自动跑一次轻量自检，点「检查安装」做深度检查。三态：
+进「设置 → 浏览器」自动跑一次，点「检查安装」重跑。**只有两项**（路径之类的细节不显示）：
 
-| 颜色 | 什么时候 | 面板说什么 |
+| 项 | 通过 | 不通过 |
 |---|---|---|
-| 🟢 绿 | 找到、版本在区间、走原生二进制 | `agent-browser 0.38.2 已就绪 · 原生二进制 · 会话 dsh-agent-browser` |
-| 🟡 黄 | 可用但有折扣（例如只找到 Node 包装层，每次多付 ~54ms） | 原因 + 修法（清空 `executablePath` 让插件自动解析） |
-| 🔴 红 | 没装 / 版本越界 / 跑不起来 | 原因 + 修法（`brew install agent-browser`；版本越界要重跑 DESIGN §1.1 的实验再放宽版本锁） |
+| **agent-browser** | `已安装 0.38.2` | `本机没安装` + 修法，并出现 **[安装]** 按钮（Homebrew 优先，否则 `npm i -g`；**点了才跑**） |
+| **Chrome** | `已就绪（Google Chrome 155）` | `没找到` + 下载入口（Chrome 是必须项：没有它页面根本驱动不了） |
 
-深度检查复用 CLI 自己的 `agent-browser doctor --quick --json`（实测 ~0.5s），只取与浏览器可用性有关的项
-（CLI 版本、Chrome、守护进程，以及任何 fail）；ffmpeg / 加密密钥 / 云 provider 之类不干扰 summary。
-通过的项收进「全部检查」折叠区。
+两项都过 → 卡片是绿的（`浏览器环境就绪`）；任一项不过 → 红，直接摊开原因与修法。
 
----
+**Chrome 为什么不帮忙装**：`brew install --cask google-chrome` 在 macOS 上要管理员密码，
+一个后台进程挂着等密码是最糟的交互。CLI 可以（纯用户态安装），Chrome 只给命令与链接。
+
+Chrome 的判定优先用 CLI 自己的 `agent-browser doctor --quick --json`（约 0.5s，它认得环境变量、
+engine 与自定义路径）；CLI 不可用时退回文件系统 / PATH 探测，消息写「没找到」而不是「没有」。
 
 ## 性能（实测，2026-10 · agent-browser 0.38.2）
 
@@ -158,9 +159,9 @@ dogfood …）很全，但不适合作为常驻目录；需要时仍可用 `agen
 ```bash
 pnpm install
 pnpm build            # host(tsc) + 客户端(esbuild → lib/client.js)
-pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑（27 项，不需要真 DSH）
+pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑（29 项，不需要真 DSH）
 pnpm typecheck
-pnpm verify:remote    # Remote 通路交叉验证（16 项）：host SRC fallback ↔ 手写 contribution
+pnpm verify:remote    # Remote 通路交叉验证（17 项）：host SRC fallback ↔ 手写 contribution
 pnpm verify:served    # 问运行中的应用：boot 数据里有没有本插件的客户端半（7 项）
 pnpm probe            # 真 CLI 探针（会开浏览器，结束前自动关掉自己的会话）
 ```
@@ -171,6 +172,7 @@ pnpm probe            # 真 CLI 探针（会开浏览器，结束前自动关掉
 src/config.ts   配置（schemastery；开关决定工具注册）
 src/cli.ts      agent-browser CLI 薄封装：spawn · JSON 信封 · 版本锁 · 原生二进制解析
 src/task.ts     browser_run 的有界循环（消费 ctx.judgment）
+src/env.ts      环境探测（Chrome / 安装计划 / 跑命令）——自检那两项的本机侧
 src/skill.ts    内置 skill 的加载与注册
 src/index.ts    入口：Service 类（工具注册 + @Remote probe 自检）
 client/         设置页（统一 JSX，esbuild 打成 window.__ModuleLoader__ 单文件）

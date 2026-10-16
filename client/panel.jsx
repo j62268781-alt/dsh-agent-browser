@@ -2,7 +2,10 @@
  * 浏览器设置页。
  *
  * 视觉照**通用设置面板**：一行 = 标题（14px）+ 子标题（12px secondary）+ 右侧控件；
- * 页头 = 标题（18px/500）+ 副标题（13px secondary）。见同目录 styles.css 的注释。
+ * 页头 = 标题（18px/500）+ 副标题（13px secondary）；**每一行都是同一条 16px 竖距 +
+ * `.5px` 下边框，只有整页最后一行没有**（与 General 的 `:last-child{border-bottom:none}` 一致）。
+ * 按钮样式逐字抄 skills-mcp 面板的「添加服务器」（`flex:none` + primary 填充色）——
+ * 少了 `flex:none`，按钮会被左列的 `flex:1` 挤成竖排（真机踩过）。
  *
  * 写入：`form.set(field, value)`（整个顶层字段原子提交）；老宿主退回 `props.mutate`。
  * 配置是**普通字段**（不是 volatile）：改「浏览器功能」/「决策」会让 loader 重新应用 entry，
@@ -25,26 +28,27 @@ export function Panel(props) {
   const [probe, setProbe] = useState(null)
   const [probing, setProbing] = useState(false)
   const [probeError, setProbeError] = useState('')
+  /** 帮忙装 CLI 的进度与结果。 */
+  const [installing, setInstalling] = useState(false)
+  const [installNote, setInstallNote] = useState('')
 
   useEffect(() => {
     if (typeof form?.subscribe !== 'function') return undefined
     return form.subscribe(() => setTick((count) => count + 1))
   }, [form])
 
-  // 进页面先跑一次轻量自检（不跑 CLI 的 doctor）；点「检查安装」才做深度检查。
+  // 进页面就跑一次自检（CLI + Chrome）。`runProbe` 每次都重新取 ref，所以只跑一次。
   useEffect(() => {
-    void runProbe(false)
-    // 只在挂载时跑一次：`runProbe` 每次都重新取 ref，放进依赖会无限循环。
+    void runProbe()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /**
    * 调宿主自检。
    *
-   * ⚠️ `probe(deep)` 的**实参个数必须与 host 方法的形参个数相等**（Gateway 的 wire 约束）：
-   * 即使只想轻量检查也要显式传 `false`，否则客户端会抛 `expected 1 argument(s), got 0`。
+   * ⚠️ `probe()` 是**零实参**方法：客户端必须一个都不传（多传会被客户端校验拦下）。
    */
-  async function runProbe(deep) {
+  async function runProbe() {
     if (props.browser === undefined) {
       setProbeError('自检通路不可用（host 半未加载，或插件版本与客户端半不一致）')
       return
@@ -52,13 +56,30 @@ export function Panel(props) {
     setProbing(true)
     setProbeError('')
     try {
-      const envelope = await props.browser.probe(deep)
+      const envelope = await props.browser.probe()
       if (envelope?.ok !== true) throw new Error(envelope?.error?.message ?? '自检失败')
       setProbe(envelope.value ?? null)
     } catch (cause) {
       setProbeError(String(cause?.message ?? cause))
     } finally {
       setProbing(false)
+    }
+  }
+
+  /** 帮忙装 agent-browser（**用户点击触发**），装完自动重跑自检。 */
+  async function runInstall(target) {
+    if (props.browser === undefined) return
+    setInstalling(true)
+    setInstallNote('正在安装…（可能要几分钟）')
+    try {
+      const envelope = await props.browser.installCli(target)
+      if (envelope?.ok !== true) throw new Error(envelope?.error?.message ?? '安装失败')
+      setInstallNote(envelope.value?.message ?? '安装结束')
+      await runProbe()
+    } catch (cause) {
+      setInstallNote(`安装失败：${String(cause?.message ?? cause)}`)
+    } finally {
+      setInstalling(false)
     }
   }
 
@@ -133,18 +154,19 @@ export function Panel(props) {
       {error !== '' ? <p className="ab-error" role="alert">{error}</p> : null}
 
       <InstallSummary
-        primitives={props.primitives}
         probe={probe}
         probing={probing}
         error={probeError}
-        onCheck={() => { void runProbe(true) }}
+        installing={installing}
+        note={installNote}
+        onCheck={() => { void runProbe() }}
+        onInstall={(target) => { void runInstall(target) }}
       />
 
       <section className="ab-section">
         <Row
           title="浏览器功能"
           subtitle="关闭后不注册任何工具（模型面前零成本），也不再启动会话。"
-          disabled={busy || !writable}
           control={(
             <Switch
               primitives={props.primitives}
@@ -160,7 +182,6 @@ export function Panel(props) {
           subtitle={decision
             ? `开启：多一个 browser_run，每步由 ctx.judgment 判断（用途名 ${String(judgment.purpose ?? 'browser.action')}）。`
             : '开启后多一个 browser_run：插件内部跑有界循环，每步由 ctx.judgment 在代码枚举的候选里选一个动作。'}
-          disabled={!enabled}
           control={(
             <Switch
               primitives={props.primitives}
@@ -171,10 +192,6 @@ export function Panel(props) {
             />
           )}
         />
-      </section>
-
-      <section className="ab-section">
-        <h3 className="ab-groupTitle">工具面</h3>
         <Row
           title="截图工具"
           subtitle="browser_screenshot：视觉兜底，或把页面给你看。"
@@ -201,11 +218,7 @@ export function Panel(props) {
             />
           )}
         />
-      </section>
-
-      <section className="ab-section">
-        <h3 className="ab-groupTitle">进阶</h3>
-        <Field
+        <Row
           title="允许域名"
           subtitle="--allowed-domains：逗号分隔，如 a.com, *.b.com。留空 = 不限制。设了它就不能再用 profile（CLI 的 fail-closed）。"
           control={(
@@ -224,7 +237,7 @@ export function Panel(props) {
             />
           )}
         />
-        <Field
+        <Row
           title="会话名"
           subtitle="--session：每个 agent 一个命名会话，避免劫持别的 agent 或人类开着的窗口。留空 = dsh-agent-browser。"
           control={(
@@ -256,7 +269,7 @@ export function Panel(props) {
             />
           )}
         />
-        <Field
+        <Row
           title="命令超时（毫秒）"
           subtitle="单条 CLI 命令的 spawn 超时。"
           control={(
@@ -275,7 +288,7 @@ export function Panel(props) {
             />
           )}
         />
-        <Field
+        <Row
           title="最大输出（字符）"
           subtitle="--max-output：页面输出截断。0 = 用 CLI 默认。"
           control={(
@@ -294,7 +307,7 @@ export function Panel(props) {
             />
           )}
         />
-        <Field
+        <Row
           title="空闲超时"
           subtitle="--idle-timeout：守护进程空闲多久退出（10s / 3m / 1h / 裸毫秒）。留空 = CLI 默认 1h。"
           control={(
@@ -326,22 +339,21 @@ export function Panel(props) {
             />
           )}
         />
-      </section>
-
-      <section className="ab-section">
-        <h3 className="ab-groupTitle">配置文件</h3>
         <Row
           title="打开配置文件"
           subtitle={props.hasDocument
             ? '在系统文本编辑器中打开宿主设置文档——本插件的配置段就在里面。'
             : '当前部署不提供本地设置文档（只有 loopback 桌面端才有），请在「设置」里改。'}
           control={(
-            <Button
-              primitives={props.primitives}
-              label={opening ? '打开中…' : '打开'}
+            <button
+              type="button"
+              className="ab-button"
+              data-variant="outline"
               disabled={props.hasDocument !== true || opening || props.settings === undefined}
               onClick={() => { void openDocument() }}
-            />
+            >
+              {opening ? '打开中…' : '打开'}
+            </button>
           )}
         />
         {openError !== '' ? <p className="ab-error" role="alert">{openError}</p> : null}
@@ -350,102 +362,95 @@ export function Panel(props) {
   )
 }
 
-/* ─────────────────────────── 行与控件 ─────────────────────────── */
+/* ─────────────────────────── 自检卡片 ─────────────────────────── */
 
 /**
- * 安装自检的 summary：绿（可用）/ 黄（可用但有折扣）/ 红（不可用）。
- * 只把**有问题的项**直接摊开（warn/fail），通过的项收进「全部检查」——
- * 设置页在出问题时给可执行的原因与修法，在正常时给一句话就好。
- *
- * 具名导出是为了渲染测试（`tests/panel.test.mjs`）能单独验三态。
+ * 安装自检：**就两项**（CLI / Chrome），逐项给结论；CLI 缺失时提供"帮忙安装"。
+ * 不显示可执行文件路径之类的细节——那是宿主日志的事。
  */
-export function InstallSummary({ primitives, probe, probing, error, onCheck }) {
-  const tone = probe === null ? 'neutral' : probe.status === 'ok' ? 'ok' : probe.status === 'warn' ? 'warn' : 'danger'
-  const checks = Array.isArray(probe?.checks) ? probe.checks : []
-  const issues = checks.filter((check) => check.status === 'warn' || check.status === 'fail')
-  const rest = checks.filter((check) => check.status !== 'warn' && check.status !== 'fail')
+/** 与 host 半的 `PROBE_API_VERSION` 对齐：不一致就是 host 半还没重启。 */
+const PROBE_API_VERSION = 1
 
+export function InstallSummary({ probe, probing, error, installing, note, onCheck, onInstall }) {
+  // 客户端半会热更新、host 半要重启：两侧错配时给出**明确的下一步**，而不是画一张看不懂的卡片。
+  const mismatched = probe !== null && probe !== undefined && probe.apiVersion !== PROBE_API_VERSION
+  const checks = Array.isArray(probe?.checks) ? probe.checks : []
+  const ok = probe?.ok === true
+  const tone = probe === null ? 'neutral' : mismatched ? 'danger' : ok ? 'ok' : 'danger'
   const title = probing
-    ? '正在检查 agent-browser…'
+    ? '正在检查浏览器环境…'
     : probe === null
-      ? '还没有检查过 agent-browser'
-      : probe.summary
-  const subtitle = probe === null
-    ? '浏览器功能需要本机有 agent-browser（支持区间 0.38.x）。点「检查安装」跑一次。'
-    : `${probe.command}${probe.version === undefined ? '' : ` · ${probe.version}`}${probe.native ? ' · 原生二进制' : ' · Node 包装层'} · 检查于 ${timeOf(probe.checkedAt)}`
+      ? '还没有检查过浏览器环境'
+      : mismatched
+        ? '安装自检需要重启 DSH'
+        : String(probe.title ?? (ok ? '浏览器环境就绪' : '浏览器环境不完整'))
 
   return (
     <section className="ab-summary" data-tone={tone}>
-      <div className="ab-summaryRow">
+      <div className="ab-summaryHead">
         <span className="ab-dot" data-dot={tone} />
-        <div className="ab-summaryText">
-          <div className="ab-summaryTitle">{title}</div>
-          <div className="ab-summarySub">{subtitle}</div>
+        <div className="ab-summaryTitle">{title}</div>
+        <div className="ab-summaryAction">
+          <button
+            type="button"
+            className="ab-button"
+            data-variant="primary"
+            disabled={probing}
+            onClick={onCheck}
+          >
+            {probing ? '检查中…' : '检查安装'}
+          </button>
         </div>
-        <Button
-          primitives={primitives}
-          label={probing ? '检查中…' : '检查安装'}
-          disabled={probing}
-          onClick={onCheck}
-        />
       </div>
 
-      {issues.length > 0 ? (
-        <ul className="ab-checks">
-          {issues.map((check) => (
-            <li className="ab-check" key={check.id} data-status={check.status}>
-              <span className="ab-checkMessage">{check.message}</span>
-              {check.fix === undefined ? null : <span className="ab-checkFix">修法：{check.fix}</span>}
-            </li>
-          ))}
-        </ul>
+      {mismatched ? (
+        <p className="ab-note">客户端半已是新版本，但 host 半还是旧代码（Node 模块只在启动时加载）。重启 DSH 后自检即可正常显示。</p>
       ) : null}
 
-      {rest.length === 0 ? null : (
-        <details className="ab-details">
-          <summary>全部检查（{checks.length}）</summary>
-          <ul className="ab-checks">
-            {rest.map((check) => (
-              <li className="ab-check" key={check.id} data-status={check.status}>
-                <span className="ab-checkMessage">{check.message}</span>
-                {check.fix === undefined ? null : <span className="ab-checkFix">修法：{check.fix}</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      {!mismatched && checks.length === 0 && probe !== null ? <p className="ab-note">自检没有返回任何检查项。</p> : null}
 
+      {(mismatched ? [] : checks).map((check) => (
+        <div className="ab-check" key={String(check.id)} data-status={check.status}>
+          <div className="ab-checkHead">
+            <span className="ab-checkMark" aria-hidden="true">{check.status === 'pass' ? '✓' : '✗'}</span>
+            <span className="ab-checkLabel">{String(check.label ?? check.id)}</span>
+            <span className="ab-checkMessage">{String(check.message ?? '')}</span>
+            {check.status === 'fail' && check.installable === true ? (
+              <span className="ab-checkAction">
+                <button
+                  type="button"
+                  className="ab-button"
+                  data-variant="primary"
+                  disabled={installing}
+                  onClick={() => onInstall('cli')}
+                >
+                  {installing ? '安装中…' : '安装'}
+                </button>
+              </span>
+            ) : null}
+          </div>
+          {check.status === 'fail' && check.fix !== undefined ? (
+            <div className="ab-checkFix">修法：{check.fix}</div>
+          ) : null}
+        </div>
+      ))}
+
+      {note === '' ? null : <p className="ab-note">{note}</p>}
       {error === '' ? null : <p className="ab-error" role="alert">{error}</p>}
     </section>
   )
 }
 
-function timeOf(iso) {
-  const date = new Date(String(iso ?? ''))
-  return Number.isNaN(date.getTime()) ? '刚刚' : date.toLocaleTimeString()
-}
+/* ─────────────────────────── 行与控件 ─────────────────────────── */
 
-function Row({ title, subtitle, control, disabled }) {
+function Row({ title, subtitle, control }) {
   return (
-    <div className="ab-row" data-disabled={disabled === true}>
+    <div className="ab-row">
       <div className="ab-rowText">
         <div className="ab-rowTitle">{title}</div>
         <div className="ab-rowSubtitle">{subtitle}</div>
       </div>
       <div className="ab-rowControl">{control}</div>
-    </div>
-  )
-}
-
-/** 进阶项：标题 + 子标题在左，输入框在右（与开关行同一条基线）。 */
-function Field({ title, subtitle, control }) {
-  return (
-    <div className="ab-row ab-rowField">
-      <div className="ab-rowText">
-        <div className="ab-rowTitle">{title}</div>
-        <div className="ab-rowSubtitle">{subtitle}</div>
-      </div>
-      <div className="ab-rowControl ab-rowControlWide">{control}</div>
     </div>
   )
 }
@@ -464,14 +469,6 @@ function Switch({ primitives, label, checked, disabled, onChange }) {
       onChange={(event) => onChange(event.target.checked)}
     />
   )
-}
-
-/** 官方 primitives 的 Button；拿不到就退回原生 button。 */
-function Button({ primitives, label, disabled, onClick }) {
-  if (primitives?.Button !== undefined) {
-    return <primitives.Button disabled={disabled} onClick={onClick}>{label}</primitives.Button>
-  }
-  return <button type="button" className="ab-button" disabled={disabled} onClick={onClick}>{label}</button>
 }
 
 /** 受控文本输入：本地草稿，失焦或回车时提交（避免每敲一个字写一次宿主文档）。 */

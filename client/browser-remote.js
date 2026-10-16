@@ -48,8 +48,10 @@ export function browserContribution() {
   return {
     package: PACKAGE,
     descriptors: [
-      // host: probe(deep) —— 安装自检；`deep` 决定要不要再跑 CLI 的 doctor
-      descriptor('probe', ['deep']),
+      // host: probe() —— 安装自检：**零实参**，客户端一个都不能多传
+      descriptor('probe', []),
+      // host: install(target) —— 帮忙装 CLI（'cli'）；wire 名必须等于形参名
+      descriptor('installCli', ['target']),
     ],
   }
 }

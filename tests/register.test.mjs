@@ -119,25 +119,48 @@ test('ctx.skills 不在：跳过并继续（可选服务，绝不拖垮插件）
 
 /* ─────────────────────────── 安装自检 ─────────────────────────── */
 
-test('自检：可执行文件不存在 → 红，且给出可执行的修法', async () => {
-  const ctx = await boot({ browser: { executablePath: '/nonexistent/agent-browser' } })
-  const result = await ctx.get('browser').probe(false)
-  assert.equal(result.status, 'error')
-  const check = result.checks.find((entry) => entry.id === 'cli.version')
-  assert.equal(check?.status, 'fail')
-  assert.match(result.summary, /不可用/)
+test('自检：**就两项**（cli / chrome），且不含路径这类噪音', async () => {
+  const ctx = await boot()
+  const result = await ctx.get('browser').probe()
+  assert.deepEqual(result.checks.map((entry) => entry.id), ['cli', 'chrome'])
+  assert.equal(typeof result.ok, 'boolean')
+  assert.equal(result.title, result.ok ? '浏览器环境就绪' : '浏览器环境不完整')
+  for (const check of result.checks) {
+    assert.equal(typeof check.label, 'string')
+    assert.ok(!check.message.includes('/'), `消息里不该出现路径：${check.message}`)
+  }
 })
 
-test('自检：装好时是绿，且说明用的是原生二进制还是 Node 包装层', async (t) => {
+test('自检：可执行文件跑不起来 → cli 项红，并给出修法', async () => {
+  const ctx = await boot({ browser: { executablePath: '/nonexistent/agent-browser' } })
+  const result = await ctx.get('browser').probe()
+  assert.equal(result.ok, false)
+  assert.equal(result.title, '浏览器环境不完整')
+  const cli = result.checks.find((entry) => entry.id === 'cli')
+  assert.equal(cli?.status, 'fail')
+  assert.equal(typeof cli?.fix, 'string')
+})
+
+test('自检：装好时两项都过（本机没有 Chrome 才跳过）', async (t) => {
   const ctx = await boot()
-  const result = await ctx.get('browser').probe(false)
-  if (result.status === 'error') {
-    t.skip(`本机没有可用的 agent-browser：${result.summary}`)
+  const result = await ctx.get('browser').probe()
+  const cli = result.checks.find((entry) => entry.id === 'cli')
+  if (cli?.status !== 'pass') {
+    t.skip(`本机没有可用的 agent-browser：${cli?.message ?? ''}`)
     return
   }
-  assert.equal(result.status, 'ok')
-  assert.ok(result.checks.some((entry) => entry.id === 'cli.version' && entry.status === 'pass'))
-  assert.ok(result.checks.some((entry) => entry.id === 'cli.native'))
-  assert.match(result.summary, /已就绪/)
-  assert.equal(typeof result.native, 'boolean')
+  assert.match(String(cli.message), /^已安装 \d+\.\d+\.\d+$/)
+  const chrome = result.checks.find((entry) => entry.id === 'chrome')
+  if (chrome?.status !== 'pass') {
+    t.skip(`本机没找到 Chrome：${chrome?.message ?? ''}`)
+    return
+  }
+  assert.equal(result.ok, true)
+})
+
+test('帮忙装：只装 CLI，Chrome 明确拒绝（装 Chrome 要管理员密码，不能挂后台等）', async () => {
+  const ctx = await boot()
+  const result = await ctx.get('browser').installCli('chrome')
+  assert.equal(result.ok, false)
+  assert.match(result.message, /Chrome/)
 })

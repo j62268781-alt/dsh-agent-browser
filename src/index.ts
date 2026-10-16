@@ -1,24 +1,27 @@
 /**
- * 入口：把 `agent-browser` CLI 接成一组**窄工具** + 一个**设置页**，并暴露一个自检 Remote。
+ * 入口：把 `agent-browser` CLI 接成一组**窄工具** + 一个**设置页**，并暴露自检 Remote。
  *
  * 形态是 cordis 的 **Service 类**（照 dsh-judgment）：默认导出类，`static Config` / `static inject`，
- * 并挂一个 `@Remote` 方法——设置页要能问宿主"装好没有、什么版本、走的哪个二进制"，而浏览器侧
- * 自己 spawn 不了进程，所以这条通路必须有。
+ * 并挂 `@Remote` 方法——设置页要能问宿主"本机有没有 CLI、有没有 Chrome"，而浏览器侧
+ * 自己 spawn 不了进程、也读不了文件系统，所以这条通路必须有。
  *
  * 注册范式照 `@deepseek-ai/dsh-tool-web`：按解析后的配置决定注册哪些工具——「浏览器功能」关掉时
  * **一个工具都不注册**（模型面前零成本），「决策」开启时多一个 `browser_run`。配置一改，loader
  * 重新应用 entry，工具随之增减。
  *
  * CLI 不可用（没装 / 版本越界）**不影响注册**：工具照常可见，调用时以结构化错误说明原因；
- * 设置页的 summary 也会把这件事说清楚（`probe()`）。
+ * 设置页的自检也会把这件事说清楚（`probe()`）。
  */
 
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Judge } from 'dsh-judgment/contract'
 import { AgentBrowser, CliError, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, isSupportedVersion } from './cli.js'
 import { Config, type AgentBrowserConfig } from './config.js'
+import { chromeCandidates, chromeFromDoctor, chromePathNames, installPlan, runCommand, whichOnPath } from './env.js'
 import { loadBundledSkill, pluginNote } from './skill.js'
 import { runTask } from './task.js'
 
@@ -40,25 +43,41 @@ const TARGETLESS_ACTIONS = new Set(['press', 'scroll', 'wait'])
 
 /* ─────────────────────────── 自检 ─────────────────────────── */
 
-export type CheckStatus = 'pass' | 'warn' | 'fail' | 'info'
-
+/**
+ * 自检就**两项**（用户口径）：本机有没有 agent-browser CLI、有没有 Chrome。
+ * 别的都不进面板——路径、包装层、doctor 的 ffmpeg/密钥/provider 那些噪音留在宿主日志里。
+ */
 export interface ProbeCheck {
-  readonly id: string
-  readonly status: CheckStatus
+  readonly id: 'cli' | 'chrome'
+  /** 行标题：`agent-browser` / `Chrome`。 */
+  readonly label: string
+  readonly status: 'pass' | 'fail'
+  /** 一句话结论，**不含路径**。 */
   readonly message: string
+  /** 失败时的修法（可执行命令或说明）。 */
   readonly fix?: string
+  /** 这一项能不能由插件帮忙装（只有 CLI 可以）。 */
+  readonly installable?: boolean
 }
 
+/** 自检载荷的版本。客户端半会热更新、host 半要重启，两侧错配时靠它说话。 */
+export const PROBE_API_VERSION = 1
+
 export interface ProbeResult {
-  /** 面板 summary 的三态：绿（可用）/ 黄（可用但有折扣）/ 红（不可用）。 */
-  readonly status: 'ok' | 'warn' | 'error'
-  readonly summary: string
-  readonly command: string
-  readonly commandDetail: string
-  readonly native: boolean
-  readonly version?: string
+  readonly apiVersion: number
+  /** 两项都过 = true。 */
+  readonly ok: boolean
+  /** summary 一句话：`浏览器环境就绪` / `浏览器环境不完整`。 */
+  readonly title: string
   readonly checks: readonly ProbeCheck[]
   readonly checkedAt: string
+}
+
+export interface InstallResult {
+  readonly ok: boolean
+  readonly message: string
+  /** 命令输出的尾部（诊断用，最多几行）。 */
+  readonly log?: string
 }
 
 export class AgentBrowserService extends TypertRemoteService {
@@ -121,110 +140,119 @@ export class AgentBrowserService extends TypertRemoteService {
     }
   }
 
-  /** 设置页问宿主：装好没有、什么版本、走的哪个二进制（可选深检 Chrome/守护进程）。 */
+  /**
+   * 设置页问宿主：**两项**——本机有没有 agent-browser CLI、有没有 Chrome。
+   * 路径之类的细节一律不返回（面板不显示）；`install()` 能帮忙装 CLI，但装不了 Chrome。
+   */
   @Remote
-  async probe(deep: boolean): Promise<ProbeResult> {
-    const checks: ProbeCheck[] = []
+  async probe(): Promise<ProbeResult> {
     const checkedAt = new Date().toISOString()
+    const cli = await this.checkCli()
+    const chrome = await this.checkChrome(cli.status === 'pass')
+    const checks: ProbeCheck[] = [cli, chrome]
+    const ok = checks.every((check) => check.status === 'pass')
+    return { apiVersion: PROBE_API_VERSION, ok, title: ok ? '浏览器环境就绪' : '浏览器环境不完整', checks, checkedAt }
+  }
 
-    if (this.browser.commandKind === 'name') {
-      checks.push({
-        id: 'cli.found',
-        status: 'fail',
-        message: this.browser.commandDetail,
-        fix: 'brew install agent-browser  或  npm i -g agent-browser（版本需在 ' + `[${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})` + '）',
-      })
-      return this.probeResult('error', '没找到 agent-browser：浏览器功能不可用', checks, checkedAt)
+  /**
+   * 帮忙装 agent-browser（**由用户点击触发**，不自动跑）。
+   *
+   * 只装 CLI：Chrome 不走这里——`brew install --cask google-chrome` 在 macOS 上要管理员密码，
+   * 一个后台进程挂着等密码是最糟的交互；面板对 Chrome 只给命令与下载入口。
+   */
+  @Remote
+  async installCli(target: string): Promise<InstallResult> {
+    if (target !== 'cli') {
+      return { ok: false, message: '只有 agent-browser 能由插件安装；Chrome 请手动安装（见下面的修法）' }
     }
-    checks.push({ id: 'cli.found', status: 'pass', message: `可执行文件：${this.browser.command}` })
+    const plan = installPlan(whichOnPath('brew'), whichOnPath('npm'))
+    if (plan === undefined) {
+      return { ok: false, message: '本机既没有 brew 也没有 npm：请自行安装 agent-browser（见下面的修法）' }
+    }
+    this.ctx.logger('agent-browser').info(`安装 agent-browser：${plan.label}`)
+    // 装东西可能要几分钟（下载 + 依赖）；超时给足，但仍然有上限。
+    const result = await runCommand(plan.command, plan.args, 15 * 60_000)
+    const log = [result.stdout, result.stderr].join('\n').trim().split('\n').slice(-8).join('\n')
+    if (result.timedOut) return { ok: false, message: `安装超时（${plan.label}）`, log }
+    if (result.code !== 0) return { ok: false, message: `安装失败（${plan.label}，退出码 ${String(result.code)}）`, log }
+    return { ok: true, message: `安装完成：${plan.label}`, log }
+  }
 
-    let version: string | undefined
+  /** CLI：装了没、版本在不在支持区间。 */
+  private async checkCli(): Promise<ProbeCheck> {
+    if (this.browser.commandKind === 'name') {
+      const plan = installPlan(whichOnPath('brew'), whichOnPath('npm'))
+      return {
+        id: 'cli',
+        label: 'agent-browser',
+        status: 'fail',
+        message: '本机没安装',
+        fix: plan?.label ?? 'brew install agent-browser  或  npm i -g agent-browser',
+        installable: plan !== undefined,
+      }
+    }
     try {
-      version = await this.browser.version()
+      const version = await this.browser.version()
       if (isSupportedVersion(version)) {
-        checks.push({ id: 'cli.version', status: 'pass', message: `版本 ${version}（支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})）` })
-      } else {
-        checks.push({
-          id: 'cli.version',
-          status: 'fail',
-          message: `版本 ${version} 不在支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})`,
-          fix: '本插件的 ref 陈旧性结论是在 0.38.2 上实测的：要么装回 0.38.x，要么重跑 DESIGN §1.1 的实验后放宽版本锁',
-        })
+        return { id: 'cli', label: 'agent-browser', status: 'pass', message: `已安装 ${version}` }
+      }
+      return {
+        id: 'cli',
+        label: 'agent-browser',
+        status: 'fail',
+        message: `版本 ${version} 不在支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})`,
+        fix: '装回 0.38.x，或重跑 DESIGN §1.1 的实验后放宽版本锁',
       }
     } catch (error) {
-      checks.push({ id: 'cli.version', status: 'fail', message: `跑不起来：${message(error)}` })
+      return {
+        id: 'cli',
+        label: 'agent-browser',
+        status: 'fail',
+        message: `跑不起来（${message(error)}）`,
+        fix: '重装：brew reinstall agent-browser',
+      }
     }
-
-    const native = !/\.(?:js|cjs|mjs)$/.test(this.browser.command)
-    if (native) {
-      checks.push({ id: 'cli.native', status: 'pass', message: '直接使用原生二进制（跳过 CLI 自带的 Node 包装层，省 ~54ms/次）' })
-    } else {
-      checks.push({
-        id: 'cli.native',
-        status: 'warn',
-        message: '当前是 CLI 的 Node 包装层：每次调用多付一份 Node 启动（实测 ~57ms vs ~3–5ms）',
-        fix: '同目录没有 agent-browser-<os>-<arch> 或已在配置里显式指定；可在「进阶」里清空 executablePath 让插件自动解析',
-      })
-    }
-
-    // 版本/路径都挂了就不必再跑深度检查（它会 spawn 更多进程）。
-    if (deep && checks.every((check) => check.status !== 'fail')) {
-      checks.push(...await this.doctorChecks())
-    }
-
-    const failed = checks.some((check) => check.status === 'fail')
-    const warned = checks.some((check) => check.status === 'warn')
-    const status = failed ? 'error' : warned ? 'warn' : 'ok'
-    const summary = failed
-      ? 'agent-browser 不可用：按下面的说明修好再用浏览器功能'
-      : warned
-        ? `agent-browser ${version ?? ''} 可用，但有折扣项（见下）`
-        : `agent-browser ${version ?? ''} 已就绪${native ? ' · 原生二进制' : ''} · 会话 ${this.session}`
-    return this.probeResult(status, summary.trim(), checks, checkedAt, version)
   }
 
-  /** 深度检查：直接读 CLI 自己的 `doctor --quick --json`，只留下与浏览器可用性有关的项。 */
-  private async doctorChecks(): Promise<ProbeCheck[]> {
-    let parsed: { checks?: { id?: string; status?: string; message?: string; fix?: string }[] }
-    try {
-      parsed = JSON.parse(await this.browser.run(['doctor', '--quick', '--json'], { timeoutMs: 60_000 })) as typeof parsed
-    } catch (error) {
-      return [{ id: 'doctor', status: 'warn', message: `深度检查没跑成：${message(error)}` }]
+  /**
+   * Chrome：**必须项**——没有它 agent-browser 驱动不了页面。
+   *
+   * CLI 可用时以它自己的 `doctor --quick --json` 为准（它认得环境变量、engine 与自定义路径）；
+   * 问不了 CLI 就退回文件系统/ PATH 探测，并在消息里说"没找到"而不是"没有"。
+   */
+  private async checkChrome(cliUsable: boolean): Promise<ProbeCheck> {
+    if (cliUsable) {
+      try {
+        const raw = await this.browser.run(['doctor', '--quick', '--json'], { timeoutMs: 60_000 })
+        const chrome = chromeFromDoctor(JSON.parse(raw))
+        if (chrome !== undefined) {
+          return chrome.installed
+            ? { id: 'chrome', label: 'Chrome', status: 'pass', message: `已就绪（${chrome.label}）` }
+            : {
+              id: 'chrome',
+              label: 'Chrome',
+              status: 'fail',
+              message: '没找到 Chrome',
+              fix: '装 Chrome：https://www.google.com/chrome/（或 brew install --cask google-chrome）',
+            }
+        }
+      } catch (error) {
+        this.ctx.logger('agent-browser').warn(`doctor 没跑成，改用文件系统探测 Chrome：${message(error)}`)
+      }
     }
-    // 只留与"浏览器能不能用"有关的项：CLI 版本、Chrome、守护进程，加上任何 fail。
-    // doctor 还会报 ffmpeg / 加密密钥 / 云 provider 之类——那些与我们无关，不进 summary。
-    const RELEVANT = /^(?:env\.version|chrome\.installed|daemon\.)/
-    const relevant = (parsed.checks ?? []).filter((entry) => entry.id !== undefined && RELEVANT.test(entry.id))
-    const failures = (parsed.checks ?? []).filter((entry) => entry.status === 'fail')
 
-    const mapped: ProbeCheck[] = [...relevant, ...failures].map((entry) => ({
-      id: `doctor.${String(entry.id)}`,
-      status: entry.status === 'pass' ? 'pass' : entry.status === 'warn' ? 'warn' : entry.status === 'fail' ? 'fail' : 'info',
-      message: String(entry.message ?? ''),
-      ...(entry.fix === undefined ? {} : { fix: entry.fix }),
-    }))
-    // 去重（failures 可能已经在 relevant 里）。
-    const seen = new Set<string>()
-    return mapped.filter((check) => (seen.has(check.id) ? false : (seen.add(check.id), true)))
-  }
-
-  private probeResult(
-    status: ProbeResult['status'],
-    summary: string,
-    checks: readonly ProbeCheck[],
-    checkedAt: string,
-    version?: string,
-  ): ProbeResult {
-    return {
-      status,
-      summary,
-      command: this.browser.command,
-      commandDetail: this.browser.commandDetail,
-      native: !/\.(?:js|cjs|mjs)$/.test(this.browser.command),
-      ...(version === undefined ? {} : { version }),
-      checks,
-      checkedAt,
-    }
+    const candidates = chromeCandidates(process.platform, homedir())
+    const found = candidates.find((candidate) => existsSync(candidate))
+      ?? chromePathNames(process.platform).map(whichOnPath).find((hit) => hit !== undefined)
+    return found === undefined
+      ? {
+        id: 'chrome',
+        label: 'Chrome',
+        status: 'fail',
+        message: '没找到 Chrome',
+        fix: '装 Chrome：https://www.google.com/chrome/（或 brew install --cask google-chrome）',
+      }
+      : { id: 'chrome', label: 'Chrome', status: 'pass', message: '已就绪' }
   }
 
   /* ─────────────────────────── skill ─────────────────────────── */
