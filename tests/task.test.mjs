@@ -314,3 +314,25 @@ test('pickAlternate 按概率降序、排除已试过与不允许的', () => {
   assert.equal(pickAlternate(probabilities, new Set(), new Set(['c'])), 'c', '只能从允许集里选')
   assert.equal(pickAlternate(undefined, new Set(), new Set(['a'])), undefined)
 })
+
+test('连续 stale_state（页面一直在动）→ 熔断成 no_progress，而不是把步数烧光', async () => {
+  // 每次取快照 digest 都变：决策后必然"页面已变"（真机：点链接触发同页导航）
+  let snapshots = 0
+  const browser = {
+    snapshot: async () => ({
+      origin: 'https://a.test/',
+      digest: `digest-${++snapshots}`,
+      snapshot: 'button "继续" @e1',
+      refs: { e1: { role: 'button', name: '继续' } },
+    }),
+    read: async () => '页面正文',
+    get: async () => '标题',
+    act: async () => {},
+    run: async () => {},
+  }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confirmProbability: 0.1 }])
+  const result = await runTask('目标', deps(browser, judge, { maxSteps: 10 }))
+  assert.equal(result.status, 'no_progress')
+  assert.match(result.trace.join('\n'), /连续 3 次/)
+  assert.ok(result.steps.length <= 4, `不该烧完 10 步，实际 ${result.steps.length} 步`)
+})

@@ -2,3 +2,5 @@ node_modules/
 lib/
 *.log
 .DS_Store
+# 真机测试用的临时 DSH home（含凭据副本，绝不入库）
+.live-dsh/

@@ -458,6 +458,41 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
 另外补了两条稳健性：结束前（budget/no_progress）再确认一次——确认通过就报 `needs_verification`
 而不是让调用方看到一个"失败"去重跑；超重页面取快照超时时降深度重试一次。
 
+### 4.5.2c 真机测试（真的 `dsh` 进程跑一个 agent 回合）
+
+`pnpm e2e` / `pnpm try` 是**旁路**：脚本自己起 cordis + 插件服务，绕过了 DSH 的插件装载。
+真机测试要的是"真的 `dsh` 进程 + 真的插件装载 + agent 自己调用工具"——用 `pnpm live`：
+
+```sh
+pnpm live                      # 准备环境并打印命令
+pnpm live --run "用 browser_run 打开 https://jevusers.com/ 并报告最终 URL"
+```
+
+它在一个**可丢弃的 `$DSH_HOME`（`.live-dsh/`，已 gitignore）**里：
+用 `--from-default-profile headless` 生成一次性 agent profile → 以 `link:` 装本插件与
+dsh-judgment → 抄 desktop 的 `judgment/provider`/`agent-browser`/模型路由配置 →
+重开 headless 默认关闭的交互式凭据存储并复制 `.credentials.yaml`（**不打印**）。
+`browser.headed` 从 profile 配置读，所以有头模式下真机测试会**弹出浏览器窗口**。
+
+真机第一轮就抓到三个只有真实装载顺序才会暴露的 bug：
+
+1. **`browser_run` 在注册时判定依赖** → 插件比 dsh-judgment 先 apply 时 `ctx.judgment` 还没有，
+   于是整个工具**没注册**，模型说"没有 browser_run"。改：注册时**不判依赖**，调用时现取，
+   缺失就给明确错误（`judge-unavailable`）。
+2. **「决策」显示"已就绪"但用途没配**：`ctx.judgment` 在、`purposes: {}` 空着 → 一开就
+   `judge_error`。改：可用性 = 服务在 **且** `status().purposes` 里该用途 `usable`；
+   面板与 `checkJudgment()` 都据此判定，并直接提示"去「设置 → 决策」配一条连接"。
+3. **`stale_state` 空转**：点会触发同页导航的链接时，每一步都"决策 → 页面已变 → 丢弃"，
+   十几步全烧在这里。改：连续 3 次 `stale_state` 熔断（先做结束前确认，再报 `no_progress`）。
+
+真机结果（有头模式，agent 自己调用 `browser_run`）：
+
+```
+最终 URL  https://jevusers.com/p/wy-coliney-jev-browser-use
+status    needs_verification（goal_done=0.95，独立确认=0.93）
+steps     2（第 1 步 65 个候选分布不合法 → 缩到 24 重采一次）
+```
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，

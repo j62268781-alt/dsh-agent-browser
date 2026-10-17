@@ -199,6 +199,7 @@ scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
 > 重复且无效的动作从**概率分布**里换次优候选；两次无效即停；状态超 12k 截断并显式标注；
 > 结束时只给 `needs_verification` + `next`（"怎么验"），从不宣布完成。
 > 真机端到端：`pnpm e2e`（真 Chrome + 真 Jev，两步点击后被独立确认为 SUCCESS）；
+> 真机测试（真的 `dsh` 进程 + agent 自己调工具）：`pnpm live --run "<任务>"`；
 > 真实网站手试：`pnpm try --url <url> --goal "<目标>" [--expect <正则>]`
 > （实测 jevusers.com → Browser → jev-browser-use，2 步完成，见 `docs/try-jevusers.png`）。
 

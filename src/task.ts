@@ -281,6 +281,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   const stalled = new Map<string, number>()
   /** 当前语义状态下已经试过的动作：作为"次优候选"的排除集，避免来回打转。 */
   let attempted = new Set<string>()
+  /**
+   * 连续被 `stale_state` 丢弃的次数。真机踩过：目标页上的链接会触发**同页导航**
+   * （页面重载、digest 变了），于是每一步都"决策 → 页面已变 → 丢弃"，十几步全烧在这里。
+   * 连续 3 次说明页面一直在动而判断跟不上：停，交回宿主（比烧完预算再报 budget 更有信息量）。
+   */
+  let staleStreak = 0
 
   for (let step = 1; step <= deps.maxSteps; step += 1) {
     if (deps.signal.aborted) return finish('budget', 'cancelled', last)
@@ -469,11 +475,21 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 7) 新鲜度：执行前再取一次树。变了 → 丢弃这次决策（判断看的是旧树）。
     const fresh = await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal })
     if (fresh.digest !== snapshot.digest) {
-      trace.push(`第 ${step} 步：决策后页面已变（stale_state）→ 丢弃这次动作，重新观察`)
+      staleStreak += 1
+      trace.push(`第 ${step} 步：决策后页面已变（stale_state，连续 ${staleStreak} 次）→ 丢弃这次动作，重新观察`)
       steps.push({ step, origin: fresh.origin, digest: fresh.digest, action: chosen.id, executed: false, reason: 'stale_state', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }), ...(confidence === undefined ? {} : { confidence }) })
       last = fresh
+      if (staleStreak >= 3) {
+        const confirmed = await confirmGoal(judge, deps, fresh, goal, usage, trace)
+        if (confirmed.confirmed) {
+          trace.push(`页面一直在变，但结束前独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
+          return finish('needs_verification', `连续 ${staleStreak} 次页面变动；确认 p=${confirmed.probability.toFixed(2)}`, fresh)
+        }
+        return finish('no_progress', `连续 ${staleStreak} 次"决策后页面已变"：页面一直在动，判断跟不上`, fresh)
+      }
       continue
     }
+    staleStreak = 0
 
     // 8) 执行**一个**动作。
     try {

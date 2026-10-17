@@ -27,10 +27,19 @@ class FakeTools extends Service {
   }
 }
 
-/** dsh-judgment 提供的 `ctx.judgment` 替身：只证明"依赖在不在"这两条路径。 */
+/**
+ * dsh-judgment 提供的 `ctx.judgment` 替身。
+ * 带 `status` 时可模拟"用途是否可用"（真机踩过：服务在、用途没配 → 面板却显示就绪）。
+ */
 class FakeJudgment extends Service {
-  constructor(ctx) {
+  constructor(ctx, status) {
     super(ctx, 'judgment')
+    this.statusValue = status
+  }
+
+  status() {
+    if (this.statusValue === undefined) throw new Error('status 未实现')
+    return this.statusValue
   }
 }
 
@@ -50,11 +59,11 @@ class FakeSkills extends Service {
   }
 }
 
-async function boot(config = {}, { skills = false, judgment = false } = {}) {
+async function boot(config = {}, { skills = false, judgment = false, judgmentStatus } = {}) {
   const ctx = new Context()
   await ctx.plugin(FakeTools)
   if (skills) await ctx.plugin(FakeSkills)
-  if (judgment) await ctx.plugin(FakeJudgment)
+  if (judgment) await ctx.plugin(FakeJudgment, judgmentStatus)
   // 传**原始配置**（不是 `Config(config)`）：cordis 会解析一次并包成 Volatile；
   // 传已解析的值会被二次解析成非法形状（volatile 字段包着 get/write）。
   await ctx.plugin(AgentBrowserService, config)
@@ -84,9 +93,14 @@ test('开「决策」且依赖在：多一个 browser_run', async () => {
   assert.ok(names(ctx).includes('browser_run'))
 })
 
-test('开「决策」但 dsh-judgment 不在：**不注册** browser_run（注册一个必然报错的工具没有意义）', async () => {
+test('开「决策」但 dsh-judgment 不在：工具**仍然注册**（插件可能先于 dsh-judgment apply），调用时给明确错误', async () => {
   const ctx = await boot({ tools: { decision: true } })
-  assert.ok(!names(ctx).includes('browser_run'))
+  assert.ok(names(ctx).includes('browser_run'), '注册时不判定依赖——否则真机上插件先 apply 就会整个漏掉这个工具')
+  const tool = ctx.get('tools').registered.find((definition) => definition.name === 'browser_run')
+  await assert.rejects(
+    () => tool.execute({ goal: '测试' }, { signal: new AbortController().signal }),
+    /dsh-judgment/,
+  )
 })
 
 test('逃生舱默认关；打开才注册 browser_raw', async () => {
@@ -226,4 +240,34 @@ test('volatile 热更新：把 allowedDomains 与 profile 同时打开 → 拒�
   const before = [...service.sessionInfo().globalArgs]
   await patchVolatile(ctx, { browser: { allowedDomains: ['a.com'], profile: 'work' } })
   assert.deepEqual([...service.sessionInfo().globalArgs], before)
+})
+
+/* ───────────────── 「决策」是否真的可用（服务 + 用途） ───────────────── */
+
+test('决策可用性：ctx.judgment 不在 → 不可用（理由说清要装什么）', async () => {
+  const ctx = await boot()
+  const check = await ctx.get('browser').checkJudgment()
+  assert.equal(check.available, false)
+  assert.match(check.reason, /dsh-judgment/)
+})
+
+test('决策可用性：服务在但**用途不可用** → 仍不可用（真机：purposes 为空却显示就绪）', async () => {
+  const ctx = await boot({}, {
+    judgment: true,
+    judgmentStatus: { purposes: [{ purpose: 'browser.action', usable: false }] },
+  })
+  const check = await ctx.get('browser').checkJudgment()
+  assert.equal(check.available, false)
+  assert.match(check.reason, /browser\.action/)
+  assert.match(check.reason, /设置 → 决策/)
+})
+
+test('决策可用性：服务在且用途可用 → 可用，并说出用途连到哪条连接', async () => {
+  const ctx = await boot({}, {
+    judgment: true,
+    judgmentStatus: { purposes: [{ purpose: 'browser.action', connection: 'typesafe', usable: true }] },
+  })
+  const check = await ctx.get('browser').checkJudgment()
+  assert.equal(check.available, true)
+  assert.match(check.reason, /typesafe/)
 })

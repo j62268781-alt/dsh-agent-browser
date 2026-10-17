@@ -19,6 +19,8 @@ import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createLiveJudge } from './live-judge.mjs'
+import { globalArgsOf } from '../lib/index.js'
+import { readAgentBrowserConfig } from './profile-config.mjs'
 import { AgentBrowser } from '../lib/cli.js'
 import { runTask } from '../lib/task.js'
 
@@ -87,11 +89,14 @@ try {
 
 /* ───────────────────── 3) 真浏览器 + 真决策循环 ───────────────────── */
 
+// **跟着 profile 里的插件配置走**（有头/无头、白名单、idleTimeout…），与插件同一套 globalArgs。
+const config = readAgentBrowserConfig()
 const browser = new AgentBrowser({
-  command: '',
-  globalArgs: ['--session', SESSION, '--content-boundaries'],
-  timeoutMs: 30_000,
+  command: config.browser.executablePath ?? '',
+  globalArgs: globalArgsOf(config, SESSION),
+  timeoutMs: Math.max(Number(config.limits.commandTimeoutMs) || 30_000, 60_000),
 })
+console.log(`配置来源：${config.source} · 有头模式：${globalArgsOf(config, SESSION).includes('--headed') ? '开' : '关'}`)
 
 let exitCode = 0
 try {

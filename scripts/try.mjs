@@ -22,8 +22,10 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AgentBrowser } from '../lib/cli.js'
+import { globalArgsOf } from '../lib/index.js'
 import { runTask } from '../lib/task.js'
 import { createLiveJudge } from './live-judge.mjs'
+import { readAgentBrowserConfig } from './profile-config.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..')
@@ -52,11 +54,20 @@ const { judge, describe } = await createLiveJudge()
 console.log(`judge：${describe}`)
 console.log(`goal ：${args.goal}`)
 
-const globalArgs = ['--session', 'dsh-ab-try', '--content-boundaries']
-if (args.headed) globalArgs.push('--headed')
+// **按 profile 里的插件配置**组装全局参数（与插件同一个 `globalArgsOf`）：
+// 这样用户在设置页打开的 `browser.headed`（有头模式）、白名单、idleTimeout 都会生效。
+const config = readAgentBrowserConfig()
+const globalArgs = globalArgsOf(config, 'dsh-ab-try')
+if (args.headed === true && !globalArgs.includes('--headed')) globalArgs.push('--headed')
+console.log(`配置来源：${config.source}`)
+console.log(`有头模式：${globalArgs.includes('--headed') ? '开（会弹出浏览器窗口）' : '关（无头）'} · idleTimeout=${config.browser.idleTimeout || '默认'}`)
 // 手试的是**真实站点**：慢站（首次 TTFB 5s+）要更宽的预算，CLI 自己的动作超时也放宽。
 process.env.AGENT_BROWSER_DEFAULT_TIMEOUT ??= '45000'
-const browser = new AgentBrowser({ command: '', globalArgs, timeoutMs: 60_000 })
+const browser = new AgentBrowser({
+  command: config.browser.executablePath ?? '',
+  globalArgs,
+  timeoutMs: Math.max(Number(config.limits.commandTimeoutMs) || 30_000, 60_000),
+})
 
 const failures = []
 try {
@@ -72,10 +83,10 @@ try {
   const result = await runTask(args.goal, {
     browser,
     judge,
-    purpose: 'browser.action',
-    maxSteps: args.maxSteps,
-    goalThreshold: 0.85,
-    stuckThreshold: 0.85,
+    purpose: config.judgment.purpose,
+    maxSteps: args.maxSteps ?? Number(config.limits.maxSteps) ?? 12,
+    goalThreshold: Number(config.limits.goalThreshold) || 0.85,
+    stuckThreshold: Number(config.limits.stuckThreshold) || 0.85,
     signal: new AbortController().signal,
   }).catch((error) => {
     runError = error

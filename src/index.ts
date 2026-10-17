@@ -122,15 +122,45 @@ export class AgentBrowserService extends TypertRemoteService {
   }
 
   /**
-   * `ctx.judgment`（dsh-judgment）在不在。它是**可选**服务（契约 §13.3），
-   * 缺失不是错误，但「决策」开关没有它就没有意义——所以设置页要先问这一句。
+   * 「决策」**真的**可用吗：`ctx.judgment` 在 **且** 本插件用的用途可用。
+   *
+   * 真机踩到的：dsh-judgment 装好了、`ctx.judgment` 也在，但 profile 里
+   * `purposes: {}`（没给 `browser.action` 配连接）——面板显示"已就绪"，一开就 judge_error。
+   * `status()` 是**零 I/O** 的本地状态（契约 §13.3），正好用来在开启前问清楚。
    */
-  private judgmentAvailable(): boolean {
+  private judgmentAvailability(): { available: boolean; reason: string } {
+    let judge: Judge | undefined
     try {
-      return this.ctx.get('judgment') !== undefined
+      judge = this.ctx.get('judgment') as Judge | undefined
     } catch {
-      return false
+      judge = undefined
     }
+    if (judge === undefined) {
+      return {
+        available: false,
+        reason: '需要 dsh-judgment 提供的 ctx.judgment：装上它并重启 DSH 后再开启「决策」',
+      }
+    }
+    const purpose = this.config.judgment.get().purpose
+    try {
+      const status = judge.status()
+      const entry = status.purposes.find((item) => item.purpose === purpose)
+      if (entry === undefined || entry.usable !== true) {
+        return {
+          available: false,
+          reason:
+            `用途 "${purpose}" 还没有可用的连接：去「设置 → 决策」给它连一条可用的 Jev 连接，再回来开启「决策」`,
+        }
+      }
+      return { available: true, reason: `dsh-judgment 已就绪（用途 ${purpose} → ${entry.connection ?? '默认连接'}）` }
+    } catch (error) {
+      return { available: false, reason: `读取 ctx.judgment 状态失败：${message(error)}` }
+    }
+  }
+
+  /** 「决策」可用的布尔版（probe 载荷用）。 */
+  private judgmentAvailable(): boolean {
+    return this.judgmentAvailability().available
   }
 
   /** 把 volatile 包装拆成普通值：**每次现取**，拿到的一定是最新的一份。 */
@@ -245,13 +275,7 @@ export class AgentBrowserService extends TypertRemoteService {
    */
   @Remote
   async checkJudgment(): Promise<JudgmentCheck> {
-    const available = this.judgmentAvailable()
-    return {
-      available,
-      reason: available
-        ? 'dsh-judgment 已就绪（ctx.judgment）'
-        : '需要 dsh-judgment 提供的 ctx.judgment：装上它并重启 DSH 后再开启「决策」',
-    }
+    return this.judgmentAvailability()
   }
 
   /**
@@ -573,15 +597,15 @@ export class AgentBrowserService extends TypertRemoteService {
 
     if (config.tools.decision) {
       const log = ctx.logger('agent-browser')
-      const judge = readJudge(ctx, log)
-      if (judge === undefined) {
-        // 依赖不在就**不注册**：注册一个必然报错的工具只会浪费模型一次调用。
-        // 正常情况下面板根本不允许开启（四态判定 + 开启前现问宿主），这里是配置被手改时的兜底。
+      // ⚠️ **不在注册时判定依赖**：插件可能比 dsh-judgment 先 apply，那一刻 `ctx.judgment`
+      // 还没挂上；真机（headless profile）就踩到了——工具整个没注册，模型说"没有 browser_run"。
+      // 所以始终注册，**调用时**再取 judge；依赖真的不在就给一条明确的错误。
+      if (readJudge(ctx, log) === undefined) {
         log.warn(
-          '决策已开启，但 ctx.get("judgment") 不可用（dsh-judgment 未安装/未激活）：这次不注册 browser_run。' +
-          '装上 dsh-judgment 并重启 DSH 后自动生效；也可以在「设置 → 浏览器」里关掉决策。',
+          '决策已开启，但 ctx.get("judgment") 此刻不可用（dsh-judgment 未安装/未激活）：' +
+          'browser_run 仍会注册，调用时会明确报错。装上 dsh-judgment 并重启 DSH 后自动生效。',
         )
-      } else {
+      }
       this.registrations.push(ctx.tools.register(defineTool({
         name: 'browser_run',
         description:
@@ -594,7 +618,15 @@ export class AgentBrowserService extends TypertRemoteService {
         },
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
         async execute(args, exec) {
-          await ensureVersion(exec)
+          // 依赖检查放在最前：不依赖 CLI，也让"缺依赖"这条错误最快暴露。
+          const judge = readJudge(ctx, log)
+          if (judge === undefined) {
+            throw new CliError(
+              'judge-unavailable',
+              'browser_run 需要 dsh-judgment 提供的 ctx.judgment（当前不可用）：' +
+              '装上 dsh-judgment 并重启 DSH，或在「设置 → 浏览器」里关掉决策。',
+            )
+          }
           const result = await runTask(args.goal, {
             browser,
             judge,
@@ -607,7 +639,6 @@ export class AgentBrowserService extends TypertRemoteService {
           return JSON.stringify(result, null, 2)
         },
       })))
-      }
     }
 
     const log = ctx.logger('agent-browser')
@@ -622,7 +653,8 @@ export default AgentBrowserService
 
 /* ─────────────────────────── 装配辅助 ─────────────────────────── */
 
-function globalArgsOf(config: ResolvedConfig, session: string): string[] {
+/** 全局参数（`--session` / `--headed` / 白名单…）。**导出供真网脚本复用**，避免两套逻辑漂移。 */
+export function globalArgsOf(config: ResolvedConfig, session: string): string[] {
   const args: string[] = ['--session', session]
   if (config.browser.headed) args.push('--headed')
   if (config.browser.allowedDomains.length > 0) args.push('--allowed-domains', config.browser.allowedDomains.join(','))
