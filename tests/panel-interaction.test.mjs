@@ -204,3 +204,69 @@ test('宿主静默拒绝（set resolve false）时必须报错，不能假装成
 
 // 保证 react-dom/server 的 import 不被 tree-shake 警告打扰（渲染测试在另一个文件）。
 void renderToStaticMarkup
+
+/**
+ * 「决策」开关的依赖检查：`dsh-judgment` 提供的 `ctx.judgment` 不在时，
+ * 宿主把 `probe.judgment=false` 带下来，面板必须**先检查再允许开启**（置灰 + 说清原因），
+ * 而不是让用户开了再去撞 `judge_error`。
+ */
+/** 面板拿的是 **Remote 信封**（`{ ok, value }`），不是裸载荷。 */
+const probeWith = (judgment) => ({
+  probe: async () => ({
+    ok: true,
+    value: {
+      apiVersion: 2,
+      ok: true,
+      title: '浏览器环境就绪',
+      checkedAt: new Date().toISOString(),
+      judgment,
+      checks: [
+        { id: 'cli', label: 'agent-browser', status: 'pass', message: '已安装 0.38.2' },
+        { id: 'chrome', label: 'Chrome', status: 'pass', message: '已就绪' },
+      ],
+    },
+  }),
+})
+
+test('决策：依赖缺失时开关置灰，并说清"需要 dsh-judgment"', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const view = await mount(Panel, {
+    form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined, browser: probeWith(false),
+  })
+  try {
+    const decision = view.document.querySelector('input[aria-label="决策"]')
+    assert.ok(decision, '找不到决策开关')
+    assert.equal(decision.disabled, true, '依赖不在时必须置灰')
+    const text = view.document.body.textContent
+    assert.match(text, /dsh-judgment/)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('决策：依赖在时开关可点（置灰条件不能误伤）', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const view = await mount(Panel, {
+    form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined, browser: probeWith(true),
+  })
+  try {
+    const decision = view.document.querySelector('input[aria-label="决策"]')
+    assert.equal(decision.disabled, false)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('决策：配置里已开启但依赖缺失 → 明确报错（不是只有一个灰开关）', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const onConfig = { ...VALUE, tools: { ...VALUE.tools, decision: true } }
+  const view = await mount(Panel, {
+    form: fakeForm(onConfig), entryId: 'agent-browser', primitives: undefined, browser: probeWith(false),
+  })
+  try {
+    const alerts = [...view.document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
+    assert.ok(alerts.some((text) => /dsh-judgment/.test(text) && /browser_run/.test(text)), `现有 alert：${alerts.join(' | ')}`)
+  } finally {
+    await view.unmount()
+  }
+})

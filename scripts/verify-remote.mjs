@@ -70,7 +70,7 @@ const probeCall = await hostCtx.typertGateway.invokeRpc('browser/probe', { args:
 check('browser/probe 可按 @Remote 暴露并被调用', probeCall?.ok === true, JSON.stringify(probeCall)?.slice(0, 200))
 check('probe 恰好两项检查（cli / chrome）', Array.isArray(probeCall?.value?.checks) && probeCall.value.checks.length === 2 && probeCall.value.checks.map((c) => c.id).join(',') === 'cli,chrome', JSON.stringify(probeCall?.value)?.slice(0, 240))
 check('probe 返回值不含可执行文件路径', typeof probeCall?.value?.title === 'string' && probeCall?.value?.command === undefined)
-check('probe 带载荷版本号（两侧错配时客户端能说出来）', probeCall?.value?.apiVersion === 1)
+check('probe 带载荷版本号（两侧错配时客户端能说出来）', probeCall?.value?.apiVersion === 2)
 
 const unmarked = await hostCtx.typertGateway.invokeRpc('browser/sessionInfo', { args: {} }, undefined, undefined)
 check('未标 @Remote 的 sessionInfo 不会被暴露', unmarked?.ok === false, JSON.stringify(unmarked)?.slice(0, 160))
@@ -104,7 +104,7 @@ const connection = {
     open: undefined,
     call: async (mount, endpoint, payload) => {
       wires.push({ mount, endpoint, args: payload.args })
-      return { ok: true, value: { apiVersion: 1, ok: true, title: '浏览器环境就绪', checks: [], checkedAt: new Date().toISOString() } }
+      return { ok: true, value: { apiVersion: 2, ok: true, title: '浏览器环境就绪', checks: [], checkedAt: new Date().toISOString(), judgment: false } }
     },
   },
   start: () => ({ stop() {} }),

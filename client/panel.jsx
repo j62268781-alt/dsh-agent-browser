@@ -24,6 +24,13 @@ export function Panel(props) {
   const [busy, setBusy] = useState(false)
   /** 安装自检结果（宿主 `ctx.browser.probe()` 的返回值）。 */
   const [probe, setProbe] = useState(null)
+  /**
+   * 「决策」的依赖检查：`probe.judgment` 由 host 半告诉客户端（`ctx.judgment` 在不在）。
+   * `undefined`（自检还没回来 / host 半是旧码）→ 不拦；只有明确 false 才置灰。
+   */
+  const judgmentReady = probe === null || probe === undefined || probe.apiVersion !== PROBE_API_VERSION
+    ? undefined
+    : probe.judgment === true
   const [probing, setProbing] = useState(false)
   const [probeError, setProbeError] = useState('')
   /** 帮忙装 CLI 的进度与结果。 */
@@ -152,6 +159,12 @@ export function Panel(props) {
         onInstall={(target) => { void runInstall(target) }}
       />
 
+      {decision && judgmentReady === false ? (
+        <p className="ab-error" role="alert">
+          「决策」已开启，但 dsh-judgment 不可用：browser_run 不会注册。装上 dsh-judgment 并重启 DSH，或先在这里关掉决策。
+        </p>
+      ) : null}
+
       <section className="ab-section">
         <Row
           title="浏览器功能"
@@ -168,15 +181,18 @@ export function Panel(props) {
         />
         <Row
           title="决策"
-          subtitle={decision
-            ? `开启：多一个 browser_run，每步由 ctx.judgment 判断（用途名 ${String(judgment.purpose ?? 'browser.action')}）。`
-            : '开启后多一个 browser_run：插件内部跑有界循环，每步由 ctx.judgment 在代码枚举的候选里选一个动作。'}
+          subtitle={judgmentReady === false
+            ? '需要 dsh-judgment 提供的 ctx.judgment（当前未检测到）。装上它并重启 DSH 后再开启；现在开了 browser_run 也只会报错。'
+            : decision
+              ? `开启：多一个 browser_run，每步由 ctx.judgment 判断（用途名 ${String(judgment.purpose ?? 'browser.action')}）。`
+              : '开启后多一个 browser_run：插件内部跑有界循环，每步由 ctx.judgment 在代码枚举的候选里选一个动作。'}
           control={(
             <Switch
               primitives={props.primitives}
               label="决策"
+              // **先检查再允许开启**：依赖不在就置灰（而不是让用户开了再撞错）。
               checked={decision}
-              disabled={!enabled || busy || !writable}
+              disabled={!enabled || busy || !writable || judgmentReady === false}
               onChange={(next) => { void setGroup('tools', tools, 'decision', next) }}
             />
           )}
@@ -332,7 +348,7 @@ export function Panel(props) {
  * 不显示可执行文件路径之类的细节——那是宿主日志的事。
  */
 /** 与 host 半的 `PROBE_API_VERSION` 对齐：不一致就是 host 半还没重启。 */
-const PROBE_API_VERSION = 1
+const PROBE_API_VERSION = 2
 
 export function InstallSummary({ probe, probing, error, installing, note, onCheck, onInstall }) {
   // 客户端半会热更新、host 半要重启：两侧错配时给出**明确的下一步**，而不是画一张看不懂的卡片。

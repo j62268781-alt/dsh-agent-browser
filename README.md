@@ -185,7 +185,17 @@ scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
 > ⚠️ **新增/客户端改动的生效方式**（实测）：`dsh plugin add` 之后 app 会**热组合**新的 bundle
 > （无需重启：boot 数据里立刻有本插件，skill 目录里也出现了 `agent-browser`）。
 > 但 **host 半是 Node 模块，改完 `lib/index.js` 要重启 DSH** 才会换上新代码；客户端半重新构建即生效。
-> 配置项（开关、域名、超时）改了会**重新应用 entry**，不需要重启。
+> 配置项写的是 **volatile** 字段：**不会**重建 entry，工具注册由服务监听 `loader/volatile-update` 自己重做，
+> 所以改完即时生效、也不需要重启。
+
+> ⚠️ **兼容性**：DSH 的 boot 会把插件 `peerDependencies` 里 `@deepseek-ai/dsh-*` 的**版本范围**
+> 拿去和「dsh 运行时版本」比对，不满足就**整个跳过这个 bundle**（日志一行 `dsh: skipping profile bundle`）。
+> 所以这里用的是跨版本区间（`>=0.2.0-rc.2 <0.3.0`），**不要精确钉死**某个 dsh 版本。
+> 当前验证过的运行时：dsh 0.2.1-rc.1 / cordis 4.0.5 / schemastery 3.18.5 /
+> dsh-tools 0.2.1-rc.1 / dsh-typert-protocol 0.2.1-rc.1。
+
+> ⚠️ **「决策」依赖 dsh-judgment**：设置页会先检查 `ctx.judgment` 在不在（`probe()` 载荷带
+> `judgment` 字段）；缺失时开关**置灰**并说明原因，不会让你开了再去撞 `judge_error`。
 
 ## 许可
 

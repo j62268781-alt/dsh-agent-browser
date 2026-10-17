@@ -13,7 +13,8 @@
 import { createHash, createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-const AUTHORITY = process.env.DSH_AUTHORITY ?? '127.0.0.1:19387'
+// 端口会随 app 重启变化：默认值只是方便本地跑，真的端口用 DSH_AUTHORITY 覆盖。
+const AUTHORITY = process.env.DSH_AUTHORITY ?? '127.0.0.1:52316'
 const PACKAGE = 'dsh-agent-browser'
 
 /** boot 数据里必须出现的客户端产物；缺它就是没被 composer（或提供的是旧的一份）。 */

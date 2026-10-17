@@ -61,7 +61,7 @@ export interface ProbeCheck {
 }
 
 /** 自检载荷的版本。客户端半会热更新、host 半要重启，两侧错配时靠它说话。 */
-export const PROBE_API_VERSION = 1
+export const PROBE_API_VERSION = 2
 
 export interface ProbeResult {
   readonly apiVersion: number
@@ -71,6 +71,11 @@ export interface ProbeResult {
   readonly title: string
   readonly checks: readonly ProbeCheck[]
   readonly checkedAt: string
+  /**
+   * 「决策」这个开关的依赖在不在：`dsh-judgment` 提供的 `ctx.judgment`。
+   * 面板据此**先检查再允许开启**——没有它，`browser_run` 注册了也只会以 judge_error 失败。
+   */
+  readonly judgment: boolean
 }
 
 export interface InstallResult {
@@ -107,6 +112,18 @@ export class AgentBrowserService extends TypertRemoteService {
         this.log.warn(`配置热更新没有应用：${message(error)}`)
       }
     })
+  }
+
+  /**
+   * `ctx.judgment`（dsh-judgment）在不在。它是**可选**服务（契约 §13.3），
+   * 缺失不是错误，但「决策」开关没有它就没有意义——所以设置页要先问这一句。
+   */
+  private judgmentAvailable(): boolean {
+    try {
+      return this.ctx.get('judgment') !== undefined
+    } catch {
+      return false
+    }
   }
 
   /** 把 volatile 包装拆成普通值：**每次现取**，拿到的一定是最新的一份。 */
@@ -155,6 +172,9 @@ export class AgentBrowserService extends TypertRemoteService {
       this.log.info('已关闭：不注册任何浏览器工具')
       return
     }
+    if (config.tools.decision && !this.judgmentAvailable()) {
+      this.log.warn('「决策」已开启，但 ctx.judgment 不可用（dsh-judgment 未安装/未激活）：browser_run 不会注册。装上并重启后自动生效。')
+    }
     this.registerTools(config)
   }
 
@@ -202,7 +222,14 @@ export class AgentBrowserService extends TypertRemoteService {
     const chrome = await this.checkChrome(cli.status === 'pass')
     const checks: ProbeCheck[] = [cli, chrome]
     const ok = checks.every((check) => check.status === 'pass')
-    return { apiVersion: PROBE_API_VERSION, ok, title: ok ? '浏览器环境就绪' : '浏览器环境不完整', checks, checkedAt }
+    return {
+      apiVersion: PROBE_API_VERSION,
+      ok,
+      title: ok ? '浏览器环境就绪' : '浏览器环境不完整',
+      checks,
+      checkedAt,
+      judgment: this.judgmentAvailable(),
+    }
   }
 
   /**

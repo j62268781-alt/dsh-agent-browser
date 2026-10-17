@@ -310,6 +310,32 @@ for (const path of paths) if (!isVolatilePath(schema, path)) throw new Error(`Co
 测试注意：`ctx.plugin(Service, config)` 要传**原始配置**；传 `Config(config)`（已解析、字段是
 `Volatile` 包装）会被 cordis 二次解析成非法形状（`$.enabled expected boolean but got [object Object]`）。
 
+### 4.2c 兼容性闸门：`@deepseek-ai/dsh-*` 的 peer 范围是**拿去比 dsh 版本**的
+
+DSH 0.2.1-rc.1 起，boot 时会算 `unmetRequirements(manifest, runtimeVersion)`（`dsh-app-boot`）：
+
+- 有 `engines.dsh` → 只看它，peer 全部忽略；
+- 否则遍历 `peerDependencies` 里 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的**每一个范围**，
+  用 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })` 与**运行时 dsh 版本**比较；
+- 只要有未满足的 → **整个 bundle 被跳过**：
+  `dsh: skipping profile bundle "dsh-agent-browser": … requirements {"@deepseek-ai/dsh-typert-protocol":"0.2.0-rc.2"} …`
+
+所以**绝不能精确钉死** `"@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"`——那等于宣称
+"我只在 dsh 0.2.0-rc.2 上跑"，Harness 升级到 0.2.1-rc.1 后插件**根本不加载**（真机踩到：
+升级后设置页里整段插件消失，日志里只有那一行 skipping）。正确写法是跨版本区间：
+`">=0.2.0-rc.2 <0.3.0"`。`@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 不在闸门范围内
+（名字不是 `dsh-` 前缀），但 devDependencies 仍要对齐运行时版本再跑测试。
+
+**不重启桌面 app 的自检方法**（桌面 profile 被 Electron 独占，必须复制一份）：
+
+```sh
+cp -a ~/.dsh/profiles/desktop ~/.dsh/profiles/ab-debug
+dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
+# 没有输出 = 所有 bundle 的兼容性都过了
+```
+
+> 桌面 profile 直接跑会被拒：`error: profile "desktop" is managed exclusively by the Electron application`。
+
 ### 4.3 实现事实（都已核对）
 
 - 页面注册：`ctx.slots.register({ name:'settings.section', id:'browser', order:…, label:()=>'浏览器', inject:… }, Panel)`；客户端半打包成 `window.__ModuleLoader__` 单文件（照 [dsh-judgment/client/esbuild.config.mjs](../../dsh-judgment/client/esbuild.config.mjs)）。
@@ -349,6 +375,11 @@ for (const path of paths) if (!isVolatilePath(schema, path)) throw new Error(`Co
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
+
+**先检查再允许开启**：`probe()` 载荷里带 `judgment: boolean`（宿主用 `ctx.get('judgment')` 判断
+`dsh-judgment` 在不在）。依赖缺失时面板把「决策」开关**置灰**，副标题说明"需要 dsh-judgment，
+装上并重启 DSH"；如果配置里已经开着而依赖没了，页面上另给一条红字（`browser_run` 不会注册）。
+宿主侧同时兜底：`apply()` 里发现 `tools.decision === true` 但 `ctx.judgment` 缺失只警告、不注册该工具。
 
 | `tools.decision` | 模型面前有什么 | 谁在驱动 |
 |---|---|---|

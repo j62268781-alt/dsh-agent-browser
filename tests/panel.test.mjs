@@ -128,7 +128,7 @@ test('自检卡片：两项、成功/失败各自的说明与"帮忙安装"，�
   }))
 
   const ok = render({
-    apiVersion: 1,
+    apiVersion: 2,
     ok: true,
     title: '浏览器环境就绪',
     checkedAt: new Date().toISOString(),
@@ -147,9 +147,10 @@ test('自检卡片：两项、成功/失败各自的说明与"帮忙安装"，�
   assert.ok(!ok.includes('/opt/'), '不该显示可执行文件路径')
 
   const missing = render({
-    apiVersion: 1,
+    apiVersion: 2,
     ok: false,
     title: '浏览器环境不完整',
+    judgment: false,
     checkedAt: new Date().toISOString(),
     checks: [
       { id: 'cli', label: 'agent-browser', status: 'fail', message: '本机没安装', fix: 'brew install agent-browser', installable: true },
