@@ -419,6 +419,35 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
 
 ![e2e 成功](../docs/e2e-success.png)
 
+### 4.5.2b 真站实测（jevusers.com → Browser → jev-browser-use）
+
+用 `pnpm try`（`scripts/try.mjs`，goal 从命令行给）跑真实站点，暴露了四个只有真站才会出现的问题：
+
+1. **候选太多时分布不合法**：这个部署在 65+ 候选上返回 Σp=0.97/0.98（dsh-judgment 严格校验整批拒绝）。
+   对策：候选按 **goal 相关性**排序 + 封顶 60；分布不合法时**缩候选**（24 → 12）重新采样，
+   而不是重复同一个请求（同一规模下经常重复失败）。
+2. **内容边界标记污染证据**：`--content-boundaries` 的 `--- AGENT_BROWSER_PAGE_CONTENT nonce=… ---`
+   让"正文其实只有 Skip to content"看起来像有内容。现在先剥边界再判断长度。
+3. **`read` 拿不到正文**：GitHub 仓库页只回 "Skip to content"（CLI 侧 markdown 提取问题）。
+   对策：`read` 失败重试一次；正文过短就**退回无障碍树文本**。
+4. **过程型 goal 判不出完成**：「…然后打开 jev-browser-use 的页面」这类目标，
+   `goal_done` 只问"最终结果"就永远 0.0x。对策：把 **`state.url`** 加入证据，并明说
+   "打开某页/找到某物/进入某分类"这类目标，**当前就停在那上面**就算达成。
+
+结果（`docs/try-jevusers.png`）：
+
+```
+第 1 步：goal_done=0.43 stuck=0.07 候选=65 置信=0.63
+第 1 步：点击「jev-browser-use」（link，ref @e455） ✓
+第 2 步：goal_done=0.95 stuck=0.13 候选=40 置信=0.73
+第 2 步：goal_done=0.95 ≥ 0.85，独立确认 p=0.94 → 停，交回宿主校验
+独立验证：最终 URL https://jevusers.com/p/wy-coliney-jev-browser-use
+          标题 "jev-browser-use — Jev project — Jev Users"
+```
+
+另外补了两条稳健性：结束前（budget/no_progress）再确认一次——确认通过就报 `needs_verification`
+而不是让调用方看到一个"失败"去重跑；超重页面取快照超时时降深度重试一次。
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，

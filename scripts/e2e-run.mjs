@@ -18,9 +18,7 @@
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Context, Service } from '@deepseek-ai/cordis'
-import JudgmentService from '../../dsh-judgment/lib/index.js'
-import { readConnection, readCredential } from '../../dsh-judgment/scripts/read-profile.mjs'
+import { createLiveJudge } from './live-judge.mjs'
 import { AgentBrowser } from '../lib/cli.js'
 import { runTask } from '../lib/task.js'
 
@@ -75,41 +73,12 @@ console.log(`本地页面 ${url}`)
 /* ───────────────────── 2) 真 judge（dsh-judgment Service） ───────────────────── */
 
 let judge
+let judgeDescription = ''
 try {
-  const connection = readConnection()
-  const credential = readCredential(connection.credentialRef)
-  class Credentials extends Service {
-    constructor(ctx) {
-      super(ctx, 'credentials')
-      this.key = credential
-    }
-
-    async describe() {
-      return { configured: true, writable: true, source: 'stored' }
-    }
-
-    async resolve() {
-      return { value: this.key, source: 'stored' }
-    }
-  }
-  const ctx = new Context()
-  await ctx.plugin(Credentials)
-  await ctx.plugin(JudgmentService, {
-    connections: {
-      live: {
-        protocol: connection.protocol,
-        baseUrl: connection.baseUrl,
-        model: connection.model,
-        credentialRef: connection.credentialRef,
-        timeoutMs: connection.timeoutMs,
-      },
-    },
-    purposes: { 'browser.action': { connection: 'live' } },
-    defaultConnection: 'live',
-    ledger: { enabled: false, path: '' },
-  })
-  judge = ctx.get('judgment')
-  console.log(`judge 就绪：${connection.baseUrl} · 模型 ${connection.model} · 凭据 ${credential.length} 字符（不回显）`)
+  const live = await createLiveJudge('browser.action')
+  judge = live.judge
+  judgeDescription = live.describe
+  console.log(`judge 就绪：${judgeDescription}`)
 } catch (error) {
   console.error(`\n跳过：拿不到 judgment 连接或凭据 —— ${error instanceof Error ? error.message : String(error)}`)
   server.close()

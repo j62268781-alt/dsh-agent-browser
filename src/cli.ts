@@ -287,7 +287,10 @@ export class AgentBrowser {
       }
       const timer = setTimeout(() => {
         child.kill('SIGTERM')
-        finish({ code: null, failed: new CliError('timeout', `浏览器命令超过 ${timeoutMs}ms 未返回`) })
+        finish({
+          code: null,
+          failed: new CliError('timeout', `浏览器命令超过 ${timeoutMs}ms 未返回：agent-browser ${[...this.options.globalArgs, ...args].join(' ').slice(0, 160)}`),
+        })
       }, timeoutMs)
 
       if (options.signal?.aborted === true) {

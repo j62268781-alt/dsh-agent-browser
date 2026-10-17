@@ -20,8 +20,13 @@ import type { AgentBrowser, Snapshot } from './cli.js'
 /** 本插件编译时对齐的契约版本。不匹配就降级（dsh-judgment 契约 §13.3）。 */
 export const EXPECTED_API_VERSION = 1
 
-/** 上游 choice 的协议硬边界是 255；给控制项留位置，点击候选封顶 240。 */
-export const MAX_CLICK_CANDIDATES = 240
+/**
+ * 点击候选上限。**不是**协议上限（255），是**实测的可答上限**：
+ * 真机（decision-model-preview）在长候选表上会返回没归一化的分布
+ * （245 个候选时 Σp=0.82、30 个时 0.97，dsh-judgment 严格校验整批拒绝）。
+ * 收紧到 60 并把与 goal 相关的候选排在前面——既省 token，也更容易拿到合法分布。
+ */
+export const MAX_CLICK_CANDIDATES = 60
 
 /**
  * 状态里快照文本的上限（字符）。状态随**每一批问题**重复发送，是成本的主要变量
@@ -121,7 +126,7 @@ export interface TaskDeps {
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
 
 /** 快照 → 候选。文本输入字段单独标注 `input:*`（让循环知道该交回宿主）。 */
-export function candidatesOf(snapshot: Snapshot): TaskCandidate[] {
+export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
   const clicks: TaskCandidate[] = []
   const inputs: TaskCandidate[] = []
   for (const [ref, info] of Object.entries(snapshot.refs)) {
@@ -139,6 +144,20 @@ export function candidatesOf(snapshot: Snapshot): TaskCandidate[] {
     else clicks.push(candidate)
   }
 
+  // **按 goal 相关性排序**（确定性，不做判断）：命中的候选排前面，没命中的保持文档顺序。
+  // 好处：候选预算优先花在"目标里提到的东西"上（实测这个页面 goal 提到 Browser，
+  // 相关性排序后模型第一步就选中了 Browser 分类按钮）。
+  const tokens = [...new Set((goal.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []))]
+  const relevance = (candidate: TaskCandidate): number =>
+    tokens.reduce((score, token) => score + (candidate.description.toLowerCase().includes(token) ? 1 : 0), 0)
+  const rank = <T extends TaskCandidate>(list: T[]): T[] =>
+    tokens.length === 0
+      ? list
+      : list
+        .map((candidate, index) => ({ candidate, index, score: relevance(candidate) }))
+        .sort((left, right) => right.score - left.score || left.index - right.index)
+        .map((row) => row.candidate)
+
   const controls: TaskCandidate[] = [
     { id: 'control:scroll_down', description: '向下滚动一屏（看更多内容）', kind: 'control' },
     { id: 'control:scroll_up', description: '向上滚动一屏', kind: 'control' },
@@ -146,7 +165,7 @@ export function candidatesOf(snapshot: Snapshot): TaskCandidate[] {
     { id: 'control:wait', description: '页面还在加载：等一会儿再观察一次', kind: 'control' },
   ]
 
-  return [...clicks.slice(0, MAX_CLICK_CANDIDATES), ...inputs.slice(0, 40), ...controls]
+  return [...rank(clicks).slice(0, MAX_CLICK_CANDIDATES), ...rank(inputs).slice(0, 20), ...controls]
 }
 
 /** 候选 → 一个批次的问题。状态随这批问题只发一次（dsh-judgment §1.2 的批量经济学）。 */
@@ -171,9 +190,11 @@ export function questionsOf(goal: string, candidates: readonly TaskCandidate[]):
       // 会拿到 0.80 的假阳性；**只指向 state.page_text 这一个字段**问，同一页面是 0.09。
       // 无障碍树 / refs / history 是找动作用的，混进判定就会被当成"硬条件"（hermes 那篇的核心发现）。
       prompt:
-        `只看 state.page_text（页面**可见正文**）这一个字段：里面是否已经出现目标要求的最终结果` +
-        `——「${truncate(goal, 200)}」。` +
-        '无障碍树、refs、历史都只用来找下一步动作，**不能**当作达成的证据。',
+        `只看 state.url（当前地址）、state.page_title（页面标题）、state.page_text（可见正文）这三个字段。` +
+        `用户的目标是：「${truncate(goal, 200)}」。` +
+        '判定规则：如果目标是"打开某个页面 / 找到某个东西 / 进入某个分类"，那么**当前就停在那上面**就算达成' +
+        '（地址、标题或正文对得上目标里提到的那个东西）；如果还需要继续点击或操作，才算没达成。' +
+        '无障碍树、refs、历史只用来找下一步动作，**不能**当作达成的证据。',
       criteria: {
         true: 'page_text 里能直接看到那个结果本身',
         false: 'page_text 里没有看到，或只看到过程的中间状态',
@@ -266,15 +287,18 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 1) 永远用**刚取**的树做决策；另外取一次**可见正文**——
     //    goal_done 只认这个字段（无障碍树里的控件名/历史会被当成"看起来完成了"）。
-    const snapshot = await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal })
-    let pageText = ''
+    // 超重的页面（真机：GitHub 的仓库页）一次性取全树可能超时：降深度再取一次。
+    let snapshot: Snapshot
     try {
-      pageText = await deps.browser.read(undefined, { signal: deps.signal })
+      snapshot = await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal })
     } catch (error) {
-      trace.push(`第 ${step} 步：读页面正文失败（${message(error)}）：goal_done 这次只看无障碍树`)
+      trace.push(`第 ${step} 步：取快照失败（${message(error)}）→ 降深度（depth=8）重试一次`)
+      snapshot = await deps.browser.snapshot({ interactiveOnly: true, depth: 8 }, { signal: deps.signal })
     }
+    const pageText = await visibleText(deps, snapshot, trace, step)
+    const pageTitle = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
     last = snapshot
-    const candidates = candidatesOf(snapshot)
+    const candidates = candidatesOf(snapshot, goal)
     const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]))
     const signature = stateSignature(snapshot)
 
@@ -297,24 +321,58 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       snapshot: truncated ? `${snapshot.snapshot.slice(0, SNAPSHOT_STATE_CAP)}\n…（已截断）` : snapshot.snapshot,
       snapshot_chars: snapshot.snapshot.length,
       snapshot_truncated: truncated,
-      // 页面**可见正文**：goal_done 的唯一判定依据（见 questionsOf 的注释）。
-      page_text: pageText.replace(/\s+/g, ' ').trim().slice(0, CONFIRM_TEXT_CAP),
+      // 页面**可见正文** + **标题**：goal_done 的判定依据（见 questionsOf 的注释）。
+      page_text: pageText.slice(0, CONFIRM_TEXT_CAP),
+      page_title: String(pageTitle).slice(0, 300),
       refs,
       history: steps.slice(-8).map((item) => ({ action: item.action, executed: item.executed, reason: item.reason })),
       wall_clock_utc: new Date().toISOString(),
     }
 
-    // 2) 一次批量判断。
-    let answers: Readonly<Record<string, JudgmentAnswer>>
-    try {
-      const result = await judge.ask(state, questionsOf(goal, candidates), { purpose: deps.purpose })
-      answers = result.answers
+    // 2) 一次批量判断。**响应不合法时不修复答案，只缩候选重新采样**。
+    //
+    // 真机（decision-model-preview）实测：候选一多，模型会返回没归一化的分布
+    // （245 个候选 Σp=0.82、60 个 Σp=0.98、20 个 Σp=0.99、15 个 Σp=1.01）。
+    // dsh-judgment 严格校验整批拒绝（`invalid-response`，provider 侧 retryable:false），
+    // 而契约 §0.3 允许消费者把重试当作"新一次采样"。所以策略是：
+    // **同样的状态、更少的候选**再问——不是重复同一个请求（同一规模下常常重复失败）。
+    const askOnce = async (subset: readonly TaskCandidate[]): Promise<Readonly<Record<string, JudgmentAnswer>>> => {
+      const result = await judge.ask(state, questionsOf(goal, subset), { purpose: deps.purpose })
       usage.calls += 1
       usage.inputTokens += result.usage.inputTokens ?? 0
       usage.outputTokens += result.usage.outputTokens ?? 0
+      return result.answers
+    }
+    let answers: Readonly<Record<string, JudgmentAnswer>>
+    let askedCount = candidates.length
+    try {
+      answers = await askOnce(candidates)
     } catch (error) {
-      trace.push(`判断失败：${message(error)}`)
-      return finish('judge_error', message(error), snapshot)
+      if (isInvalidResponse(error)) {
+        let last = error
+        let recovered: Readonly<Record<string, JudgmentAnswer>> | undefined
+        for (const size of [24, 12]) {
+          if (size >= 2 && size < askedCount) {
+            trace.push(`第 ${step} 步：${askedCount} 个候选时分布不合法（${message(last)}）→ 缩到 ${size} 个再采一次`)
+            try {
+              recovered = await askOnce(candidates.slice(0, size))
+              askedCount = size
+              break
+            } catch (again) {
+              last = again
+              askedCount = size
+            }
+          }
+        }
+        if (recovered === undefined) {
+          trace.push(`判断失败（缩候选后仍没有合法响应）：${message(last)}`)
+          return finish('judge_error', message(last), snapshot)
+        }
+        answers = recovered
+      } else {
+        trace.push(`判断失败：${message(error)}`)
+        return finish('judge_error', message(error), snapshot)
+      }
     }
 
     const goalAnswer = answers.goal_done
@@ -325,6 +383,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // choice 的**完整分布**是协议的证据：既能记进 trace，也能在"重复但无效"时给出次优候选。
     const probabilities = actionAnswer?.kind === 'choice' ? actionAnswer.probabilities : undefined
     const confidence = actionAnswer?.kind === 'choice' ? actionAnswer.confidence : undefined
+
+    trace.push(
+      `第 ${step} 步：goal_done=${goalDone === undefined ? '—' : goalDone.toFixed(2)}` +
+      ` stuck=${stuck === undefined ? '—' : stuck.toFixed(2)}` +
+      ` 候选=${candidates.length}` +
+      (confidence === undefined ? '' : ` 置信=${confidence.toFixed(2)}`),
+    )
 
     // 3) 停止门：**在动作之前**判定（动作是状态的函数，不能在动作之后再判它的状态）。
     //    goal_done 只是"候选完成"，必须再过一道**独立确认**（用页面可见正文问一遍）。
@@ -375,6 +440,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       trace.push(`第 ${step} 步：${chosen.id} 执行过但页面语义状态没变（第 ${count} 次）`)
       if (count >= 2) {
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'stalled_action', stateChanged: false, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+        const confirmed = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
+        if (confirmed.confirmed) {
+          trace.push(`停滞了，但结束前独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
+          return finish('needs_verification', `停滞前确认 p=${confirmed.probability.toFixed(2)}`, snapshot)
+        }
         return finish('no_progress', `动作 ${chosen.id} 重复且页面没有变化`, snapshot)
       }
       const executable = new Set(candidates.filter((candidate) => candidate.kind !== 'input').map((candidate) => candidate.id))
@@ -383,6 +453,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (alternate === undefined) {
         trace.push(`第 ${step} 步：分布里没有可替代的候选 → 停（no_progress）`)
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'stalled_action', stateChanged: false, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+        const confirmed = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
+        if (confirmed.confirmed) {
+          trace.push(`没有可替代的候选，但结束前独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
+          return finish('needs_verification', `无替代候选，结束前确认 p=${confirmed.probability.toFixed(2)}`, snapshot)
+        }
         return finish('no_progress', `动作 ${chosen.id} 没有效果，且没有可替代的候选`, snapshot)
       }
       trace.push(`第 ${step} 步：改用次优候选 ${alternate.id}（分布里 p=${(probabilities?.[alternate.id] ?? 0).toFixed(2)}）`)
@@ -424,6 +499,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
   }
 
+  // 走到这里说明"没主动宣布完成"。但模型没宣布 ≠ 页面没达成（实测这个部署对**过程型 goal**
+  // 的 goal_done 偏保守）。交回宿主**之前**再独立确认一次：确认通过就报 needs_verification，
+  // 而不是让调用方看到一个 no_progress/budget 去重跑一遍。绝不自称完成——状态仍是待验证。
+  const confirmedAtEnd = await confirmGoal(judge, deps, last ?? await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal }), goal, usage, trace)
+  if (confirmedAtEnd.confirmed) {
+    trace.push(`结束前独立确认通过（p=${confirmedAtEnd.probability.toFixed(2)}）：模型没主动宣布，但页面已呈现目标结果 → 交回宿主校验`)
+    return finish('needs_verification', `达到步数上限，结束前确认 p=${confirmedAtEnd.probability.toFixed(2)}`, last)
+  }
   return finish('budget', `达到最大步数 ${deps.maxSteps}`, last)
 
   function finish(status: TaskStatus, reason: string, snapshot: Snapshot | undefined): TaskResult {
@@ -463,17 +546,13 @@ async function confirmGoal(
   usage: { calls: number; inputTokens: number; outputTokens: number },
   trace: string[],
 ): Promise<{ confirmed: boolean; probability: number }> {
-  let pageText = ''
-  try {
-    pageText = await deps.browser.read(undefined, { signal: deps.signal })
-  } catch (error) {
-    trace.push(`确认前读正文失败（${message(error)}）：用无障碍树兜底`)
-    pageText = snapshot.snapshot
-  }
+  const pageText = await visibleText(deps, snapshot, trace, undefined)
+  const pageTitle = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
   const state = {
     goal,
     url: snapshot.origin,
-    page_text: pageText.replace(/\s+/g, ' ').trim().slice(0, CONFIRM_TEXT_CAP),
+    page_text: pageText.slice(0, CONFIRM_TEXT_CAP),
+    page_title: String(pageTitle).slice(0, 300),
   }
   try {
     const result = await judge.ask(
@@ -482,8 +561,11 @@ async function confirmGoal(
         confirm: {
           kind: 'noul',
           prompt:
-            `只看 state.page_text（页面**可见正文**）：里面是否真的出现了目标要求的最终结果` +
-            `——「${truncate(goal, 200)}」。`,
+            `只看 state.url（当前地址）、state.page_title（页面标题）、state.page_text（可见正文）。` +
+            `用户的目标是：「${truncate(goal, 200)}」。` +
+            '当前是否**已经停在**目标要求的那个页面/状态上？' +
+            '"打开某页 / 找到某物 / 进入某分类"这类目标，地址、标题或正文对得上就算达成；' +
+            '还需要继续操作才算没达成。',
           criteria: {
             true: 'page_text 里能直接看到那个结果本身（不是"可能/应该"，也不是从历史推断）',
             false: 'page_text 里没有看到，或只看到过程的中间状态',
@@ -516,6 +598,55 @@ async function execute(browser: AgentBrowser, candidate: TaskCandidate, signal: 
     case 'control:wait': await browser.run(['wait', '800'], { signal }); return
     default: throw new Error(`候选 ${candidate.id} 没有对应的执行分支`)
   }
+}
+
+/**
+ * 页面**可见正文**：`goal_done` 的唯一判定依据。
+ *
+ * 真机踩到两件事：① `read` 偶发报错（`Cannot read properties of null`，CLI 侧问题）；
+ * ② **成功但几乎为空**（GitHub 只回 "Skip to content"），于是 goal_done 永远拿不到证据、
+ * 循环只能一路滚到停滞。所以：重试一次；内容太短就退回无障碍树文本（它是同一页面的可见结构）。
+ */
+const MIN_PAGE_TEXT = 40
+
+/**
+ * 去掉 `--content-boundaries` 加的包裹（`--- AGENT_BROWSER_PAGE_CONTENT nonce=… ---` / `--- END_… ---`）。
+ *
+ * 真机踩到：GitHub 的正文我们只拿到 "Skip to content"，但边界标记本身就让长度超过阈值，
+ * 于是"没有正文"被当成"有正文"，goal_done 永远拿不到证据。
+ * 边界标记是给**模型**的提示，不该算进"页面可见内容"。
+ */
+export function stripContentBoundaries(text: string): string {
+  return text
+    .replace(/^\s*---\s*(?:END_)?AGENT_BROWSER_(?:PAGE_)?CONTENT[^-]*---\s*$/gim, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+async function visibleText(deps: TaskDeps, snapshot: Snapshot, trace: string[], step: number | undefined): Promise<string> {
+  const where = step === undefined ? '确认前' : `第 ${step} 步`
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const text = stripContentBoundaries(await deps.browser.read(undefined, { signal: deps.signal }))
+      if (text.length >= MIN_PAGE_TEXT) return text
+      if (text.length > 0) {
+        trace.push(`${where}：read 只拿到 ${text.length} 个字符（页面可能还在渲染），退回无障碍树文本`)
+        break
+      }
+      break
+    } catch (error) {
+      if (attempt === 2) trace.push(`${where}：读页面正文失败（${message(error)}），退回无障碍树文本`)
+      else await sleep(300)
+    }
+  }
+  return stripContentBoundaries(snapshot.snapshot)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** dsh-judgment 的「响应结构不合法」错误：只换一次采样，不修复答案本身。 */
+function isInvalidResponse(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'invalid-response'
 }
 
 function message(error: unknown): string {

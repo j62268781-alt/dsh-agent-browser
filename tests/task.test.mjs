@@ -47,6 +47,8 @@ function fakePage(elements) {
     snapshot: async () => snapshot(),
     /** 页面**可见正文**（真实实现走 CLI 的 `read`）。 */
     read: async () => state.text,
+    /** 页面**标题**（真实实现走 CLI 的 `get title`）。 */
+    get: async (what) => (what === 'title' ? 'E2E 单元测试页' : ''),
     async act(action, target) {
       state.acts.push(`${action} ${target}`)
       const ref = String(target).replace(/^@/, '')
@@ -220,7 +222,7 @@ test('重复无效动作且分布里没有替代 → no_progress', async () => {
   const page = fakePage([{ ref: 'e1', role: 'button', name: '继续' }])
   const judge = fakeJudge([
     { action: 'click:e1', probabilities: { 'click:e1': 1 } },
-    { action: 'click:e1', probabilities: { 'click:e1': 1 } },
+    { action: 'click:e1', probabilities: { 'click:e1': 1 }, confirmProbability: 0.1 },
   ])
   const result = await runTask('目标', deps(page.browser, judge))
   assert.equal(result.status, 'no_progress')
@@ -234,10 +236,10 @@ test('同一无效动作第二次仍然被提出 → 直接停（stalled_action�
     { ref: 'e2', role: 'button', name: '别的' },
   ])
   const judge = fakeJudge([
-    { action: 'click:e1', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 } },
-    { action: 'click:e1', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 } }, // 换到 e2
-    { action: 'click:e2', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 } }, // e2 也没效果
-    { action: 'click:e2', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 } },
+    { action: 'click:e1', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 }, confirmProbability: 0.1 },
+    { action: 'click:e1', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 }, confirmProbability: 0.1 }, // 换到 e2
+    { action: 'click:e2', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 }, confirmProbability: 0.1 }, // e2 也没效果
+    { action: 'click:e2', probabilities: { 'click:e1': 0.5, 'click:e2': 0.5 }, confirmProbability: 0.1 },
   ])
   const result = await runTask('目标', deps(page.browser, judge))
   assert.equal(result.status, 'no_progress')
