@@ -491,3 +491,26 @@ test('P8：抽取失败时退回整树（功能不降级）', async () => {
   assert.equal(result.status, 'needs_verification')
   assert.ok(result.trace.some((line) => /退回整树/.test(line)), '应该记录退回原因')
 })
+
+test('P8：目标英文、页面中文时不因"相关性为 0"误退回整树', async () => {
+  let treeCalls = 0
+  const items = [
+    { index: 0, role: 'a', name: '七日天气', covered: false },
+    { index: 1, role: 'a', name: '今日头条', covered: false },
+  ]
+  const browser = {
+    async extract() {
+      return { items, text: '页面正文'.repeat(20), title: '标题', url: 'https://a.test/' }
+    },
+    async snapshot() { treeCalls += 1; throw new Error('不该退回整树') },
+    async observe() { treeCalls += 1; throw new Error('不该退回整树') },
+    async read() { return '页面正文'.repeat(20) },
+    async get() { return '标题' },
+    async act() {},
+    async run() {},
+  }
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.99 }])
+  const result = await runTask('click the top-left locality', deps(browser, judge))
+  assert.equal(treeCalls, 0, '语言不一致时不该退回整树')
+  assert.ok(result.trace.some((line) => /页面内抽取/.test(line)))
+})

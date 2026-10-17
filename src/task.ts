@@ -478,7 +478,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
         // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
         // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
-        const goalTokens = goalTokensOf(goal)
+        // 语言一致性守卫：目标用英文、页面是中文时不比相关性（词形对不上，比了只会误判）。
+        // 真机踩到：宿主把目标翻成英文（"click the top-left locality"）→ 覆盖检查误触发退回整树。
+        const goalIsCjk = /[\u4e00-\u9fa5]/.test(goal)
+        const pageIsCjk = candidates.some((candidate) => /[\u4e00-\u9fa5]/.test(candidate.description))
+        const comparable = goalIsCjk === pageIsCjk
+        const goalTokens = comparable ? goalTokensOf(goal) : []
         if (goalTokens.length > 0 && candidates.length > 0) {
           const bestScore = Math.max(...candidates.map((candidate) => goalTokens.filter((token) => candidate.description.toLowerCase().includes(token)).length))
           if (bestScore === 0) {

@@ -600,7 +600,8 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 2. 抽取 0 个候选 → 退回整树；
 3. **目标覆盖检查**：目标提到的词在抽取结果里一个都没对上 → 退回整树
    （抽取只认 DOM 语义元素，会漏掉"a11y 上 clickable、但只是 generic"的控件，
-   真机：hao123 的城市切换入口）。
+   真机：hao123 的城市切换入口）。**带语言一致性守卫**：目标英文、页面中文时不比相关性
+   （真机踩到：宿主把目标翻成英文 "click the top-left locality" → 误触发退回整树）。
 
 实测（hao123，4 步）：`snapshot 98ms · ask 1196ms（5 次）· act 231ms`，**tokens 5,350**
 （旧路径同规模 19–28k）→ 单次判断平均 **~1.07k tokens / ~239ms**，比之前 4.3k / ~380ms
