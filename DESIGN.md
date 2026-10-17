@@ -231,7 +231,12 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 [截图工具          Switch]
 [逃生舱 browser_raw Switch]
 进阶                        ← 分组标题
-[允许域名          input]  → --allowed-domains
+[允许域名]                                   ← **上下布局**（title/subtitle 在上，控件占满下面整行）
+  一行一个（逗号也行），如 a.com、*.b.com          ← 子标题
+  ┌ textarea（4 行，可纵向拉高，整行宽）──────────┐
+  │ a.com                                        │
+  │ *.b.com                                      │
+  └──────────────────────────────────────────────┘
 [会话名            input]  → --session
 [有头模式          Switch] → --headed
 [命令超时(ms)      input]  → 我们的 spawn 超时
@@ -261,6 +266,14 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 同样来自真机的 CSS 地雷：**别给「控件容器内的所有孩子」统一设宽度**（`.ab-rowControl > * { width:100% }`），
 那会把 36px 的 `Switch` 拉成整列宽、开关直接变形。只对 `.ab-input` 设宽即可；
 `tests/panel.test.mjs` 有一条 CSS 回归测试盯着这条。
+
+**行有两种布局**（不是所有控件都适合挤在右侧）：
+
+- 默认**左右**：标题/子标题在左，控件在右（开关、短输入）——`flex` 行 + `gap:24px`；
+- **上下**（`.ab-rowStacked`）：文字在上，控件在下面**占满整行**。目前只有「允许域名」用它，
+  因为它天然是**多行**内容（一行一个域名，`parseDomains` 同时接受换行与逗号），横向输入框会被挤压。
+  多行控件用 `<textarea class="ab-textarea">`（与 `.ab-input` 同一套颜色/圆角，`resize:vertical`）；
+  **回车留给换行，提交在失焦时**（别把用户正在输入的内容打断）。
 
 ### 4.3 实现事实（都已核对）
 

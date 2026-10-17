@@ -50,9 +50,10 @@ export const SESSION_PATTERN = /^[A-Za-z0-9._-]*$/
 /** 与 src/config.ts 一致的空闲超时。 */
 export const IDLE_PATTERN = /^(?:$|\d+(?:ms|s|m|h)?)$/
 
-/** `a.com, *.b.com` → `['a.com', '*.b.com']`，顺便把不合法的挑出来。 */
+/** `a.com, *.b.com` / 一行一个 → `['a.com', '*.b.com']`，顺便把不合法的挑出来。 */
 export function parseDomains(text) {
-  const parts = String(text ?? '').split(',').map((part) => part.trim()).filter((part) => part !== '')
+  // 多行 textarea：**换行与逗号都算分隔**（用户可能两种混着用）。
+  const parts = String(text ?? '').split(/[,\n]/).map((part) => part.trim()).filter((part) => part !== '')
   const invalid = parts.filter((part) => !DOMAIN_PATTERN.test(part))
   return { domains: parts, invalid }
 }

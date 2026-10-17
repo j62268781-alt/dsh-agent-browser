@@ -68,7 +68,8 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /browser_run/)
   assert.match(html, /browser\.action/)          // 用途名进子标题
   // 每一行都是同一条 .ab-row（16px 竖距 + 下边框由 CSS 保证；这里断言结构一致）
-  const rows = html.match(/class="ab-row"/g) ?? []
+  // 普通行是 `class="ab-row"`，上下布局的行是 `class="ab-row ab-rowStacked"`——都算一行
+  const rows = html.match(/class="ab-row(?: [\w-]+)?"/g) ?? []
   assert.ok(rows.length >= 12, `期望至少 12 行统一的行，实际 ${rows.length}`)
   // 分组标题要在（用户要求保留）：工具面 / 进阶 / 配置文件
   for (const group of ['工具面', '进阶', '配置文件']) {
@@ -82,6 +83,10 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /逃生舱/)
   assert.match(html, /允许域名/)
   assert.match(html, /example\.com/)             // 配置值真的渲染出来了
+  // 允许域名是上下布局 + 多行 textarea（横向挤不下，真机反馈）
+  assert.match(html, /class="ab-row ab-rowStacked"[^>]*>.*?允许域名/s)
+  assert.match(html, /<textarea class="ab-textarea"/)
+  assert.match(html, /rows="4"/)
   assert.match(html, /内容边界标记/)
   assert.match(html, /打开配置文件/)
   assert.match(html, /当前部署不提供本地设置文档/) // hasDocument=false 时的说明

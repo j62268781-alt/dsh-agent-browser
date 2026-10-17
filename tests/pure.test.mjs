@@ -73,8 +73,10 @@ test('问题批次：一个 choice + 两个 noul，且候选键集合就是候�
   assert.match(String(questions.goal_done.prompt), /在 example\.com 找到 Alpha/)
 })
 
-test('页面侧域名解析：接受 *. 形式，挑出不合法的', () => {
+test('页面侧域名解析：接受 *. 形式、逗号与换行都算分隔，挑出不合法的', () => {
   assert.deepEqual(parseDomains('a.com, *.b.com'), { domains: ['a.com', '*.b.com'], invalid: [] })
+  // 多行 textarea：一行一个、空行忽略、两种分隔符可以混用
+  assert.deepEqual(parseDomains('a.com\n*.b.com\n\n c.com , d.com '), { domains: ['a.com', '*.b.com', 'c.com', 'd.com'], invalid: [] })
   assert.deepEqual(parseDomains('  '), { domains: [], invalid: [] })
   const bad = parseDomains('a.com, ht!tp://x')
   assert.equal(bad.domains.length, 2)

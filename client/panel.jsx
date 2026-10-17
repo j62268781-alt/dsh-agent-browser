@@ -220,13 +220,14 @@ export function Panel(props) {
           )}
         />
         <h3 className="ab-groupTitle">进阶</h3>
-        <Row
+        <StackedRow
           title="允许域名"
-          subtitle="--allowed-domains：逗号分隔，如 a.com, *.b.com。留空 = 不限制。设了它就不能再用 profile（CLI 的 fail-closed）。"
+          subtitle="--allowed-domains：一行一个（逗号也行），如 a.com、*.b.com。留空 = 不限制。设了它就不能再用 profile（CLI 的 fail-closed）。"
           control={(
-            <TextField
-              value={arrayOf(browser, 'allowedDomains').join(', ')}
-              placeholder="a.com, *.b.com"
+            <TextArea
+              value={arrayOf(browser, 'allowedDomains').join('\n')}
+              placeholder={'a.com\n*.b.com'}
+              rows={4}
               disabled={!enabled || busy || !writable}
               onCommit={(text) => {
                 const { domains, invalid } = parseDomains(text)
@@ -480,6 +481,43 @@ function Switch({ primitives, label, checked, disabled, onChange }) {
       checked={checked}
       disabled={disabled}
       onChange={(event) => onChange(event.target.checked)}
+    />
+  )
+}
+
+/**
+ * 上下布局的行：标题 + 子标题在上，控件在下面**占满整行**。
+ * 留给"控件本身需要宽度"的项（目前只有允许域名——多行 textarea）。
+ */
+function StackedRow({ title, subtitle, control }) {
+  return (
+    <div className="ab-row ab-rowStacked">
+      <div className="ab-rowText">
+        <div className="ab-rowTitle">{title}</div>
+        <div className="ab-rowSubtitle">{subtitle}</div>
+      </div>
+      <div className="ab-rowControl ab-rowControlFull">{control}</div>
+    </div>
+  )
+}
+
+/** 多行文本：本地草稿，**失焦时提交**（回车留给换行，别把用户输入打断）。 */
+function TextArea({ value, placeholder, rows, disabled, onCommit }) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => {
+    setDraft(String(value))
+  }, [value])
+  return (
+    <textarea
+      className="ab-textarea"
+      value={draft}
+      placeholder={placeholder}
+      rows={rows}
+      disabled={disabled}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        if (draft !== String(value)) onCommit(draft)
+      }}
     />
   )
 }
