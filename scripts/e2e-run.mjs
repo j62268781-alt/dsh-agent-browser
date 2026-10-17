@@ -130,7 +130,9 @@ try {
   console.log(`CLI 版本 ${title}\n`)
   await browser.close().catch(() => {})
   await browser.open(url)
+  const openedUrl = await browser.get('url', undefined, undefined).catch((error) => `ERR ${error.message.slice(0, 80)}`)
   const opened = await browser.snapshot({ interactiveOnly: true })
+  console.log(`open 之后 get url = ${openedUrl}`)
   console.log(`打开后 origin=${opened.origin} refs=${Object.keys(opened.refs).length} 个：${Object.entries(opened.refs).map(([r, i]) => `${r}:${i.role}:${i.name}`).join(' ')}`)
 
   const result = await runTask('让页面上的状态文字显示 SUCCESS', {

@@ -53,6 +53,11 @@ export class CliError extends Error {
   }
 }
 
+/** `close` 之后等守护进程真正退出的时间（实测 300ms 足够；见 `AgentBrowser.close`）。 */
+const CLOSE_SETTLE_MS = 300
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
 export interface CliRunOptions {
   readonly stdin?: string
   readonly signal?: AbortSignal
@@ -426,24 +431,35 @@ export class AgentBrowser {
     await this.json(['open', url], run)
     // ⚠️ `open` 成功返回 **不等于导航已经提交**：真机（0.38.2）上紧接着取快照，
     // 页面还是 `about:blank`，于是决策循环只看到滚动/等待、白跑几步才超时。
-    // 这里等到真正的页面落地（最多 ~5s），把"打开"的语义补齐。
-    await this.waitUntilNavigated(run)
+    if (await this.waitUntilNavigated(run)) return
+
+    // 兜底：极少数情况下 open 仍停在 about:blank（上一个会话的守护进程正在退出）。
+    // 关掉、等它真的退出、再打开一次；仍然不行就**明确报错**，不静默留在空白页。
+    await this.json(['close'], run).catch(() => undefined)
+    await sleep(CLOSE_SETTLE_MS)
+    await this.json(['open', url], run)
+    if (await this.waitUntilNavigated(run)) return
+    throw new CliError('open-stalled', `open 之后页面仍停在 about:blank（${url}）：浏览器会话没有真正导航`)
   }
 
   /** 轮询 `get url` 直到页面不再是 about:blank（导航提交 / 重定向都算落地）。 */
-  private async waitUntilNavigated(run: CliRunOptions): Promise<void> {
+  private async waitUntilNavigated(run: CliRunOptions): Promise<boolean> {
     const budget = Math.min(run.timeoutMs ?? this.options.timeoutMs, 5_000)
     const deadline = Date.now() + budget
     for (;;) {
       const current = await this.get('url', undefined, undefined, run).catch(() => '')
-      if (current !== '' && !/^about:blank$/i.test(current)) return
-      if (Date.now() >= deadline) return
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      if (current !== '' && !/^about:blank$/i.test(current)) return true
+      if (Date.now() >= deadline) return false
+      await sleep(100)
     }
   }
 
   async close(run: CliRunOptions = {}): Promise<void> {
     await this.json(['close'], run)
+    // **`close` 返回 ≠ 守护进程已退出**（实测 0.38.2）：紧接着 open 会挂到正在退出的 daemon 上，
+    // 导航变成 no-op（页面停在 about:blank，要在几百毫秒后再 open 才正常）。
+    // 等它真的退出，别把这个竞态留给调用方。实测：不等 6 次里 4 次失败，等 300ms 后 6/6 成功。
+    await sleep(CLOSE_SETTLE_MS)
   }
 
   async screenshot(path: string | undefined, fullPage: boolean, run: CliRunOptions = {}): Promise<string> {

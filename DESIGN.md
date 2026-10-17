@@ -415,12 +415,16 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
 另外实测这个部署的 **choice 在二选一「完成/没完成」上会饱和**（三种状态都给 `done` 0.98–1.0），
 所以没有照搬 wy-coliney 的"DONE 作为候选"，而是保留 noul watcher + 独立确认。
 
-### 4.5.3 顺手修掉的真 bug
+### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
-`agent-browser open <url>` **成功返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是
-`about:blank`，决策循环于是只看到滚动/等待候选、白跑几步才超时。`AgentBrowser.open()`
-现在轮询 `get url` 直到页面落地（≤5s）。这个 bug 只在"open 之后立刻操作"时出现，
-所以 `browser_session open` 工具也一并受益。
+1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，
+   决策循环只看到滚动/等待候选、白跑几步才超时。`open()` 现在轮询 `get url` 直到落地（≤5s）。
+2. **`close` 返回 ≠ 守护进程已退出**：紧接着 `open` 会挂到正在退出的 daemon 上，导航变成 no-op。
+   实测 6 次里 4 次失败；`close()` 之后加 300ms settle 后 **6/6 成功**（e2e 连跑 3 次全绿）。
+   `open()` 另加一次"close → 等 → open"兜底，仍不动就抛 `open-stalled`（不静默留在空白页）。
+
+> 这两个 bug 都不会在单条命令里暴露，只有"open 之后立刻操作"/"close 之后立刻 open"才触发——
+> 正是 `browser_run` 这种连续循环的典型用法。
 
 ## 5. 决策形态（v2 定稿）
 
