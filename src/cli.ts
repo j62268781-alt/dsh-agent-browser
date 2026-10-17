@@ -11,6 +11,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { EXTRACT_SCRIPT, parseExtracted, type ExtractedItem } from './extract.js'
 import { dirname, join } from 'node:path'
 
 /** CLI 发回来的统一信封：`{ success, data, error }`（0.38.2 实测）。 */
@@ -32,6 +33,14 @@ export interface RefInfo {
 }
 
 /** 归一化后的快照（只保留我们真正用到的字段）。 */
+/** `extract()` 的返回：脚本预抽的紧凑候选 + 正文 + 标题 + URL（一次进程拿齐）。 */
+export interface ExtractedPage {
+  readonly items: readonly ExtractedItem[]
+  readonly text: string
+  readonly title: string
+  readonly url: string
+}
+
 /** `observe()` 的返回：树 + 可见正文 + 标题（一次进程拿齐）。 */
 export interface ObservedPage extends Snapshot {
   readonly text: string
@@ -464,6 +473,19 @@ export class AgentBrowser {
       text: String(readData?.content ?? ''),
       title: String(titleData?.title ?? ''),
     }
+  }
+
+  /**
+   * **一次进程**拿齐：页面内抽取的候选（含动作句柄）+ 可见正文 + 标题 + URL。
+   *
+   * 与 `observe()` 的区别：那份是整棵无障碍树（大），这份是脚本预抽的紧凑候选（小）。
+   * 给判断层用后者：实测 1,021 字符 ≈ 256 tokens（整树约 4.3k tokens）。
+   */
+  async extract(run: CliRunOptions = {}): Promise<ExtractedPage> {
+    // **一次 `eval`**：脚本自己返回候选 + 正文 + 标题 + URL（单进程，7ms 量级）。
+    // 不能塞进 batch：batch 按空白切分命令，而 JS 关键字之间必须有空白。
+    const raw = await this.run(['eval', EXTRACT_SCRIPT], run)
+    return parseExtracted(raw)
   }
 
   /** `batch [--bail] <cmd...>`：一次进程执行多条命令，返回逐条结果（失败即抛）。 */

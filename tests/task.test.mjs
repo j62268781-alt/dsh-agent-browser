@@ -452,3 +452,42 @@ test('P6：observe 一次拿齐树+正文+标题（batch 合并，少两次进�
   assert.equal(observes, 1, '一次 observe = 一次进程')
   assert.equal(snapshots, 0, '不该再单独取整树')
 })
+
+test('P8：优先用页面内抽取（一次 eval 拿候选），判断层收到的选项不超过上限', async () => {
+  let extractCalls = 0
+  let treeCalls = 0
+  const items = Array.from({ length: 60 }, (_, index) => ({
+    index,
+    role: index === 0 ? 'textbox' : 'link',
+    name: index === 0 ? '搜索' : `链接 ${index}`,
+    covered: false,
+  }))
+  const browser = {
+    async extract() {
+      extractCalls += 1
+      return { items, text: '页面正文'.repeat(20), title: '标题', url: 'https://a.test/' }
+    },
+    async snapshot() { treeCalls += 1; throw new Error('不该退回整树') },
+    async observe() { treeCalls += 1; throw new Error('不该退回整树') },
+    async read() { return '页面正文'.repeat(20) },
+    async get() { return '标题' },
+    async act() {},
+    async run() {},
+  }
+  const judge = fakeJudge([{ action: 'click:5', goalDone: 0.99 }])
+  const result = await runTask('点击链接 5', deps(browser, judge))
+  assert.equal(extractCalls, 1, '一次抽取 = 一次进程')
+  assert.equal(treeCalls, 0, '抽取成功就不该退回整树')
+  assert.equal(result.status, 'needs_verification')
+  const asked = judge.asked[0].questions.action.options
+  assert.ok(Object.keys(asked).length <= 16, `判断层选项 ${Object.keys(asked).length} 个，超过上限`)
+})
+
+test('P8：抽取失败时退回整树（功能不降级）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成' } }])
+  page.browser.extract = async () => { throw new Error('CSP 拦住了 eval') }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.ok(result.trace.some((line) => /退回整树/.test(line)), '应该记录退回原因')
+})

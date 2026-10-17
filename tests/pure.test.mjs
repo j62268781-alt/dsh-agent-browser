@@ -5,7 +5,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { MAX_CLICK_CANDIDATES, candidatesOf, questionsOf } from '../lib/task.js'
+import { MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, questionsOf } from '../lib/task.js'
+import { parseExtracted } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
 
@@ -133,4 +134,37 @@ test('插件补充会随工具/决策开关变化（工具关掉就说"用 bash 
   const off = pluginNote({ tools: false, decision: false })
   assert.match(off, /工具面当前\*\*关闭\*\*/)
   assert.ok(!off.includes('browser_snapshot'))
+})
+
+/* ───────────────── 页面内抽取（P8） ───────────────── */
+
+test('抽取结果解析：eval 返回值再解一层，且带正文/标题/URL', () => {
+  const payload = JSON.stringify({
+    items: [[0, 'a', '七日天气', 0], [1, 'textbox', '', 0], [2, 'button', '被挡住的按钮', 1]],
+    text: '页面正文',
+    title: '标题',
+    url: 'https://example.test/',
+  })
+  const page = parseExtracted(JSON.stringify(payload))
+  assert.equal(page.items.length, 3)
+  assert.deepEqual(page.items[0], { index: 0, role: 'a', name: '七日天气', covered: false })
+  assert.equal(page.items[2].covered, true)
+  assert.equal(page.text, '页面正文')
+  assert.equal(page.title, '标题')
+  assert.equal(page.url, 'https://example.test/')
+})
+
+test('抽取候选：跳过被遮挡的、输入框单独标注、动作用 data 属性句柄', () => {
+  const page = parseExtracted(JSON.stringify(JSON.stringify({
+    items: [[3, 'a', '新闻', 0], [4, 'button', '挡住', 1], [5, 'textbox', '搜索', 0]],
+    text: '', title: '', url: '',
+  })))
+  const candidates = candidatesFromExtracted(page.items, '搜索新闻')
+  const ids = candidates.map((candidate) => candidate.id)
+  assert.deepEqual(ids.sort(), ['click:3', 'input:5'])
+  const click = candidates.find((candidate) => candidate.id === 'click:3')
+  assert.equal(click.ref, '[data-dsh-idx="3"]')
+  const input = candidates.find((candidate) => candidate.id === 'input:5')
+  assert.equal(input.kind, 'input')
+  assert.match(input.description, /搜索/)
 })

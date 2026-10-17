@@ -15,7 +15,8 @@ import type {
   JudgmentQuestions,
   JudgmentAnswer,
 } from 'dsh-judgment/contract'
-import { CliError, type AgentBrowser, type ObservedPage, type Snapshot } from './cli.js'
+import { CliError, type AgentBrowser, type ExtractedPage, type ObservedPage, type Snapshot } from './cli.js'
+import { handleOf, type ExtractedItem } from './extract.js'
 
 /** 本插件编译时对齐的契约版本。不匹配就降级（dsh-judgment 契约 §13.3）。 */
 export const EXPECTED_API_VERSION = 1
@@ -27,6 +28,14 @@ export const EXPECTED_API_VERSION = 1
  * 收紧到 60 并把与 goal 相关的候选排在前面——既省 token，也更容易拿到合法分布。
  */
 export const MAX_CLICK_CANDIDATES = 40
+/**
+ * **发给判断层的选项上限**。
+ *
+ * 用户提出的可信度问题在这里落地：候选池可以有 40 个（页面里挑得全），但**一次问给判断层的
+ * 不能那么多**——实测这个部署在 40+ 选项上系统性欠归一（Σp 0.95–0.98，整批被拒），
+ * 且选项越多"选错"的概率越高。16 是实测能稳定给出合法分布的规模。
+ */
+export const JUDGE_OPTION_CAP = 16
 
 /**
  * 状态里快照文本的上限（字符）。状态随**每一批问题**重复发送，是成本的主要变量
@@ -68,6 +77,7 @@ export interface TaskCandidate {
   readonly description: string
   /** 执行时要用的形态：`click:@e2` / `control:scroll_down` / `input:text`。 */
   readonly kind: 'click' | 'control' | 'input'
+  /** **完整动作目标**：快照路径是 `@e12`，页面内抽取路径是 `[data-dsh-idx="7"]`。 */
   readonly ref?: string
 }
 
@@ -145,7 +155,52 @@ export interface TaskDeps {
 
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
 
+/** 页面内抽取（`extract()`）→ 候选：句柄 + 角色 + 名字，遮挡的默认不进池。 */
+export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = ''): TaskCandidate[] {
+  const clicks: TaskCandidate[] = []
+  const inputs: TaskCandidate[] = []
+  for (const item of items) {
+    if (item.covered) continue
+    const role = item.role.toLowerCase()
+    const label = item.name === '' ? `（无名称的 ${role}）` : `「${item.name}」（${role}）`
+    const candidate: TaskCandidate = {
+      id: `click:${item.index}`,
+      description: `点击${label}`,
+      kind: 'click',
+      ref: handleOf(item.index),
+    }
+    if (role === 'textbox' || role === 'searchbox' || role === 'combobox' || role === 'input' || role === 'textarea' || role === 'select') {
+      inputs.push({ ...candidate, id: `input:${item.index}`, description: `在${label}里输入/选择`, kind: 'input' })
+    } else {
+      clicks.push(candidate)
+    }
+  }
+  return [...rankByGoal(clicks, goal), ...rankByGoal(inputs, goal)]
+}
+
 /** 快照 → 候选。文本输入字段单独标注 `input:*`（让循环知道该交回宿主）。 */
+/** goal 里用于相关性的词（ASCII 词 + 中文 2 字 n-gram）。 */
+export function goalTokensOf(goal: string): string[] {
+  const cjk = (goal.match(/[\u4e00-\u9fa5]{2,}/g) ?? []).flatMap((run) => {
+    const grams: string[] = []
+    for (let index = 0; index + 1 < run.length; index += 1) grams.push(run.slice(index, index + 2))
+    return grams
+  })
+  return [...new Set([...(goal.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []), ...cjk])]
+}
+
+/** 按 goal 相关性排序（确定性，不做判断）：命中的排前面，其余保持原顺序。 */
+export function rankByGoal<T extends TaskCandidate>(list: readonly T[], goal: string): T[] {
+  const tokens = goalTokensOf(goal)
+  if (tokens.length === 0) return [...list]
+  const score = (candidate: TaskCandidate): number =>
+    tokens.reduce((total, token) => total + (candidate.description.toLowerCase().includes(token) ? 1 : 0), 0)
+  return list
+    .map((candidate, index) => ({ candidate, index, score: score(candidate) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((row) => row.candidate)
+}
+
 export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
   const clicks: TaskCandidate[] = []
   const inputs: TaskCandidate[] = []
@@ -162,7 +217,7 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
       id: `click:${ref}`,
       description: `点击${label}`,
       kind: 'click',
-      ref,
+      ref: `@${ref}`,
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
       inputs.push({ ...candidate, id: `input:${ref}`, description: `在${label}里输入/选择`, kind: 'input' })
@@ -174,22 +229,7 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
   // **按 goal 相关性排序**（确定性，不做判断）：命中的候选排前面，没命中的保持文档顺序。
   // 好处：候选预算优先花在"目标里提到的东西"上（实测这个页面 goal 提到 Browser，
   // 相关性排序后模型第一步就选中了 Browser 分类按钮）。
-  // 中文按 2 字 n-gram（"搜索框" → 搜索/索框）：之前只取 ASCII 词，中文 goal 的相关性完全没生效。
-  const cjk = (goal.match(/[\u4e00-\u9fa5]{2,}/g) ?? []).flatMap((run) => {
-    const grams = []
-    for (let index = 0; index + 1 < run.length; index += 1) grams.push(run.slice(index, index + 2))
-    return grams
-  })
-  const tokens = [...new Set([...(goal.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []), ...cjk])]
-  const relevance = (candidate: TaskCandidate): number =>
-    tokens.reduce((score, token) => score + (candidate.description.toLowerCase().includes(token) ? 1 : 0), 0)
-  const rank = <T extends TaskCandidate>(list: T[]): T[] =>
-    tokens.length === 0
-      ? list
-      : list
-        .map((candidate, index) => ({ candidate, index, score: relevance(candidate) }))
-        .sort((left, right) => right.score - left.score || left.index - right.index)
-        .map((row) => row.candidate)
+  const rank = <T extends TaskCandidate>(list: T[]): T[] => rankByGoal(list, goal)
 
   // 目标像是"要打字"时，输入候选排最前：对比 40 个链接，输入框才是要操作的目标。
   const wantsTyping = /输入|填写|填|搜索|查询|检索|type|fill|search|enter|query/i.test(goal)
@@ -415,32 +455,80 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       trace.push(`第 ${step} 步：观察连续失败（${message(lastError)}）→ 降深度（depth=8）再试一次`)
       return observeOnce(8)
     }
-    // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
-    // 用"连续两次结构一致"作为稳定判据（最多再探 2 次、每次 40ms）——比盲目 sleep 精确，
-    // 也避免"弹层还没出来就让 Jev 选"（jev-ultrafast 的 after_input 短等待同理）。
-    const observeSettled = async (): Promise<ObservedPage> => {
-      let current = await observe()
-      // 只探 1 次（40ms）：动画页永远"不稳定"，探多了就是白付延迟；
-      // jev-ultrafast 的 after_input 也只有 50/200ms 两个档位。
-      for (let probe = 0; probe < 1; probe += 1) {
-        await sleep(40)
-        const next = await observe()
-        if (!stateChanged(current, next)) return next
-        current = next
+    // **优先用页面内抽取（P8）**：候选小、可信（遮挡/不可见已过滤），状态也随之小一个数量级。
+    // 抽取失败（CSP 拦 eval、脚本异常等）就退回整树——功能不降级，只是慢一些、贵一些。
+    const observePage = async (): Promise<{ snapshot: Snapshot; candidates: TaskCandidate[]; text: string; title: string; mode: 'extract' | 'tree' }> => {
+      const useTree = async (): Promise<{ snapshot: Snapshot; candidates: TaskCandidate[]; text: string; title: string; mode: 'extract' | 'tree' }> => {
+        const observed = await observe()
+        const trimmed = observed.text.replace(/\s+/g, ' ').trim()
+        return {
+          snapshot: observed,
+          candidates: candidatesOf(observed, goal),
+          text: trimmed.length >= MIN_PAGE_TEXT ? observed.text : observed.snapshot,
+          title: observed.title,
+          mode: 'tree',
+        }
       }
-      return current
+      if (typeof deps.browser.extract !== 'function') return useTree()
+      try {
+        const started = now()
+        const page = await deps.browser.extract({ signal: deps.signal })
+        timings.snapshotMs += now() - started
+        const candidates = candidatesFromExtracted(page.items, goal)
+        // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
+        // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
+        // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
+        const goalTokens = goalTokensOf(goal)
+        if (goalTokens.length > 0 && candidates.length > 0) {
+          const bestScore = Math.max(...candidates.map((candidate) => goalTokens.filter((token) => candidate.description.toLowerCase().includes(token)).length))
+          if (bestScore === 0) {
+            trace.push(`第 ${step} 步：抽取结果里没有与目标相关的候选（目标词 ${goalTokens.slice(0, 4).join('/')}）→ 退回整树观察`)
+            return useTree()
+          }
+        }
+        if (candidates.length === 0) {
+          trace.push(`第 ${step} 步：页面内抽取没有可用候选（${page.items.length} 个元素）→ 退回整树观察`)
+          return useTree()
+        }
+        // 合成一份"紧凑快照"：下游的 stateChanged / 停滞判定 / 状态载荷都基于它。
+        const compact = page.items.map((item) => `${item.role} "${item.name}"${item.covered ? '（被遮挡）' : ''}`).join('\n')
+        const refs: Record<string, { name: string; role: string; clickable?: boolean }> = {}
+        for (const item of page.items) refs[String(item.index)] = { name: item.name, role: item.role, clickable: true }
+        const snapshot: Snapshot = {
+          origin: page.url,
+          snapshot: compact,
+          refs,
+          removedRefs: [],
+          digest: stableHash(compact),
+        }
+        const trimmed = page.text.replace(/\s+/g, ' ').trim()
+        const covered = page.items.filter((item) => item.covered).length
+        trace.push(`第 ${step} 步：页面内抽取 ${page.items.length} 个元素（跳过被遮挡 ${covered} 个）→ ${candidates.length} 个候选`)
+        return {
+          snapshot,
+          candidates,
+          text: trimmed.length >= MIN_PAGE_TEXT ? page.text : compact,
+          title: page.title,
+          mode: 'extract',
+        }
+      } catch (error) {
+        trace.push(`第 ${step} 步：页面内抽取失败（${message(error)}）→ 退回整树观察`)
+        return useTree()
+      }
     }
-    const observed = delivered === undefined ? await observe() : await observeSettled()
-    const snapshot: Snapshot = observed
-    // 正文太短（GitHub 只回 "Skip to content"）→ 退回无障碍树文本（同一页面的可见结构）。
-    const trimmedText = observed.text.replace(/\s+/g, ' ').trim()
-    const pageText = trimmedText.length >= MIN_PAGE_TEXT ? observed.text : snapshot.snapshot
-    if (trimmedText.length < MIN_PAGE_TEXT && trimmedText.length > 0) {
-      trace.push(`第 ${step} 步：read 只拿到 ${trimmedText.length} 个字符（页面可能还在渲染）→ 用无障碍树文本兜底`)
+    let observedPage = await observePage()
+    // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
+    // 探一次（40ms）——结构变了就用新的观察结果，避免"弹层还没出来就让 Jev 选"。
+    if (delivered !== undefined) {
+      await sleep(40)
+      const settledAgain = await observePage()
+      if (stateChanged(observedPage.snapshot, settledAgain.snapshot)) observedPage = settledAgain
     }
-    const pageTitle = observed.title
+    const snapshot: Snapshot = observedPage.snapshot
+    const pageText = observedPage.text
+    const pageTitle = observedPage.title
     last = snapshot
-    const candidates = candidatesOf(snapshot, goal)
+    const candidates = observedPage.candidates
     // P2（dsh-jev-plugin 的 no-request bypass）：控制项永远在候选里，所以"0/1 个候选"
     // 实际指的是**页面上的可操作元素**。没有可操作元素 → 不发请求，直接停；
     // 只有一个且是输入框 → 无论如何都要交回宿主拿文字，也不必问判断层。
@@ -495,7 +583,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       return result.answers
     }
     let answers: Readonly<Record<string, JudgmentAnswer>>
-    let askedCount = candidates.length
+    let askedCount = Math.min(candidates.length, JUDGE_OPTION_CAP)
     if (actionable.length === 1 && actionable[0].kind === 'input') {
       // 唯一可操作元素就是输入框：不需要判断是哪个框，直接交回宿主（省一次请求）。
       const only = actionable[0]
@@ -503,7 +591,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       answers = { action: { kind: 'choice', optionId: only.id, probabilities: { [only.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
     } else
     try {
-      answers = await askOnce(candidates)
+      answers = await askOnce(candidates.slice(0, JUDGE_OPTION_CAP))
     } catch (error) {
       if (isInvalidResponse(error)) {
         let last = error
@@ -582,7 +670,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
-      const info = chosen.ref === undefined ? undefined : snapshot.refs[chosen.ref]
+      // ref 存的是**完整动作目标**（`@e3` / CSS 选择器），查 refs 时要去掉 `@`。
+      const info = chosen.ref === undefined ? undefined : snapshot.refs[chosen.ref.replace(/^@/, '')]
       trace.push(`第 ${step} 步：需要输入「${info?.name ?? chosen.ref}」的内容 → 交回宿主（input_required）`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'input_required', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
       return finish('input_required', `需要 ${info?.role ?? 'field'}「${info?.name ?? chosen.ref}」的值`, snapshot)
@@ -778,7 +867,8 @@ async function confirmGoal(
 
 async function execute(browser: AgentBrowser, candidate: TaskCandidate, signal: AbortSignal): Promise<void> {
   if (candidate.kind === 'click' && candidate.ref !== undefined) {
-    await browser.act('click', `@${candidate.ref}`, {}, { signal })
+    // ref 已经是**完整目标**：`@e12`（快照路径）或 `[data-dsh-idx="7"]`（抽取路径）。
+    await browser.act('click', candidate.ref, {}, { signal })
     return
   }
   switch (candidate.id) {

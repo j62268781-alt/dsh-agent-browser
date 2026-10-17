@@ -573,26 +573,42 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 `browser_snapshot` 的 `includeText` / `includeTitle`（模型一次调用拿三样，省两个回合）、
 内置 skill 的「批量命令（batch）」一节。
 
-### 4.5.2g 脚本抽取：比发整棵树更省（待接入）
+### 4.5.2g 页面内抽取（P8，已接入）：给判断层只发"可信的少数"
 
-判断层是真正的瓶颈（实测 `ask` 0.7–1.9s/次，占循环耗时一半以上），而它每次都要吃掉整份状态
-（~4.3k tokens）。**在页面里用脚本预抽候选**可以把这份状态压掉一个数量级（实测 hao123）：
+判断层是真正的瓶颈（实测 `ask` 占循环耗时一半以上），而它每次要吃掉整份状态
+（~4.3k tokens）。**在页面里用一次 `eval` 预抽候选**，状态就小一个数量级（实测 hao123）：
 
-| 方案 | 负载 | 耗时 |
+| 方案 | 负载 | 每步耗时 |
 |---|---:|---:|
-| CLI `snapshot -i --json`（当前） | 13,985 字符文本 + 354 refs | 9.5 ms |
-| `eval` 抽取 + `data-dsh` 句柄 | **1,021 字符 ≈ 256 tokens**（40 个可见候选） | 7.8 ms |
+| CLI `snapshot -i --json`（旧路径） | 13,985 字符文本 + 354 refs ≈ 4.3k tokens/次 | ~10 ms |
+| 页面内 `eval` 抽取（当前快路径） | 80 个元素 → 1,021 字符 ≈ **1.1–1.9k tokens/次** | ~7–10 ms |
 
-要点与边界：
+**为什么用属性句柄而不是 `@eN`**：refs 只存在 Rust daemon 里，页面里没有任何映射
+（实测：`window` 无句柄、DOM 无 `data-*ref` 属性）。脚本给元素打 `data-dsh-idx="i"`，
+动作时 `browser_act('click', '[data-dsh-idx="7"]')`——实测可点击并跳转。
 
-- **不能直接用 `@eN`**：refs 只存在 Rust daemon 里，页面里没有映射（实测：无 window 句柄、
-  无 `data-*ref` 属性）。所以脚本给元素打**自己的**命名空间属性 `data-dsh="i"`，
-  返回 `[i, role, name, covered]`；动作时用 `[data-dsh="7"]`（实测点击成功并跳转）。
-- 抽取时就过滤：不可见/离屏（`getBoundingClientRect` + `getComputedStyle`）、
-  被遮挡（`elementFromPoint`）、无名字（输入框除外）。
-- 与"拿树"同一次进程：`batch 'eval <extractor>' 'read' 'get title'`。
-- 风险：会轻微改页面（重抽前清理属性）；shadow DOM / iframe 拿不到（CLI 快照同样有限）；
-  重渲染后属性丢失 → 动作失败 → 重观察（与现在的 ref 失效等价，安全）。
+**抽取时就把不可信的候选滤掉**（判断层看到的东西必须可信）：不可见
+（display/visibility/opacity）、离屏、被遮挡（`elementFromPoint`）、无名（输入框除外）。
+
+**给判断层的选项上限 16**（`JUDGE_OPTION_CAP`）：候选池可以有 54 个，但一次问给判断层的
+不能那么多——实测这个部署在 40+ 选项上系统性欠归一（Σp 0.95–0.98，整批被拒），
+选项越多"选错"概率越高。16 是实测能稳定给出合法分布的规模。
+
+**降级路径（功能不降级，只是慢/贵）**：
+
+1. `eval` 失败（CSP 拦、脚本异常）→ 退回整树；
+2. 抽取 0 个候选 → 退回整树；
+3. **目标覆盖检查**：目标提到的词在抽取结果里一个都没对上 → 退回整树
+   （抽取只认 DOM 语义元素，会漏掉"a11y 上 clickable、但只是 generic"的控件，
+   真机：hao123 的城市切换入口）。
+
+实测（hao123，4 步）：`snapshot 98ms · ask 1196ms（5 次）· act 231ms`，**tokens 5,350**
+（旧路径同规模 19–28k）→ 单次判断平均 **~1.07k tokens / ~239ms**，比之前 4.3k / ~380ms
+降了 4 倍（tokens）与 1.6 倍（延迟）。**仍受判断层质量限制**：Σp 欠归一依然要靠重采。
+
+**实现注意**：`batch` 会把每条命令按空白切分，而 JS 关键字之间必须有空白——所以抽取
+**不能放进 batch**，单走一次 `eval`（反而更省进程）；`--content-boundaries` 会把 `eval`
+输出包住，解析前必须剥掉。
 
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
