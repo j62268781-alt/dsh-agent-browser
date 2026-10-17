@@ -52,8 +52,13 @@
 
 /* 数字步进器：逐字抄「通用设置 → 字号」那行（ui-theme 的 FontSizeRow 的 CSS）：
    数值居中 + 右侧浮出上下箭头（hover / 聚焦才显形），底色用 bg-module-platform。 */
-.ab-stepper{box-sizing:border-box;position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:36px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}
+.ab-stepper{box-sizing:border-box;position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:36px;padding-right:22px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}
+/* 可输入的步进器：6 位毫秒（600000）也要放得下，且不被右侧箭头压住。 */
+.ab-stepper[data-editable=true]{min-width:104px;padding-right:24px}
 .ab-stepperValue{min-width:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}
+.ab-stepperInput{width:72px;padding:0;border:none;outline:none;background:transparent;text-align:center;font:inherit;font-size:14px;line-height:22px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.ab-stepperInput:disabled{cursor:not-allowed}
+.ab-stepperInput:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px;border-radius:var(--dsw-radius-xs)}
 .ab-stepperUnit{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}
 .ab-stepperArrows{position:absolute;right:8px;display:flex;flex-direction:column;gap:2px;opacity:0}
 .ab-stepper:hover .ab-stepperArrows,.ab-stepper:focus-within .ab-stepperArrows{opacity:1}

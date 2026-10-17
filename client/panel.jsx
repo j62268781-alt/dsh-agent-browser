@@ -14,7 +14,7 @@
 
 import './react.js'
 import { useEffect, useState } from 'react'
-import { IDLE_PATTERN, SESSION_PATTERN, arrayOf, msToSeconds, objectOf, parseDomains, secondsToMs, snapshotOf, statusOf } from './config.js'
+import { IDLE_PATTERN, SESSION_PATTERN, arrayOf, objectOf, parseDomains, snapshotOf, statusOf } from './config.js'
 import CSS from './styles.css'
 
 export function Panel(props) {
@@ -274,16 +274,18 @@ export function Panel(props) {
         />
         <Row
           title="命令超时"
-          subtitle="单条 CLI 命令最长等多久。用上下键按 1 秒加减；超时命令会被杀掉，不会一直挂着。"
+          subtitle="单条 CLI 命令最长等多久（毫秒）。上下键每次 100ms；也可以点数字直接输入精确值。超时命令会被杀掉，不会一直挂着。"
           control={(
             <NumberStepper
               primitives={props.primitives}
-              value={msToSeconds(limits.commandTimeoutMs ?? 30000)}
-              min={1}
-              max={600}
-              unit="秒"
+              value={Number(limits.commandTimeoutMs ?? 30000)}
+              min={1000}
+              max={600000}
+              step={100}
+              unit="毫秒"
+              editable
               disabled={!enabled || busy || !writable}
-              onChange={(next) => { void setGroup('limits', limits, 'commandTimeoutMs', secondsToMs(next)) }}
+              onChange={(next) => { void setGroup('limits', limits, 'commandTimeoutMs', next) }}
             />
           )}
         />
@@ -484,14 +486,49 @@ function Switch({ primitives, label, checked, disabled, onChange }) {
 /**
  * 数字步进器：照「通用设置 → 字号」那一行（ui-theme 的 `FontSizeRow`）——
  * 数值居中、右侧浮出上下两个小箭头，hover / 聚焦时才显形。没有 primitives 时用 ▲▼ 兜底。
+ *
+ * `editable` 时数值本身是个输入框（回车/失焦提交、自动夹到 [min,max]）：
+ * 毫秒这种值光靠 ±100 点太累，但**别把数值做成只能点**。
  */
-function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, onChange }) {
+function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, editable = false, onChange }) {
   const Up = primitives?.IconChevronUpOutlineRegular
   const Down = primitives?.IconChevronDownOutlineRegular
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => {
+    setDraft(String(value))
+  }, [value])
+
+  /** 输入框提交：非数字就还原；数字夹到区间内。 */
+  function commitDraft() {
+    const parsed = Number.parseInt(draft.replace(/[^\d]/g, ''), 10)
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value))
+      return
+    }
+    const next = Math.min(max, Math.max(min, parsed))
+    setDraft(String(next))
+    if (next !== value) onChange(next)
+  }
+
   return (
     <>
-      <div className="ab-stepper" data-disabled={disabled === true}>
-        <span className="ab-stepperValue">{value}</span>
+      <div className="ab-stepper" data-disabled={disabled === true} data-editable={editable}>
+        {editable ? (
+          <input
+            className="ab-stepperInput"
+            value={draft}
+            inputMode="numeric"
+            aria-label={`${unit}数`}
+            disabled={disabled === true}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            }}
+          />
+        ) : (
+          <span className="ab-stepperValue">{value}</span>
+        )}
         <span className="ab-stepperArrows">
           <button
             type="button"

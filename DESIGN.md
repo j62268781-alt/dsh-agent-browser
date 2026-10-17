@@ -239,8 +239,8 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
   └──────────────────────────────────────────────┘
 [会话名            input]  → --session
 [有头模式          Switch] → --headed
-[命令超时      30 秒 ▲▼]  → 我们的 spawn 超时；**界面用秒、配置存毫秒**，
-                            步进器照「通用设置 → 字号」那行（±1 秒，hover 才浮出箭头）
+[命令超时  30000 毫秒 ▲▼]  → 我们的 spawn 超时；步进器照「通用设置 → 字号」那行
+                            （hover 才浮出箭头），±100ms，**数值可点进去直接输入精确毫秒**
 [最大输出(字符)    input]  → --max-output
 [空闲超时          input]  → --idle-timeout
 [内容边界标记      Switch] → --content-boundaries

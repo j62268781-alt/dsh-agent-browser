@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
 import { MAX_CLICK_CANDIDATES, candidatesOf, questionsOf } from '../lib/task.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
-import { msToSeconds, parseDomains, secondsToMs } from '../client/config.js'
+import { parseDomains } from '../client/config.js'
 
 test('动作 → CLI 参数：每个动作都拼对，缺参数就地拒绝', () => {
   assert.deepEqual(actionArgs('click', '@e2'), ['click', '@e2'])
@@ -131,14 +131,4 @@ test('插件补充会随工具/决策开关变化（工具关掉就说"用 bash 
   const off = pluginNote({ tools: false, decision: false })
   assert.match(off, /工具面当前\*\*关闭\*\*/)
   assert.ok(!off.includes('browser_snapshot'))
-})
-
-test('超时的秒 ↔ 毫秒换算（界面用秒、配置存毫秒）', () => {
-  assert.equal(msToSeconds(30_000), 30)
-  assert.equal(msToSeconds(1_000), 1)
-  assert.equal(msToSeconds('500'), 1)          // 非整秒向上取整到最近的秒
-  assert.equal(msToSeconds(undefined), 0)
-  assert.equal(secondsToMs(30), 30_000)
-  assert.equal(secondsToMs(1), 1_000)
-  assert.equal(secondsToMs('45'), 45_000)
 })

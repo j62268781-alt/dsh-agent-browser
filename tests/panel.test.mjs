@@ -83,12 +83,12 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /逃生舱/)
   assert.match(html, /允许域名/)
   assert.match(html, /example\.com/)             // 配置值真的渲染出来了
-  // 命令超时是步进器（照通用设置「字号」那行）：界面显示秒、配置存毫秒
-  assert.match(html, /class="ab-stepper"/)
-  assert.match(html, /class="ab-stepperValue">30</)   // 30000ms → 30 秒
-  assert.match(html, /class="ab-stepperUnit">秒</)
-  assert.match(html, /aria-label="增加秒"/)
-  assert.match(html, /aria-label="减少秒"/)
+  // 命令超时是步进器（照通用设置「字号」那行）：**毫秒**为单位，数值可点进去改精确值
+  assert.match(html, /class="ab-stepper"[^>]*data-editable="true"/)
+  assert.match(html, /class="ab-stepperInput"[^>]*value="30000"/)
+  assert.match(html, /class="ab-stepperUnit">毫秒</)
+  assert.match(html, /aria-label="增加毫秒"/)
+  assert.match(html, /aria-label="减少毫秒"/)
   // 允许域名是上下布局 + 多行 textarea（横向挤不下，真机反馈）
   assert.match(html, /class="ab-row ab-rowStacked"[^>]*>.*?允许域名/s)
   assert.match(html, /<textarea class="ab-textarea"/)
