@@ -547,33 +547,52 @@ open 2.9–4.3 s（站点本身慢） · snapshot 40–70 ms · click 13–170 m
 估算成本 **$0.0008**/任务。**瓶颈仍然在判断层**：这个部署的 Σp 实测 0.95–0.98（与候选数无关），
 重采吃掉的 `ask` 时间占总耗时一半以上——那是 provider 侧的上限，不是循环能修的。
 
-### 4.5.2f 批量命令（batch）：在 CLI 这一层把"每步进程启动"压下来
+### 4.5.2f 进程启动成本与批量命令（batch）
 
-这个 CLI **每次调用都要新起一个进程**——实测 `agent-browser --version`（什么都不干）就要
-**64 ms**，而 `get url` / `snapshot -i` / `read` 分别是 63 / 63 / 65 ms：**成本 99% 是进程启动，
-浏览器干活只占几毫秒**。所以"CDP 消息条数"对我们没意义（`jev-ultrafast` 数的是那个），
-**"一步起了几个进程"才是**。
+> **更正**：本节最初写的是"每次 CLI 调用 63ms"。那其实是 **PATH 上的 `agent-browser` 壳**的成本——
+> 它是个 Node 脚本（`bin/agent-browser.js`），真正的实现是同目录的
+> `agent-browser-darwin-arm64`（Rust 二进制）。插件的 `resolveCommand()` 早就把 JS 壳换成原生二进制
+> （`nativeSiblingOf`），所以**插件实际成本是 5–10ms/次**：
 
-`batch` 在**一个进程**里顺序执行多条命令（`batch [--bail] --json <cmd...>`，
-`--json` 返回逐条结果数组）。实测同一组命令：
+| 方式 | `--version` / 单次操作 |
+|---|---|
+| PATH 上的 Node 壳 | 63–69 ms |
+| 原生二进制直调 | **6.6 ms**（`get url` 7.0 / `snapshot -i` 9.5 / `read` 6.0 / `get title` 5.2） |
 
+所以 `batch` 在 **CLI 层**省的是 ~10ms/步（三次独立调用 18.0ms → `observe()` 8.0ms），
+不是 114ms。它真正的价值在**模型回合**：一次工具调用 vs 三次，每回合约 1.7s。
+
+`batch` 在一个进程里顺序执行多条命令，`--json` 返回逐条结果数组：
+
+```sh
+agent-browser batch --json 'snapshot -i' 'read' 'get title'   # observe() 内部就是它
+agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 ```
-3 次独立调用（snapshot + read + get title）   176.3 ms
-1 次 batch（同样三条）                        62.4 ms      → 每步省 ~114 ms
-```
 
-落地：
+落地：`AgentBrowser.observe()`（树+正文+标题一次拿齐，循环每步用它）、
+`browser_snapshot` 的 `includeText` / `includeTitle`（模型一次调用拿三样，省两个回合）、
+内置 skill 的「批量命令（batch）」一节。
 
-- `AgentBrowser.observe()`：一次进程拿齐**树 + 正文 + 标题**（内部就是 `batch`），
-  决策循环的每步观测改用它（`timings.readMs/titleMs` 归零，合并进 `snapshotMs`）；
-- `browser_snapshot` 工具新增 `includeText` / `includeTitle`：模型**一次工具调用**就能拿到
-  三样东西——这不仅省进程，还**省两个模型回合**（每回合 ≥1.7 s）；
-- 内置 skill 增加「批量命令（batch）」一节：给出实测数字、观察组/导航组/表单组三种模式、
-  `--json` / `--bail` 语义，以及"不要批量包含需要决策的命令"的边界。
+### 4.5.2g 脚本抽取：比发整棵树更省（待接入）
 
-拿不到的：像 `jev-ultrafast` 那样**一次 evaluate 返回精简控件清单**、in-page O(1) 新鲜度守卫、
-把状态从"无障碍树文本"换成"紧凑结构"。那些要么自己讲 CDP，要么用 `eval`/init script 在
-页面里维护索引（等于把 CLI 当隧道用，与 CLI 的 snapshot 语义脱节）——定位不同，不做。
+判断层是真正的瓶颈（实测 `ask` 0.7–1.9s/次，占循环耗时一半以上），而它每次都要吃掉整份状态
+（~4.3k tokens）。**在页面里用脚本预抽候选**可以把这份状态压掉一个数量级（实测 hao123）：
+
+| 方案 | 负载 | 耗时 |
+|---|---:|---:|
+| CLI `snapshot -i --json`（当前） | 13,985 字符文本 + 354 refs | 9.5 ms |
+| `eval` 抽取 + `data-dsh` 句柄 | **1,021 字符 ≈ 256 tokens**（40 个可见候选） | 7.8 ms |
+
+要点与边界：
+
+- **不能直接用 `@eN`**：refs 只存在 Rust daemon 里，页面里没有映射（实测：无 window 句柄、
+  无 `data-*ref` 属性）。所以脚本给元素打**自己的**命名空间属性 `data-dsh="i"`，
+  返回 `[i, role, name, covered]`；动作时用 `[data-dsh="7"]`（实测点击成功并跳转）。
+- 抽取时就过滤：不可见/离屏（`getBoundingClientRect` + `getComputedStyle`）、
+  被遮挡（`elementFromPoint`）、无名字（输入框除外）。
+- 与"拿树"同一次进程：`batch 'eval <extractor>' 'read' 'get title'`。
+- 风险：会轻微改页面（重抽前清理属性）；shadow DOM / iframe 拿不到（CLI 快照同样有限）；
+  重渲染后属性丢失 → 动作失败 → 重观察（与现在的 ref 失效等价，安全）。
 
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
