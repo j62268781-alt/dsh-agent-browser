@@ -29,14 +29,19 @@
    否则会多出一份 16px（真机反馈：那里显得太大）。 */
 .ab-section>.ab-row:first-child{padding-top:0}
 
-/* 分组标题：留着它，行才不是一条无法阅读的长流水。它到**下面**那一组的距离要比到上面一行近，
-   所以上内边距给 12px（上一行自带 16px 下内边距 → 24px），下面一行自带 16px 上内边距 → 16px。 */
-.ab-groupTitle{margin:0;padding:12px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+/* 分组标题：排版与「向上的间距」逐字抄「Agent 预设」页（ui-agent-preset 的
+   `.FfBBxq_groupHead` + `.FfBBxq_group+.FfBBxq_group{margin-top:20px}`）：
+   12px / 600 / tertiary / letter-spacing .06em；组与组之间 20px。
+   注意：上一行自带 16px 下内边距，所以视觉上标题上方约 36px、下方 16px——标题明显更靠近
+   它标注的那组。行距本身不为了标题破例（每一行仍是统一的 16px）。 */
+.ab-groupTitle{margin:20px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:600;line-height:18px;letter-spacing:.06em;text-transform:uppercase}
 .ab-rowText{display:flex;flex-direction:column;min-width:0}
 .ab-rowTitle{font-size:14px;line-height:20px}
 .ab-rowSubtitle{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px}
-.ab-rowControl{display:inline-flex;align-items:center;gap:8px;flex:none;max-width:320px}
-.ab-rowControl>*{width:100%}
+.ab-rowControl{display:inline-flex;align-items:center;gap:8px;flex:none}
+/* 只有文本输入要占宽。**别给「控件容器内的所有孩子」统一设宽度**——那会把 36px 的 Switch
+   拉成整列宽，开关直接变形（真机踩过：重启后开关全变形）。只对 .ab-input 设宽。 */
+.ab-rowControl .ab-input{width:320px;max-width:100%}
 
 .ab-input{box-sizing:border-box;width:100%;height:32px;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:0 10px}
 .ab-input::placeholder{color:var(--dsw-alias-label-tertiary)}

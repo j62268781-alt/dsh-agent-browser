@@ -248,11 +248,19 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
    （General 的 `:last-child{border-bottom:none}`）。
 2. **整页第一行不留上内边距**（`.ab-section > .ab-row:first-child{padding-top:0}`）——否则
    summary → 第一行会比「副标题 → summary」多出一份 16px，看起来"这里特别大"。
-3. **分组标题保留**（工具面 / 进阶 / 配置文件）：上内边距 12px（上面一行自带 16px 下内边距 →
-   24px），下面那一行自带 16px 上内边距 → 16px。于是标题离**它标注的那一组更近**，归属看得出来。
+3. **分组标题保留**（工具面 / 进阶 / 配置文件），排版与「向上的间距」**逐字抄 Agent 预设页**
+   （`@deepseek-ai/dsh-client-ui-agent-preset` 的 `.groupHead` + `.group+.group{margin-top:20px}`）：
+   `12px / 600 / tertiary / letter-spacing .06em`，组与组之间 `margin-top:20px`。
+   上一行自带 16px 下内边距 → 视觉上标题上方约 36px、下方 16px，标题明显更靠近它标注的那组。
+   **行距本身不为了标题破例**（每一行仍是统一的 16px）——两件事分开：组间距用标题的 margin，
+   行间距用行的 padding。
 
 按钮照抄 skills-mcp 的 `.smp-button`（**`flex:none` 是重点**——少了它，按钮会被左列 `flex:1`
 的文本挤成"检/查/安/装"竖排，真机截图里出现过）。
+
+同样来自真机的 CSS 地雷：**别给「控件容器内的所有孩子」统一设宽度**（`.ab-rowControl > * { width:100% }`），
+那会把 36px 的 `Switch` 拉成整列宽、开关直接变形。只对 `.ab-input` 设宽即可；
+`tests/panel.test.mjs` 有一条 CSS 回归测试盯着这条。
 
 ### 4.3 实现事实（都已核对）
 

@@ -6,7 +6,7 @@
  * React 只是测试依赖：运行期由宿主的模块表提供（见 client/esbuild.config.mjs 的 external）。
  */
 import assert from 'node:assert/strict'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { build } from 'esbuild'
 import React from 'react'
@@ -88,6 +88,18 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   // 没接 primitives 时退回原生控件，而不是整页挂掉
   assert.match(html, /type="checkbox"/)
   assert.match(html, /<button/)
+})
+
+test('CSS 回归：Switch 不被拉伸；分组标题照抄「Agent 预设」的间距与排版', async () => {
+  const css = await readFile(new URL('../client/styles.css', import.meta.url), 'utf8')
+  // 宽泛的通配子选择器（`.ab-rowControl > * { width:100% }`）会把 36px 的 Switch 拉成整列宽
+  assert.ok(!/\.ab-rowControl\s*>\s*\*\s*\{/.test(css), '别给控件容器里所有孩子统一设宽度：Switch 会被拉变形')
+  assert.match(css, /\.ab-rowControl \.ab-input\{[^}]*width:320px/)
+  // 分组标题 = ui-agent-preset 的 .groupHead + .group+.group{margin-top:20px}
+  assert.match(css, /\.ab-groupTitle\{[^}]*margin:20px 0 0/)
+  assert.match(css, /\.ab-groupTitle\{[^}]*font-weight:600/)
+  assert.match(css, /\.ab-groupTitle\{[^}]*letter-spacing:\.06em/)
+  assert.match(css, /\.ab-groupTitle\{[^}]*color:var\(--dsw-alias-label-tertiary\)/)
 })
 
 test('自检卡片：两项、成功/失败各自的说明与"帮忙安装"，且不含路径', async () => {
