@@ -372,6 +372,56 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
   页面因此永远显式传参。
 - **验证**：`pnpm verify:remote` 用真 `dsh-typert-registry` + `dsh-api-gateway` 跑两端并交叉验证（17 项）。
 
+## 4.5 三家 Jev 浏览器实现的对比（2026-10-17 读源码 + 实测校准）
+
+| | `jkudish/jev-browser` | `wy-coliney/jev-browser-use` | `kerpopule/hermes-jev-skills` | 我们（`browser_run`） |
+|---|---|---|---|---|
+| 形态 | 自带 Playwright 的 MCP/CLI | Codex skill + bridge，**不自带浏览器** | 多 skill 家族（CUA/搜索/路由） | DSH 插件，CLI 驱动 `agent-browser` |
+| 每步问题 | **fan-out 三问**：action choice + goal_done noul + stuck noul | **一个 choice**，把 `DONE` / `BLOCKED` / `WAIT` 作为候选 | 一个 chooser + 独立的最终 `--expect` 验证 | fan-out 三问（同 jkudish） |
+| 候选来源 | 页面注入 `data-jev-id`，代码枚举 | 解析 Codex 的无障碍状态行 | 26 元素 shortlist，代码枚举 | 快照 refs 枚举（role 白名单） |
+| 停止门 | `goal_done>0.85` / `stuck>0.85`，**动作之前** | choice 选到 DONE/BLOCKED | 驱动层 `stalled_action` + 最终验证 | 同 jkudish，另加**独立确认** |
+| 重复无效动作 | 从概率分布取**次优候选** | 不处理（由 Codex 接管） | **语义哈希**判断"交付了但没变"，两次就停 | **两者都做**（次优 + stalled） |
+| 文字输入 | 另问一次生成文本 | **交给 Codex**（Jev 只点） | 同左 | **交回宿主**（input_required） |
+| 结束语 | `goal_achieved` / `done`，仍要验证 | DONE 交回 Codex 验证 | 最终 `--expect` 独立验证 | `needs_verification` + `next` 提示 |
+| 状态上限 | 无（截断元素数） | 快照 >24k 直接拒绝 | `MAX_STATE_CHARS` | 12k 截断 + 显式标注 |
+
+### 4.5.1 移植了哪些（都有测试或实测支撑）
+
+1. **重复无效动作 → 从分布取次优**（jkudish）。`ChoiceAnswer.probabilities` 是完整分布，
+   不是我们编的猜测；`pickAlternate()` 按概率降序、排除已试过与不可执行的候选。
+2. **语义哈希判断"交付了但页面没变"**（ronadin2002/jev-cua → hermes）。`stateSignature()`
+   取「origin + 角色/可访问名 + 归一化正文的哈希」，**忽略 ref 编号**——否则"点了个没效果的按钮"
+   和"真的推进了"分不开。两次无效 → `no_progress`。
+3. **状态上限**（wy-coliney + 契约 §5.1 的成本事实）：快照正文 12k 截断，并写
+   `snapshot_truncated` 显式标注。
+4. **问题措辞纪律**（hermes《Writing a question Jev can answer》）：只点明**一个**判定属性，
+   其余明说"只用于打破平局"；`goal_done` 直接指向 `state.page_text` 这一个字段。
+5. **独立确认**（三家都有）：`goal_done` 只是"候选完成"，再用**一次**调用拿页面正文问一遍。
+6. **`next` 提示**（wy-coliney 的 "Codex verifies"）：结果里带"怎么验"的下一步。
+
+### 4.5.2 实测校准（这个 Jev 部署，n=3 × 2 次采样）
+
+同一页面三种状态，`goal_done` 的措辞不同，答案完全不同：
+
+| state | 笼统问"当前页面是否可见地呈现结果" | **只指向 `page_text` 字段** |
+|---|---|---|
+| 初始页面 | 0.800 | **0.090** |
+| 中间态（"第一步完成"） | 0.740 | **0.230** |
+| 已完成（SUCCESS） | 1.000 | **1.000** |
+
+前者贴着我们的 0.85 阈值（真机上抖到 0.91 直接假阳性、一步没点就宣布完成），后者判别干净。
+**结论：不是模型不行，是问题没点明"哪个字段是证据"**——这正是 hermes 那篇论文的核心发现。
+
+另外实测这个部署的 **choice 在二选一「完成/没完成」上会饱和**（三种状态都给 `done` 0.98–1.0），
+所以没有照搬 wy-coliney 的"DONE 作为候选"，而是保留 noul watcher + 独立确认。
+
+### 4.5.3 顺手修掉的真 bug
+
+`agent-browser open <url>` **成功返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是
+`about:blank`，决策循环于是只看到滚动/等待候选、白跑几步才超时。`AgentBrowser.open()`
+现在轮询 `get url` 直到页面落地（≤5s）。这个 bug 只在"open 之后立刻操作"时出现，
+所以 `browser_session open` 工具也一并受益。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）

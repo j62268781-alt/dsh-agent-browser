@@ -51,7 +51,8 @@
     "test": "pnpm build && node --test tests/*.test.mjs",
     "probe": "pnpm build:host && node scripts/probe.mjs",
     "verify:remote": "pnpm build && node scripts/verify-remote.mjs",
-    "verify:served": "node scripts/verify-served.mjs"
+    "verify:served": "node scripts/verify-served.mjs",
+    "e2e": "pnpm build && node scripts/e2e-run.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.4 <5.0.0",

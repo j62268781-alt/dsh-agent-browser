@@ -424,6 +424,22 @@ export class AgentBrowser {
 
   async open(url: string, run: CliRunOptions = {}): Promise<void> {
     await this.json(['open', url], run)
+    // ⚠️ `open` 成功返回 **不等于导航已经提交**：真机（0.38.2）上紧接着取快照，
+    // 页面还是 `about:blank`，于是决策循环只看到滚动/等待、白跑几步才超时。
+    // 这里等到真正的页面落地（最多 ~5s），把"打开"的语义补齐。
+    await this.waitUntilNavigated(run)
+  }
+
+  /** 轮询 `get url` 直到页面不再是 about:blank（导航提交 / 重定向都算落地）。 */
+  private async waitUntilNavigated(run: CliRunOptions): Promise<void> {
+    const budget = Math.min(run.timeoutMs ?? this.options.timeoutMs, 5_000)
+    const deadline = Date.now() + budget
+    for (;;) {
+      const current = await this.get('url', undefined, undefined, run).catch(() => '')
+      if (current !== '' && !/^about:blank$/i.test(current)) return
+      if (Date.now() >= deadline) return
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }
 
   async close(run: CliRunOptions = {}): Promise<void> {

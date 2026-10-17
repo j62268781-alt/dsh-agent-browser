@@ -194,6 +194,12 @@ scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
 > 当前验证过的运行时：dsh 0.2.1-rc.1 / cordis 4.0.5 / schemastery 3.18.5 /
 > dsh-tools 0.2.1-rc.1 / dsh-typert-protocol 0.2.1-rc.1。
 
+> **决策循环**（`browser_run`）的设计参考了三家实现并做了实测校准：
+> fan-out 五问里的停止门在动作之前；`goal_done` 只认「页面可见正文」这一个字段；
+> 重复且无效的动作从**概率分布**里换次优候选；两次无效即停；状态超 12k 截断并显式标注；
+> 结束时只给 `needs_verification` + `next`（"怎么验"），从不宣布完成。
+> 真机端到端：`pnpm e2e`（真 Chrome + 真 Jev，两步点击后被独立确认为 SUCCESS）。
+
 > ⚠️ **「决策」依赖 dsh-judgment**（依赖在 `package.json` 里显式声明：`peerDependencies.dsh-judgment`
 > + `peerDependenciesMeta.dsh-judgment.optional = true`，所以不装也能用插件，只是不能开决策）。
 > 设置页的判定是**四态**的——`ready`（可开启）/ `checking`（自检未返回）/ `unknown`（自检失败或
