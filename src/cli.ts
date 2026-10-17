@@ -24,6 +24,11 @@ export interface CliEnvelope<T> {
 export interface RefInfo {
   readonly name: string
   readonly role: string
+  /**
+   * 快照文本里被标了 `clickable` 的**非语义元素**（真机：hao123 顶部的城市切换是 `generic`）。
+   * JSON 的 `refs` 不区分这个，只有文本树有——不读它，这类可点的容器就永远进不了候选。
+   */
+  readonly clickable?: boolean
 }
 
 /** 归一化后的快照（只保留我们真正用到的字段）。 */
@@ -382,6 +387,23 @@ export class AgentBrowser {
     const refs: Record<string, RefInfo> = {}
     for (const [ref, value] of Object.entries(data.refs ?? {})) {
       refs[ref] = { name: String(value?.name ?? ''), role: String(value?.role ?? '') }
+    }
+    // JSON 的 refs 里有些元素**名字是空的**（真机：hao123 顶部的城市切换 generic 在文本树里
+    // 明明有「茂名切换城市取消B 北京S…」，refs 里却是空串）。名字只存在于可读文本时从文本回填：
+    // 决策层和模型都靠这个名字认元素，空名字等于"看不见它"。
+    for (const line of text.split('\n')) {
+      const match = /^-\s+([\w-]+)(?:\s+"((?:[^"\\]|\\.)*)")?.*\[ref=([\w-]+)\]/.exec(line.trim())
+      if (match === null) continue
+      const [, role, rawName, ref] = match
+      const name = rawName === undefined ? '' : rawName.replace(/\\"/g, '"')
+      const clickable = /\bclickable\b/.test(line)
+      const current = refs[ref]
+      if (current !== undefined) {
+        const nextName = current.name === '' && name !== '' ? name : current.name
+        if (nextName !== current.name || clickable) refs[ref] = { name: nextName, role: current.role, ...(clickable ? { clickable: true } : {}) }
+      } else {
+        refs[ref] = { name, role, ...(clickable ? { clickable: true } : {}) }
+      }
     }
     return {
       origin,

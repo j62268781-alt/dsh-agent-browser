@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   MAX_CLICK_CANDIDATES,
+  candidatesOf,
   SNAPSHOT_STATE_CAP,
   pickAlternate,
   runTask,
@@ -319,12 +320,16 @@ test('连续 stale_state（页面一直在动）→ 熔断成 no_progress，而�
   // 每次取快照 digest 都变：决策后必然"页面已变"（真机：点链接触发同页导航）
   let snapshots = 0
   const browser = {
-    snapshot: async () => ({
-      origin: 'https://a.test/',
-      digest: `digest-${++snapshots}`,
-      snapshot: 'button "继续" @e1',
-      refs: { e1: { role: 'button', name: '继续' } },
-    }),
+    // 每次名字都变 = **语义**变了（digest 变但语义没变不算 stale，见 stateSignature 的注释）
+    snapshot: async () => {
+      snapshots += 1
+      return {
+        origin: 'https://a.test/',
+        digest: `digest-${snapshots}`,
+        snapshot: `button "继续 ${snapshots}" @e1`,
+        refs: { e1: { role: 'button', name: `继续 ${snapshots}` } },
+      }
+    },
     read: async () => '页面正文',
     get: async () => '标题',
     act: async () => {},
@@ -335,4 +340,20 @@ test('连续 stale_state（页面一直在动）→ 熔断成 no_progress，而�
   assert.equal(result.status, 'no_progress')
   assert.match(result.trace.join('\n'), /连续 3 次/)
   assert.ok(result.steps.length <= 4, `不该烧完 10 步，实际 ${result.steps.length} 步`)
+})
+
+test('无名称的可交互元素也要进候选（真实站点：hao123 首页的搜索框没有可访问名）', () => {
+  const snapshot = {
+    origin: 'https://www.hao123.com/',
+    digest: 'd',
+    snapshot: 'textbox @e1\nbutton "百度一下" @e2',
+    refs: {
+      e1: { role: 'textbox', name: '' },
+      e2: { role: 'button', name: '百度一下' },
+    },
+  }
+  const candidates = candidatesOf(snapshot, '搜索 jev')
+  assert.ok(candidates.some((candidate) => candidate.id === 'input:e1'), '无名称的搜索框必须出现在输入候选里')
+  const input = candidates.find((candidate) => candidate.id === 'input:e1')
+  assert.match(input.description, /无名称的 textbox/)
 })

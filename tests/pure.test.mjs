@@ -41,15 +41,17 @@ const snapshot = {
   digest: 'abc123',
 }
 
-test('候选枚举：确定性、跳过无名元素、文本字段单独标注 input', () => {
+test('候选枚举：确定性、无名元素保留（真实站点常见）、文本字段单独标注 input', () => {
   const candidates = candidatesOf(snapshot)
   const ids = candidates.map((candidate) => candidate.id)
   assert.deepEqual(ids, [
-    'click:e1', 'click:e4',        // 可点角色，按快照顺序
-    'input:e2',                    // textbox → input（循环里交回宿主）
+    'click:e1', 'click:e3', 'click:e4',  // 可点角色，按快照顺序（e3 无名也要保留）
+    'input:e2',                          // textbox → input（循环里交回宿主）
     'control:scroll_down', 'control:scroll_up', 'control:back', 'control:wait',
   ])
-  assert.ok(!ids.includes('click:e3'), '没有可访问名的链接不进候选')
+  // 无名元素用"无名称的角色 + ref"兜底描述，不猜语义
+  const unnamed = candidates.find((candidate) => candidate.id === 'click:e3')
+  assert.match(unnamed.description, /无名称/)
 })
 
 test('候选封顶在协议的 255 之下（给控制项留位置）', () => {
