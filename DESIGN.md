@@ -415,6 +415,10 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
 另外实测这个部署的 **choice 在二选一「完成/没完成」上会饱和**（三种状态都给 `done` 0.98–1.0），
 所以没有照搬 wy-coliney 的"DONE 作为候选"，而是保留 noul watcher + 独立确认。
 
+跑通的样子（`pnpm e2e` 真机截图，`docs/e2e-success.png`）：
+
+![e2e 成功](../docs/e2e-success.png)
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，
