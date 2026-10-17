@@ -20,7 +20,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Judge } from 'dsh-judgment/contract'
 import { AgentBrowser, CliError, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, isSupportedVersion } from './cli.js'
-import { Config, type AgentBrowserConfig } from './config.js'
+import { Config, type AgentBrowserConfig, type ResolvedConfig } from './config.js'
 import { chromeCandidates, chromeFromDoctor, chromePathNames, installPlan, runCommand, whichOnPath } from './env.js'
 import { loadBundledSkill, pluginNote } from './skill.js'
 import { runTask } from './task.js'
@@ -84,22 +84,59 @@ export class AgentBrowserService extends TypertRemoteService {
   static inject = ['tools']
   static Config = Config
 
-  private readonly browser: AgentBrowser
-  private readonly session: string
-  /** 版本锁懒执行、只跑一次：启动时不 spawn 进程，第一次真正要用时校验。 */
+  private browser!: AgentBrowser
+  private session = DEFAULT_SESSION
   private versionChecked: Promise<string> | undefined
+  /** skill 与工具的注册返回值：每次重新应用配置前先撤掉旧的。 */
+  private readonly registrations: unknown[] = []
+  private readonly log: ReturnType<Context['logger']>
 
   constructor(ctx: Context, private readonly config: AgentBrowserConfig) {
     super(ctx, 'browser')
+    this.log = ctx.logger('agent-browser')
 
+    // 首次应用：配置非法时**抛错**（让 entry 起不来，问题必须暴露）。
+    this.apply(this.resolve(), { initial: true })
+
+    // 设置页写的是 volatile 字段 → 不会重建 entry → 工具注册必须自己重做。
+    // 宿主在 volatile 值变化后发这个事件（`cordis-plugin-loader` 的 `loader/volatile-update`）。
+    ;(ctx.on as unknown as (event: string, listener: () => void) => void)('loader/volatile-update', () => {
+      try {
+        this.apply(this.resolve(), { initial: false })
+      } catch (error) {
+        this.log.warn(`配置热更新没有应用：${message(error)}`)
+      }
+    })
+  }
+
+  /** 把 volatile 包装拆成普通值：**每次现取**，拿到的一定是最新的一份。 */
+  private resolve(): ResolvedConfig {
+    return {
+      enabled: this.config.enabled.get(),
+      browser: this.config.browser.get(),
+      session: this.config.session.get(),
+      tools: this.config.tools.get(),
+      limits: this.config.limits.get(),
+      judgment: this.config.judgment.get(),
+    }
+  }
+
+  /**
+   * 应用一次配置：撤销旧注册 → 重建 CLI 客户端 → 重新注册 skill / 工具。
+   * 构造函数首次调用与 volatile 热更新走同一条路，避免两份逻辑漂移。
+   */
+  private apply(config: ResolvedConfig, options: { initial: boolean }): void {
     // 两者互斥是 CLI 自己的纪律（--allowed-domains 会关掉 profile 等旁路），
     // 配置层面就拒掉，别等到调用时才报一个绕口的 CLI 错误。
     if (config.browser.allowedDomains.length > 0 && config.browser.profile !== '') {
-      throw new Error(
-        'agent-browser：`browser.allowedDomains` 与 `browser.profile` 互斥——' +
-        '域名白名单会关闭 profile 复用（CLI 的 fail-closed 行为）。二选一。',
-      )
+      const reason =
+        '`browser.allowedDomains` 与 `browser.profile` 互斥——域名白名单会关闭 profile 复用（CLI 的 fail-closed 行为）。二选一。'
+      if (options.initial) throw new Error(`agent-browser：${reason}`)
+      this.log.warn(`${reason} 这次配置改动没有应用，保留上一个可用配置。`)
+      return
     }
+
+    this.disposeRegistrations()
 
     this.session = config.session.name === '' ? DEFAULT_SESSION : config.session.name
     this.browser = new AgentBrowser({
@@ -107,18 +144,32 @@ export class AgentBrowserService extends TypertRemoteService {
       globalArgs: globalArgsOf(config, this.session),
       timeoutMs: config.limits.commandTimeoutMs,
     })
+    this.versionChecked = undefined
 
-    const log = ctx.logger('agent-browser')
-    log.info(`会话 "${this.session}"；命令 ${this.browser.commandDetail}；参数 ${this.browser.globalArgs.join(' ')}`)
+    this.log.info(`会话 "${this.session}"；命令 ${this.browser.commandDetail}；参数 ${this.browser.globalArgs.join(' ')}`)
 
     // 内置 skill 与「浏览器功能」开关无关：工具关掉了，skill 仍然告诉模型怎么用 CLI。
-    this.registerSkill()
+    this.registerSkill(config)
 
     if (!config.enabled) {
-      log.info('已关闭：不注册任何浏览器工具')
+      this.log.info('已关闭：不注册任何浏览器工具')
       return
     }
-    this.registerTools()
+    this.registerTools(config)
+  }
+
+  /** 撤掉上一次应用的所有注册（工具 / skill）。 */
+  private disposeRegistrations(): void {
+    while (this.registrations.length > 0) {
+      const registration = this.registrations.pop()
+      if (typeof registration === 'function') (registration as () => void)()
+      else if (registration !== null && typeof registration === 'object') {
+        const disposable = registration as { dispose?: () => void; [Symbol.dispose]?: () => void }
+        const symbolDispose = disposable[Symbol.dispose]
+        if (typeof disposable.dispose === 'function') disposable.dispose()
+        else if (typeof symbolDispose === 'function') symbolDispose.call(disposable)
+      }
+    }
   }
 
   /** 版本锁：懒执行 + 只跑一次，越界给明确文案。 */
@@ -261,7 +312,7 @@ export class AgentBrowserService extends TypertRemoteService {
    * 把随包发布的核心 skill 注册成运行时 skill（`dsh-skill` 的 `ctx.skills.register`）。
    * **可选服务**：`ctx.skills` 不在就跳过——插件其余部分照常工作。
    */
-  private registerSkill(): void {
+  private registerSkill(config: ResolvedConfig): void {
     let skills: { register: (skill: unknown) => unknown } | undefined
     try {
       skills = this.ctx.get('skills') as typeof skills
@@ -274,15 +325,15 @@ export class AgentBrowserService extends TypertRemoteService {
     }
     try {
       const skill = loadBundledSkill()
-      skills.register({
+      this.registrations.push(skills.register({
         name: skill.name,
         description: skill.description,
         ...(skill.whenToUse === undefined ? {} : { whenToUse: skill.whenToUse }),
-        content: skill.content + pluginNote({ tools: this.config.enabled, decision: this.config.tools.decision }),
+        content: skill.content + pluginNote({ tools: config.enabled, decision: config.tools.decision }),
         source: 'dsh-agent-browser',
         resourceBase: skill.resourceBase,
         invocation: { modelInvocable: true, userInvocable: true },
-      })
+      }))
       this.ctx.logger('agent-browser').info(`已注册内置 skill "${skill.name}"（references 在 ${skill.resourceBase.path}）`)
     } catch (error) {
       this.ctx.logger('agent-browser').warn(`内置 skill 注册失败：${message(error)}`)
@@ -291,13 +342,12 @@ export class AgentBrowserService extends TypertRemoteService {
 
   /* ─────────────────────────── 工具 ─────────────────────────── */
 
-  private registerTools(): void {
+  private registerTools(config: ResolvedConfig): void {
     const ctx = this.ctx
     const browser = this.browser
-    const config = this.config
     const ensureVersion = (exec: { signal: AbortSignal }): Promise<string> => this.ensureVersion(exec.signal)
 
-    ctx.tools.register(defineTool({
+    this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_snapshot',
       description:
         '取当前页面的无障碍树（带 @eN ref）。**先快照再动作**：ref 是元素身份绑定的，页面变了旧的 ref 会以 ' +
@@ -324,9 +374,9 @@ export class AgentBrowserService extends TypertRemoteService {
           snapshot.snapshot,
         ].join('\n')
       },
-    }))
+    })))
 
-    ctx.tools.register(defineTool({
+    this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_act',
       description:
         '对当前页面执行**恰好一个**变更动作（click/fill/type/press/select/scroll/hover/check/uncheck/upload/dblclick/focus）。' +
@@ -386,9 +436,9 @@ export class AgentBrowserService extends TypertRemoteService {
         // press / scroll / wait 没有元素目标，别在返回值里留一个尾随空格。
         return target === '' ? `✓ ${args.action}` : `✓ ${args.action} ${target}`
       },
-    }))
+    })))
 
-    ctx.tools.register(defineTool({
+    this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_read',
       description:
         '只读：`url` 给了就抓取它（优先 markdown / llms.txt），没给就读当前页渲染后的文本；' +
@@ -406,9 +456,9 @@ export class AgentBrowserService extends TypertRemoteService {
         if (what === '') return browser.read(args.url, { signal: exec.signal })
         return browser.get(what, args.selector, args.attr, { signal: exec.signal })
       },
-    }))
+    })))
 
-    ctx.tools.register(defineTool({
+    this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_session',
       description:
         '会话与标签页：open 打开一个 URL、close 关闭浏览器、tabs 列出标签页。' +
@@ -435,10 +485,10 @@ export class AgentBrowserService extends TypertRemoteService {
             throw new CliError('bad-request', `不支持的 action "${args.action}"：只有 open / close / tabs`)
         }
       },
-    }))
+    })))
 
     if (config.tools.screenshot) {
-      ctx.tools.register(defineTool({
+      this.registrations.push(ctx.tools.register(defineTool({
         name: 'browser_screenshot',
         description: '截图（视觉兜底或给人看）。返回图片落盘路径。' + UNTRUSTED,
         parameters: {
@@ -451,11 +501,11 @@ export class AgentBrowserService extends TypertRemoteService {
           const path = await browser.screenshot(args.path, args.fullPage === true, { signal: exec.signal })
           return `✓ 截图已保存：${path}`
         },
-      }))
+    })))
     }
 
     if (config.tools.raw) {
-      ctx.tools.register(defineTool({
+      this.registrations.push(ctx.tools.register(defineTool({
         name: 'browser_raw',
         description:
           '逃生舱：执行白名单内的其它 agent-browser 子命令（get / is / find / wait / tab / network / storage / cookies / console / errors / trace …）。' +
@@ -469,7 +519,7 @@ export class AgentBrowserService extends TypertRemoteService {
           const argv = assertRawAllowed(args.args)
           return browser.run(argv, { signal: exec.signal })
         },
-      }))
+    })))
     }
 
     if (config.tools.decision) {
@@ -481,7 +531,7 @@ export class AgentBrowserService extends TypertRemoteService {
           '请安装 dsh-judgment（重启 DSH），或在「设置 → 浏览器」里关掉决策。',
         )
       }
-      ctx.tools.register(defineTool({
+      this.registrations.push(ctx.tools.register(defineTool({
         name: 'browser_run',
         description:
           '用一句话目标驱动浏览器：插件内部跑一个有界循环（每步重新快照 → 由 ctx.judgment 在代码枚举的候选里选一个动作 → 执行一个动作）。' +
@@ -505,7 +555,7 @@ export class AgentBrowserService extends TypertRemoteService {
           })
           return JSON.stringify(result, null, 2)
         },
-      }))
+    })))
     }
 
     const log = ctx.logger('agent-browser')
@@ -520,7 +570,7 @@ export default AgentBrowserService
 
 /* ─────────────────────────── 装配辅助 ─────────────────────────── */
 
-function globalArgsOf(config: AgentBrowserConfig, session: string): string[] {
+function globalArgsOf(config: ResolvedConfig, session: string): string[] {
   const args: string[] = ['--session', session]
   if (config.browser.headed) args.push('--headed')
   if (config.browser.allowedDomains.length > 0) args.push('--allowed-domains', config.browser.allowedDomains.join(','))

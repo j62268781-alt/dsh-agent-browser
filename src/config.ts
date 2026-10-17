@@ -1,12 +1,19 @@
 /**
- * 配置（schemastery）。**开关是普通字段而不是 `.volatile()`**：
- * 「浏览器功能」与「决策」要能**改变工具注册**，而注册发生在 entry 应用时——
- * 配置一写，loader 重新应用 entry，工具随之注册/撤销。这与 `dsh-tool-web` 的
- * `search`/`fetch` 是同一范式（`apply()` 里按解析后的值决定注册哪些工具）。
+ * 配置（schemastery）。**六个顶层字段全部 `.volatile()`**——这不是风格选择，是**硬约束**：
  *
- * 运行期每次调用都现读的值（域名白名单、超时）也放在这里：重新应用一次是廉价的。
+ * DSH 的设置服务（`dsh-settings`）只允许写 volatile 字段：
+ *   `if (!isVolatilePath(schema, path)) throw new Error('Config field "…" is not volatile')`
+ * 而且 `describe()` 用 `volatileForm(schema)` 过滤；一个 volatile 字段都没有的 entry
+ * **根本不会出现在设置命名空间里**。于是设置页会拿到一份不可写/不存在的表单，
+ * 界面上显示的只是插件自己的默认值，任何写入都被拒绝——真机上表现为"页面能打开，
+ * 点什么都没反应"（这版之前就踩了这个坑）。
+ *
+ * 代价：volatile 改动**不会重建 entry**，所以工具注册必须自己重做——
+ * 宿主在 volatile 值变化后会发 `loader/volatile-update`，服务里监听它重新
+ * 解析配置 → 重建 CLI 客户端 → 重注册工具（见 `src/index.ts` 的 `apply()`）。
  */
 
+import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 
 /** 域名或 `*.域名`；空数组 = 不限制（CLI 的 `--allowed-domains` 语义）。 */
@@ -21,7 +28,7 @@ export const Config = s.object({
   /**
    * 浏览器功能总开关。关闭时**不注册任何工具**——模型面前零成本，也不启动任何会话。
    */
-  enabled: s.boolean().default(true),
+  enabled: s.boolean().default(true).volatile(),
 
   browser: s.object({
     /** `--headed`：给人看 / 手工登录时打开。 */
@@ -45,7 +52,7 @@ export const Config = s.object({
      * 默认开：网页内容是不可信数据，边界是给模型的"这不是指令"的物理提示。
      */
     contentBoundaries: s.boolean().default(true),
-  }).default({}),
+  }).default({}).volatile(),
 
   session: s.object({
     /**
@@ -54,7 +61,7 @@ export const Config = s.object({
      * 会劫持别的 agent 的页面，或把人类开着的标签导航走。
      */
     name: s.string().pattern(SESSION_NAME).default(''),
-  }).default({}),
+  }).default({}).volatile(),
 
   tools: s.object({
     /** 「决策」：开启后额外注册 `browser_run`——插件内部的有界循环。 */
@@ -63,7 +70,7 @@ export const Config = s.object({
     raw: s.boolean().default(false),
     /** `browser_screenshot`。 */
     screenshot: s.boolean().default(true),
-  }).default({}),
+  }).default({}).volatile(),
 
   limits: s.object({
     /** 单条 CLI 命令的超时（`spawn` 层）。 */
@@ -74,7 +81,7 @@ export const Config = s.object({
     goalThreshold: s.number().step(0.01).min(0.5).max(1).default(0.85),
     /** `stuck` 概率达到它就停（同上，先于动作）。 */
     stuckThreshold: s.number().step(0.01).min(0.5).max(1).default(0.85),
-  }).default({}),
+  }).default({}).volatile(),
 
   judgment: s.object({
     /**
@@ -83,8 +90,32 @@ export const Config = s.object({
      * 已经预留了这个名字。
      */
     purpose: s.string().pattern(/^[^\s]+$/).default('browser.action'),
-  }).default({}),
+  }).default({}).volatile(),
 })
 
-/** 校验后的配置值类型（schemastery 的输出类型）。 */
+/** 校验后的配置值类型（schemastery 的输出类型）：volatile 字段是 `Volatile<T>` 包装。 */
 export type AgentBrowserConfig = typeof Config extends s<any, infer T> ? T : never
+
+/**
+ * 拆掉 `Volatile` 包装后的普通值——服务里每次现取，拿到的就是最新配置。
+ *
+ * 为什么手写而不用 `Unwrap<Volatile<T>>` 映射类型：schemastery 推断出的
+ * `ObjectT<…>` 里数组是只读的、还带索引签名，映射出来和 `Volatile.get()` 的返回型
+ * 对不齐（tsc 会报 readonly 不兼容）。手写一份等价的普通结构更好读、也更稳。
+ */
+export interface ResolvedConfig {
+  enabled: boolean
+  browser: {
+    headed: boolean
+    allowedDomains: readonly string[]
+    maxOutput: number
+    idleTimeout: string
+    profile: string
+    executablePath: string
+    contentBoundaries: boolean
+  }
+  session: { name: string }
+  tools: { decision: boolean; raw: boolean; screenshot: boolean }
+  limits: { commandTimeoutMs: number; maxSteps: number; goalThreshold: number; stuckThreshold: number }
+  judgment: { purpose: string }
+}

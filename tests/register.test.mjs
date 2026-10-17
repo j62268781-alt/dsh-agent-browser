@@ -19,7 +19,11 @@ class FakeTools extends Service {
 
   register(definition) {
     this.registered.push(definition)
-    return () => {}
+    // 真的支持撤销：热更新测试要靠它验证"工具被撤掉"。
+    return () => {
+      const index = this.registered.indexOf(definition)
+      if (index >= 0) this.registered.splice(index, 1)
+    }
   }
 }
 
@@ -32,7 +36,10 @@ class FakeSkills extends Service {
 
   register(skill) {
     this.skills.push(skill)
-    return () => {}
+    return () => {
+      const index = this.skills.indexOf(skill)
+      if (index >= 0) this.skills.splice(index, 1)
+    }
   }
 }
 
@@ -40,7 +47,9 @@ async function boot(config = {}, { skills = false } = {}) {
   const ctx = new Context()
   await ctx.plugin(FakeTools)
   if (skills) await ctx.plugin(FakeSkills)
-  await ctx.plugin(AgentBrowserService, Config(config))
+  // 传**原始配置**（不是 `Config(config)`）：cordis 会解析一次并包成 Volatile；
+  // 传已解析的值会被二次解析成非法形状（volatile 字段包着 get/write）。
+  await ctx.plugin(AgentBrowserService, config)
   return ctx
 }
 
@@ -163,4 +172,45 @@ test('帮忙装：只装 CLI，Chrome 明确拒绝（装 Chrome 要管理员密�
   const result = await ctx.get('browser').installCli('chrome')
   assert.equal(result.ok, false)
   assert.match(result.message, /Chrome/)
+})
+
+/**
+ * **volatile 热更新**：设置页写的就是 volatile 字段，不会重建 entry。
+ * 所以「改配置 → 工具集合 / 全局参数跟着变」必须靠服务自己监听
+ * `loader/volatile-update` 重做注册——这几条钉住的就是这条链路。
+ *
+ * 宿主用的是 `updateVolatile(ref, next)`（原地改引用里的值）；服务只读 `.get()`，
+ * 所以测试里直接把 `service.config[key]` 换成新解析出来的引用，等价且不用引第三方包。
+ */
+async function patchVolatile(ctx, patch) {
+  const next = Config(patch)
+  const service = ctx.get('browser')
+  for (const key of Object.keys(patch)) service.config[key] = next[key]
+  ctx.emit('loader/volatile-update')
+  return service
+}
+
+test('volatile 热更新：关掉「浏览器功能」→ 工具真的撤掉；再打开又回来', async () => {
+  const ctx = await boot()
+  assert.equal(names(ctx).length, 5)
+  await patchVolatile(ctx, { enabled: false })
+  assert.deepEqual(names(ctx), [], '关掉之后模型面前应该一个工具都没有')
+  await patchVolatile(ctx, { enabled: true })
+  assert.equal(names(ctx).length, 5, '重新打开应该把工具加回来')
+})
+
+test('volatile 热更新：改「有头模式」→ 全局参数立刻换一份（不需要重启）', async () => {
+  const ctx = await boot()
+  const service = ctx.get('browser')
+  assert.ok(!service.sessionInfo().globalArgs.includes('--headed'))
+  await patchVolatile(ctx, { browser: { headed: true } })
+  assert.ok(service.sessionInfo().globalArgs.includes('--headed'))
+})
+
+test('volatile 热更新：把 allowedDomains 与 profile 同时打开 → 拒绝应用，保留上一个可用配置', async () => {
+  const ctx = await boot()
+  const service = ctx.get('browser')
+  const before = [...service.sessionInfo().globalArgs]
+  await patchVolatile(ctx, { browser: { allowedDomains: ['a.com'], profile: 'work' } })
+  assert.deepEqual([...service.sessionInfo().globalArgs], before)
 })

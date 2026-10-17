@@ -56,7 +56,8 @@ const hostCtx = new cordis.Context()
 await hostCtx.plugin(TypertRegistry)
 await hostCtx.plugin(TypertGatewayService)
 await hostCtx.plugin(FakeTools)
-await hostCtx.plugin(AgentBrowserService, Config({}))
+// 传原始配置：cordis 自己解析一次并包成 Volatile（传已解析的会被二次解析成非法形状）。
+await hostCtx.plugin(AgentBrowserService, {})
 await new Promise((resolve) => setTimeout(resolve, 200))
 
 console.log('host 半（SRC fallback 推 descriptor）')

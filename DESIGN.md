@@ -279,6 +279,37 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
   多行控件用 `<textarea class="ab-textarea">`（与 `.ab-input` 同一套颜色/圆角，`resize:vertical`）；
   **回车留给换行，提交在失焦时**（别把用户正在输入的内容打断）。
 
+### 4.2b 配置字段**必须** `.volatile()`（设置页的硬约束，踩过坑）
+
+`dsh-settings` 的写入路径只接受 volatile 字段：
+
+```js
+const form = volatileForm(schema)                     // 全是普通字段 → undefined
+if (form === undefined) throw new Error(`Plugin entry "${ns}" has no volatile fields`)
+for (const path of paths) if (!isVolatilePath(schema, path)) throw new Error(`Config field … is not volatile`)
+```
+
+而 `describe()` 用 `volatileForm(schema)` 过滤 namespace —— **一个 volatile 字段都没有的 entry
+根本不会出现在设置命名空间里**。这时候客户端的 `configForms.get(entryId)` 拿不到可写表单，
+面板上显示的是插件自己的默认值，**任何写入都被拒绝**。
+
+真机症状（本版踩到）：设置页能打开、控件都在、点了没反应——空闲超时选了「自定义」立刻弹回、
+`+` 箭头数字不动。根因不在控件，在配置 schema。
+
+修法（DSH 的标准范式，见 `dsh-llm-deepseek` / `dsh-judgment`）：
+
+1. **六个顶层字段全部 `.volatile()`**（`enabled` / `browser` / `session` / `tools` / `limits` / `judgment`）；
+   volatile 是**按字段**生效的，标在容器上就够，不用给每个叶子加。
+2. 服务里每次现取：`this.config.browser.get()`，通过 `resolve()` 拆成 `ResolvedConfig`。
+3. volatile 改动**不会重建 entry**（这正是 volatile 的意义），所以工具注册要自己重做：
+   监听 `ctx.on('loader/volatile-update', …)` → `apply()` 撤销旧注册、重建 CLI 客户端、重注册
+   skill / 工具。构造函数首次应用与热更新走**同一条 `apply()`**，避免两份逻辑漂移。
+4. `allowedDomains` + `profile` 互斥在**首次应用时抛错**（entry 起不来），热更新时只警告并保留
+   上一个可用配置（不能因为一次非法编辑把能用的工具弄没）。
+
+测试注意：`ctx.plugin(Service, config)` 要传**原始配置**；传 `Config(config)`（已解析、字段是
+`Volatile` 包装）会被 cordis 二次解析成非法形状（`$.enabled expected boolean but got [object Object]`）。
+
 ### 4.3 实现事实（都已核对）
 
 - 页面注册：`ctx.slots.register({ name:'settings.section', id:'browser', order:…, label:()=>'浏览器', inject:… }, Panel)`；客户端半打包成 `window.__ModuleLoader__` 单文件（照 [dsh-judgment/client/esbuild.config.mjs](../../dsh-judgment/client/esbuild.config.mjs)）。
