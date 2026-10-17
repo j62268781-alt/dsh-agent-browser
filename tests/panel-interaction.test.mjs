@@ -329,3 +329,69 @@ test('决策：开启前向宿主现问一次依赖，宿主说没有 → 不写
     await view.unmount()
   }
 })
+
+/**
+ * 打开面板时**不许闪红字**（真机反馈）：远端命名空间刚 mount、第一次 probe 可能失败；
+ * 早先这里立刻报红色「自检通路不可用」，随后重挂又消失——看起来像出错。
+ * 现在：首次结果出来之前页面上不出现任何提示，且第一次 probe 失败会安静重试一次。
+ */
+test('首次 probe 失败一次 → 安静重试，页面上从不出现红字', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  let calls = 0
+  const browser = {
+    async probe() {
+      calls += 1
+      if (calls === 1) throw new Error('gateway not ready') // 第一次失败（命名空间刚挂上）
+      return {
+        ok: true,
+        value: {
+          apiVersion: 2, ok: true, title: '浏览器环境就绪', judgment: true, checkedAt: '',
+          checks: [
+            { id: 'cli', label: 'agent-browser', status: 'pass', message: '已安装 0.38.2' },
+            { id: 'chrome', label: 'Chrome', status: 'pass', message: '已就绪' },
+          ],
+        },
+      }
+    },
+  }
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost/' })
+  globalThis.window = dom.window
+  globalThis.document = dom.window.document
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(dom.window.document.getElementById('root'))
+  root.render(React.createElement(Panel, { form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined, browser }))
+  try {
+    // 每 40ms 看一次：整个过程里都不该出现 role=alert 的红字
+    for (let i = 0; i < 15; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      const alerts = dom.window.document.querySelectorAll('[role="alert"]')
+      assert.equal(alerts.length, 0, `第 ${i * 40}ms 出现了红字：${alerts[0]?.textContent ?? ''}`)
+    }
+    assert.equal(calls, 2, '第一次失败后应该自动重试一次')
+    assert.match(dom.window.document.body.textContent, /已安装/)
+  } finally {
+    await root.unmount()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+})
+
+test('自检还没回来时，页面上不显示"还没有检查过"之类的占位文字', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const browser = { probe: () => new Promise(() => {}) } // 永不返回
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost/' })
+  globalThis.window = dom.window
+  globalThis.document = dom.window.document
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(dom.window.document.getElementById('root'))
+  root.render(React.createElement(Panel, { form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined, browser }))
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const text = dom.window.document.body.textContent
+    assert.ok(!text.includes('还没有检查过'), '自检未返回时不该出现空态文案')
+    assert.ok(!text.includes('检查安装'), '自检未返回时不该出现检查按钮')
+    assert.equal(dom.window.document.querySelectorAll('[role="alert"]').length, 0)
+  } finally {
+    await root.unmount()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+})

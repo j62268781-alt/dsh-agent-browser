@@ -105,6 +105,9 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /<option value="__custom__">自定义…</)
   // 「打开配置文件」不再由本插件的页面提供——设置外壳已经有这个全局动作
   assert.ok(!html.includes('打开配置文件'), '不要重复提供设置外壳已有的全局动作')
+  // 首次自检结果出来之前，页面**什么都不显示**（不闪空态、不闪红字）
+  assert.ok(!html.includes('还没有检查过浏览器环境'), '首次自检完成前不该显示空态')
+  assert.ok(!html.includes('role="alert"'), '首次自检完成前不该显示任何错误')
   // 没接 primitives 时退回原生控件，而不是整页挂掉
   assert.match(html, /type="checkbox"/)
   assert.match(html, /<button/)
