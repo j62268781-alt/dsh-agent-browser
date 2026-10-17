@@ -241,13 +241,15 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
 [有头模式          Switch] → --headed
 [命令超时  30000 毫秒 ▲▼]  → 我们的 spawn 超时；步进器照「通用设置 → 字号」那行
                             （hover 才浮出箭头），±100ms，**数值可点进去直接输入精确毫秒**
-[最大输出(字符)    input]  → --max-output
-[空闲超时          input]  → --idle-timeout
+[最大输出   0 字符 ⬚]     → --max-output；紧凑数值框（**无箭头**），可直接输入
+[空闲超时   [30 分钟 ▾]]  → --idle-timeout；预设下拉（默认/10m/30m/1h/2h/自定义…）
+                            选「自定义」时右侧才出现毫秒输入框
 [内容边界标记      Switch] → --content-boundaries
-配置文件                    ← 分组标题
-[打开配置文件      按钮]   用系统文本编辑器打开 profile 的设置文档（YAML），
-                            界面上没暴露的项（executablePath / maxSteps / 两个阈值）在这里手改
 ```
+
+> **「打开配置文件」不在这里**：那是设置外壳的**全局动作**（面板左侧导航底部的那个按钮），
+> 来自 `settings/openSettingsDocument()`。本插件页面不再重复提供它——之前的实现既重复，
+> 又因为 `configForms.describe().hasDocument` 与外壳的可用性判断不一致而**一直是灰的**。
 
 **三条行距规则**（第 2、3 条来自真机反馈后的修正）：
 

@@ -14,7 +14,7 @@
 
 import './react.js'
 import { useEffect, useState } from 'react'
-import { IDLE_PATTERN, SESSION_PATTERN, arrayOf, objectOf, parseDomains, snapshotOf, statusOf } from './config.js'
+import { SESSION_PATTERN, arrayOf, objectOf, parseDomains, snapshotOf, statusOf } from './config.js'
 import CSS from './styles.css'
 
 export function Panel(props) {
@@ -22,8 +22,6 @@ export function Panel(props) {
   const [tick, setTick] = useState(0)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [opening, setOpening] = useState(false)
-  const [openError, setOpenError] = useState('')
   /** 安装自检结果（宿主 `ctx.browser.probe()` 的返回值）。 */
   const [probe, setProbe] = useState(null)
   const [probing, setProbing] = useState(false)
@@ -104,9 +102,13 @@ export function Panel(props) {
     setBusy(true)
     setError('')
     try {
-      if (typeof form?.set === 'function') await form.set(field, next)
-      else if (typeof props.mutate === 'function') await props.mutate(props.entryId, [{ op: 'set', path: [field], value: next }])
+      // ⚠️ 宿主拒绝时 `set` **resolve false** 而不是 throw（见 dsh-client-ui-settings 的 ConfigForm）。
+      // 早先这里只看 throw，所以"写被拒绝"表现为"点了没反应"——真机上就是这种现象。
+      let accepted = true
+      if (typeof form?.set === 'function') accepted = await form.set(field, next)
+      else if (typeof props.mutate === 'function') accepted = await props.mutate(props.entryId, [{ op: 'set', path: [field], value: next }])
       else throw new Error('配置表单不可写：宿主既没有 set 也没有 mutate')
+      if (accepted === false) throw new Error(`宿主拒绝了这次写入（${field}）：配置可能未通过校验，或当前文档不可写`)
       setTick((count) => count + 1)
       return true
     } catch (cause) {
@@ -120,19 +122,6 @@ export function Panel(props) {
   /** 改一个分组字段：`setGroup('tools', tools, 'decision', true)`。 */
   function setGroup(name, group, key, next) {
     return commit(name, { ...group, [key]: next })
-  }
-
-  async function openDocument() {
-    setOpening(true)
-    setOpenError('')
-    try {
-      const result = await props.settings.openSettingsDocument()
-      if (result?.ok === false) throw new Error(result.error?.message ?? '打开失败')
-    } catch (cause) {
-      setOpenError(String(cause?.message ?? cause))
-    } finally {
-      setOpening(false)
-    }
   }
 
   void tick
@@ -290,40 +279,31 @@ export function Panel(props) {
           )}
         />
         <Row
-          title="最大输出（字符）"
-          subtitle="--max-output：页面输出截断。0 = 用 CLI 默认。"
+          title="最大输出"
+          subtitle="--max-output：页面输出超过这个字符数就截断。0 = 用 CLI 默认。"
           control={(
-            <TextField
-              value={String(browser.maxOutput ?? 0)}
-              placeholder="0"
+            <NumberStepper
+              arrows={false}
+              value={Number(browser.maxOutput ?? 0)}
+              min={0}
+              max={10_000_000}
+              step={1000}
+              unit="字符"
+              editable
               disabled={!enabled || busy || !writable}
-              onCommit={(text) => {
-                const next = Number(text.trim())
-                if (!Number.isInteger(next) || next < 0 || next > 10_000_000) {
-                  setError('最大输出要是 0–10000000 之间的整数')
-                  return
-                }
-                void setGroup('browser', browser, 'maxOutput', next)
-              }}
+              onChange={(next) => { void setGroup('browser', browser, 'maxOutput', next) }}
             />
           )}
         />
         <Row
           title="空闲超时"
-          subtitle="--idle-timeout：守护进程空闲多久退出（10s / 3m / 1h / 裸毫秒）。留空 = CLI 默认 1h。"
+          subtitle="--idle-timeout：守护进程空闲多久自动退出。选「自定义」可以填精确毫秒。"
           control={(
-            <TextField
+            <IdleTimeoutControl
+              primitives={props.primitives}
               value={String(browser.idleTimeout ?? '')}
-              placeholder="30m"
               disabled={!enabled || busy || !writable}
-              onCommit={(text) => {
-                const next = text.trim()
-                if (!IDLE_PATTERN.test(next)) {
-                  setError('空闲超时要像 10s / 3m / 1h / 60000，或留空')
-                  return
-                }
-                void setGroup('browser', browser, 'idleTimeout', next)
-              }}
+              onChange={(next) => { void setGroup('browser', browser, 'idleTimeout', next) }}
             />
           )}
         />
@@ -340,25 +320,6 @@ export function Panel(props) {
             />
           )}
         />
-        <h3 className="ab-groupTitle">配置文件</h3>
-        <Row
-          title="打开配置文件"
-          subtitle={props.hasDocument
-            ? '用系统文本编辑器打开 profile 的设置文档（YAML）。界面上没有暴露的项（例如 executablePath、maxSteps、两个判断阈值）在这里手改。'
-            : '当前部署不提供本地设置文档（只有 loopback 桌面端才有），请在「设置」里改。'}
-          control={(
-            <button
-              type="button"
-              className="ab-button"
-              data-variant="outline"
-              disabled={props.hasDocument !== true || opening || props.settings === undefined}
-              onClick={() => { void openDocument() }}
-            >
-              {opening ? '打开中…' : '打开'}
-            </button>
-          )}
-        />
-        {openError !== '' ? <p className="ab-error" role="alert">{openError}</p> : null}
       </section>
     </div>
   )
@@ -490,7 +451,7 @@ function Switch({ primitives, label, checked, disabled, onChange }) {
  * `editable` 时数值本身是个输入框（回车/失焦提交、自动夹到 [min,max]）：
  * 毫秒这种值光靠 ±100 点太累，但**别把数值做成只能点**。
  */
-function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, editable = false, onChange }) {
+function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, editable = false, arrows = true, onChange }) {
   const Up = primitives?.IconChevronUpOutlineRegular
   const Down = primitives?.IconChevronDownOutlineRegular
   const [draft, setDraft] = useState(String(value))
@@ -512,7 +473,7 @@ function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, 
 
   return (
     <>
-      <div className="ab-stepper" data-disabled={disabled === true} data-editable={editable}>
+      <div className="ab-stepper" data-disabled={disabled === true} data-editable={editable} data-arrows={arrows}>
         {editable ? (
           <input
             className="ab-stepperInput"
@@ -529,12 +490,15 @@ function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, 
         ) : (
           <span className="ab-stepperValue">{value}</span>
         )}
+        {arrows ? (
         <span className="ab-stepperArrows">
           <button
             type="button"
             className="ab-stepperArrow"
             aria-label={`增加${unit}`}
             disabled={disabled === true || value >= max}
+            // 别让点击箭头先把输入框失焦（那会先提交一次草稿，真机上表现为"点了没反应"）
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => onChange(Math.min(max, value + step))}
           >
             {Up === undefined ? '▲' : <Up size={9} />}
@@ -544,13 +508,69 @@ function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, 
             className="ab-stepperArrow"
             aria-label={`减少${unit}`}
             disabled={disabled === true || value <= min}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => onChange(Math.max(min, value - step))}
           >
             {Down === undefined ? '▼' : <Down size={9} />}
           </button>
         </span>
+        ) : null}
       </div>
       <span className="ab-stepperUnit">{unit}</span>
+    </>
+  )
+}
+
+/** 空闲超时的预设（值是 CLI 的写法；`''` = 用 CLI 默认 1h）。 */
+const IDLE_PRESETS = [
+  { value: '', label: 'CLI 默认（1 小时）' },
+  { value: '10m', label: '10 分钟' },
+  { value: '30m', label: '30 分钟' },
+  { value: '1h', label: '1 小时' },
+  { value: '2h', label: '2 小时' },
+]
+/** 选「自定义」时，从当前预设折算一个初始毫秒值再让人改。 */
+const IDLE_PRESET_MS = { '': 3_600_000, '10m': 600_000, '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000 }
+const IDLE_CUSTOM = '__custom__'
+
+/**
+ * 空闲超时：预设下拉 + 「自定义」时才出现的毫秒输入。
+ * 存的是 CLI 认的字符串（`10m` / `1h` / 裸毫秒），所以切换预设就是换字符串，不需要换算。
+ */
+function IdleTimeoutControl({ primitives, value, disabled, onChange }) {
+  const isPreset = value === '' || IDLE_PRESETS.some((preset) => preset.value === value)
+  const selectValue = isPreset ? value : IDLE_CUSTOM
+  const ms = isPreset ? (IDLE_PRESET_MS[value] ?? 3_600_000) : (Number(value) || 3_600_000)
+  return (
+    <>
+      <select
+        className="ab-select"
+        value={selectValue}
+        disabled={disabled}
+        aria-label="空闲超时预设"
+        onChange={(event) => {
+          const next = event.target.value
+          // 切到自定义：把当前预设折算成毫秒写进去，用户看到的就是真实生效值。
+          onChange(next === IDLE_CUSTOM ? String(IDLE_PRESET_MS[value] ?? ms) : next)
+        }}
+      >
+        {IDLE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
+        <option value={IDLE_CUSTOM}>自定义…</option>
+      </select>
+      {selectValue === IDLE_CUSTOM ? (
+        <NumberStepper
+          primitives={primitives}
+          arrows={false}
+          value={ms}
+          min={0}
+          max={86_400_000}
+          step={1000}
+          unit="毫秒"
+          editable
+          disabled={disabled}
+          onChange={(next) => onChange(String(next))}
+        />
+      ) : null}
     </>
   )
 }

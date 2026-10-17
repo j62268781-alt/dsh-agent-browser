@@ -55,6 +55,8 @@
 .ab-stepper{box-sizing:border-box;position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:36px;padding-right:22px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}
 /* 可输入的步进器：6 位毫秒（600000）也要放得下，且不被右侧箭头压住。 */
 .ab-stepper[data-editable=true]{min-width:104px;padding-right:24px}
+/* 不带箭头的数值框（最大输出 / 自定义空闲超时）：不需要给箭头留空隙。 */
+.ab-stepper[data-arrows=false]{padding-right:0}
 .ab-stepperValue{min-width:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}
 .ab-stepperInput{width:72px;padding:0;border:none;outline:none;background:transparent;text-align:center;font:inherit;font-size:14px;line-height:22px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
 .ab-stepperInput:disabled{cursor:not-allowed}
@@ -71,6 +73,11 @@
 .ab-rowStacked{flex-direction:column;align-items:stretch;gap:10px}
 .ab-rowControlFull{display:block;width:100%}
 .ab-input::placeholder{color:var(--dsw-alias-label-tertiary)}
+
+/* 预设下拉（空闲超时）：与 .ab-input 同一套外观，窄一点，自带 chevron。 */
+.ab-select{box-sizing:border-box;height:32px;min-width:132px;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);background-color:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);appearance:none;-webkit-appearance:none;padding:0 28px 0 10px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' stroke='%238b8f99' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 9px center;background-size:14px}
+.ab-select:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
+.ab-select:disabled{cursor:not-allowed}
 .ab-input:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
 .ab-input:disabled{cursor:not-allowed}
 

@@ -47,8 +47,6 @@ export function arrayOf(value, field) {
 export const DOMAIN_PATTERN = /^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
 /** 与 src/config.ts 一致的会话名。 */
 export const SESSION_PATTERN = /^[A-Za-z0-9._-]*$/
-/** 与 src/config.ts 一致的空闲超时。 */
-export const IDLE_PATTERN = /^(?:$|\d+(?:ms|s|m|h)?)$/
 
 /** `a.com, *.b.com` / 一行一个 → `['a.com', '*.b.com']`，顺便把不合法的挑出来。 */
 export function parseDomains(text) {

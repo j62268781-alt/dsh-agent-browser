@@ -17,7 +17,7 @@ const AUTHORITY = process.env.DSH_AUTHORITY ?? '127.0.0.1:19387'
 const PACKAGE = 'dsh-agent-browser'
 
 /** boot 数据里必须出现的客户端产物；缺它就是没被 composer（或提供的是旧的一份）。 */
-const NEEDLES = ['.ab-summary', '.ab-checkMark', 'settings.section', '浏览器环境就绪', '检查安装', '安装中…', '内容边界标记', '打开配置文件', 'src-json']
+const NEEDLES = ['.ab-summary', '.ab-checkMark', 'settings.section', '浏览器环境就绪', '检查安装', '安装中…', '内容边界标记', 'ab-select', '增加', '减少', 'src-json']
 
 function cookie() {
   let secret

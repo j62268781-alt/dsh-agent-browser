@@ -70,9 +70,9 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   // 每一行都是同一条 .ab-row（16px 竖距 + 下边框由 CSS 保证；这里断言结构一致）
   // 普通行是 `class="ab-row"`，上下布局的行是 `class="ab-row ab-rowStacked"`——都算一行
   const rows = html.match(/class="ab-row(?: [\w-]+)?"/g) ?? []
-  assert.ok(rows.length >= 12, `期望至少 12 行统一的行，实际 ${rows.length}`)
+  assert.ok(rows.length >= 11, `期望至少 11 行统一的行，实际 ${rows.length}`)
   // 分组标题要在（用户要求保留）：工具面 / 进阶 / 配置文件
-  for (const group of ['工具面', '进阶', '配置文件']) {
+  for (const group of ['工具面', '进阶']) {
     assert.match(html, new RegExp(`class="ab-groupTitle">${group}<`))
   }
   // 第一行必须是 row（这样 `.ab-row:first-child{padding-top:0}` 才能把 summary 下方的间距
@@ -94,8 +94,16 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /<textarea class="ab-textarea"/)
   assert.match(html, /rows="4"/)
   assert.match(html, /内容边界标记/)
-  assert.match(html, /打开配置文件/)
-  assert.match(html, /当前部署不提供本地设置文档/) // hasDocument=false 时的说明
+  // 最大输出：紧凑数字框（无箭头）
+  assert.match(html, /class="ab-stepper"[^>]*data-arrows="false"/)
+  assert.match(html, /class="ab-stepperUnit">字符</)
+  // 空闲超时：预设下拉 + 自定义项
+  assert.match(html, /<select class="ab-select"[^>]*aria-label="空闲超时预设"/)
+  assert.match(html, /<option value="">CLI 默认（1 小时）</)
+  assert.match(html, /<option value="10m">10 分钟</)
+  assert.match(html, /<option value="__custom__">自定义…</)
+  // 「打开配置文件」不再由本插件的页面提供——设置外壳已经有这个全局动作
+  assert.ok(!html.includes('打开配置文件'), '不要重复提供设置外壳已有的全局动作')
   // 没接 primitives 时退回原生控件，而不是整页挂掉
   assert.match(html, /type="checkbox"/)
   assert.match(html, /<button/)
