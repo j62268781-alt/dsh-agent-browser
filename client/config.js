@@ -57,3 +57,14 @@ export function parseDomains(text) {
   const invalid = parts.filter((part) => !DOMAIN_PATTERN.test(part))
   return { domains: parts, invalid }
 }
+
+/** 界面用秒、配置存毫秒（用户口径）：30 秒 ↔ 30000。 */
+export function msToSeconds(ms) {
+  const value = Number(ms)
+  return Number.isFinite(value) ? Math.round(value / 1000) : 0
+}
+
+export function secondsToMs(seconds) {
+  const value = Number(seconds)
+  return Number.isFinite(value) ? Math.round(value * 1000) : 0
+}

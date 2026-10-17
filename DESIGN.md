@@ -239,12 +239,14 @@ agent-browser（Rust + CDP）的窄工具面……    ← 13px secondary
   └──────────────────────────────────────────────┘
 [会话名            input]  → --session
 [有头模式          Switch] → --headed
-[命令超时(ms)      input]  → 我们的 spawn 超时
+[命令超时      30 秒 ▲▼]  → 我们的 spawn 超时；**界面用秒、配置存毫秒**，
+                            步进器照「通用设置 → 字号」那行（±1 秒，hover 才浮出箭头）
 [最大输出(字符)    input]  → --max-output
 [空闲超时          input]  → --idle-timeout
 [内容边界标记      Switch] → --content-boundaries
 配置文件                    ← 分组标题
-[打开配置文件      按钮]   在系统文本编辑器中打开宿主设置文档（本插件配置就在里面）
+[打开配置文件      按钮]   用系统文本编辑器打开 profile 的设置文档（YAML），
+                            界面上没暴露的项（executablePath / maxSteps / 两个阈值）在这里手改
 ```
 
 **三条行距规则**（第 2、3 条来自真机反馈后的修正）：

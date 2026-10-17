@@ -14,7 +14,7 @@
 
 import './react.js'
 import { useEffect, useState } from 'react'
-import { IDLE_PATTERN, SESSION_PATTERN, arrayOf, objectOf, parseDomains, snapshotOf, statusOf } from './config.js'
+import { IDLE_PATTERN, SESSION_PATTERN, arrayOf, msToSeconds, objectOf, parseDomains, secondsToMs, snapshotOf, statusOf } from './config.js'
 import CSS from './styles.css'
 
 export function Panel(props) {
@@ -273,21 +273,17 @@ export function Panel(props) {
           )}
         />
         <Row
-          title="命令超时（毫秒）"
-          subtitle="单条 CLI 命令的 spawn 超时。"
+          title="命令超时"
+          subtitle="单条 CLI 命令最长等多久。用上下键按 1 秒加减；超时命令会被杀掉，不会一直挂着。"
           control={(
-            <TextField
-              value={String(limits.commandTimeoutMs ?? 30000)}
-              placeholder="30000"
+            <NumberStepper
+              primitives={props.primitives}
+              value={msToSeconds(limits.commandTimeoutMs ?? 30000)}
+              min={1}
+              max={600}
+              unit="秒"
               disabled={!enabled || busy || !writable}
-              onCommit={(text) => {
-                const next = Number(text.trim())
-                if (!Number.isInteger(next) || next < 1000 || next > 600000) {
-                  setError('命令超时要是 1000–600000 之间的整数')
-                  return
-                }
-                void setGroup('limits', limits, 'commandTimeoutMs', next)
-              }}
+              onChange={(next) => { void setGroup('limits', limits, 'commandTimeoutMs', secondsToMs(next)) }}
             />
           )}
         />
@@ -346,7 +342,7 @@ export function Panel(props) {
         <Row
           title="打开配置文件"
           subtitle={props.hasDocument
-            ? '在系统文本编辑器中打开宿主设置文档——本插件的配置段就在里面。'
+            ? '用系统文本编辑器打开 profile 的设置文档（YAML）。界面上没有暴露的项（例如 executablePath、maxSteps、两个判断阈值）在这里手改。'
             : '当前部署不提供本地设置文档（只有 loopback 桌面端才有），请在「设置」里改。'}
           control={(
             <button
@@ -482,6 +478,43 @@ function Switch({ primitives, label, checked, disabled, onChange }) {
       disabled={disabled}
       onChange={(event) => onChange(event.target.checked)}
     />
+  )
+}
+
+/**
+ * 数字步进器：照「通用设置 → 字号」那一行（ui-theme 的 `FontSizeRow`）——
+ * 数值居中、右侧浮出上下两个小箭头，hover / 聚焦时才显形。没有 primitives 时用 ▲▼ 兜底。
+ */
+function NumberStepper({ primitives, value, min, max, step = 1, unit, disabled, onChange }) {
+  const Up = primitives?.IconChevronUpOutlineRegular
+  const Down = primitives?.IconChevronDownOutlineRegular
+  return (
+    <>
+      <div className="ab-stepper" data-disabled={disabled === true}>
+        <span className="ab-stepperValue">{value}</span>
+        <span className="ab-stepperArrows">
+          <button
+            type="button"
+            className="ab-stepperArrow"
+            aria-label={`增加${unit}`}
+            disabled={disabled === true || value >= max}
+            onClick={() => onChange(Math.min(max, value + step))}
+          >
+            {Up === undefined ? '▲' : <Up size={9} />}
+          </button>
+          <button
+            type="button"
+            className="ab-stepperArrow"
+            aria-label={`减少${unit}`}
+            disabled={disabled === true || value <= min}
+            onClick={() => onChange(Math.max(min, value - step))}
+          >
+            {Down === undefined ? '▼' : <Down size={9} />}
+          </button>
+        </span>
+      </div>
+      <span className="ab-stepperUnit">{unit}</span>
+    </>
   )
 }
 

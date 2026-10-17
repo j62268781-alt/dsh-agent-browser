@@ -50,6 +50,18 @@
 .ab-textarea:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
 .ab-textarea:disabled{cursor:not-allowed}
 
+/* 数字步进器：逐字抄「通用设置 → 字号」那行（ui-theme 的 FontSizeRow 的 CSS）：
+   数值居中 + 右侧浮出上下箭头（hover / 聚焦才显形），底色用 bg-module-platform。 */
+.ab-stepper{box-sizing:border-box;position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:36px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}
+.ab-stepperValue{min-width:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}
+.ab-stepperUnit{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}
+.ab-stepperArrows{position:absolute;right:8px;display:flex;flex-direction:column;gap:2px;opacity:0}
+.ab-stepper:hover .ab-stepperArrows,.ab-stepper:focus-within .ab-stepperArrows{opacity:1}
+.ab-stepper[data-disabled=true]{opacity:.5}
+.ab-stepperArrow{box-sizing:border-box;width:17px;height:12px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent);color:var(--dsw-alias-label-primary);font-size:8px;line-height:1;cursor:pointer}
+.ab-stepperArrow:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ab-stepperArrow:disabled{opacity:.4;cursor:not-allowed}
+
 /* 上下布局的行：文字在上、控件在下面占满整行（用于需要宽度的控件，如多行 textarea）。 */
 .ab-rowStacked{flex-direction:column;align-items:stretch;gap:10px}
 .ab-rowControlFull{display:block;width:100%}
