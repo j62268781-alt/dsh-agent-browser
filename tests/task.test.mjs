@@ -421,3 +421,34 @@ test('无名称的可交互元素也要进候选（真实站点：hao123 首页�
   const input = candidates.find((candidate) => candidate.id === 'input:e1')
   assert.match(input.description, /无名称的 textbox/)
 })
+
+test('P6：observe 一次拿齐树+正文+标题（batch 合并，少两次进程启动）', async () => {
+  let observes = 0
+  let snapshots = 0
+  const browser = {
+    async observe() {
+      observes += 1
+      return {
+        origin: 'https://a.test/',
+        digest: 'd',
+        snapshot: 'button "完成" @e1',
+        refs: { e1: { role: 'button', name: '完成' } },
+        text: '页面正文',
+        title: '标题',
+      }
+    },
+    async snapshot() {
+      snapshots += 1
+      throw new Error('不该单独取快照（应该走 observe 的 batch）')
+    },
+    async read() { return '页面正文' },
+    async get() { return '标题' },
+    async act() {},
+    async run() {},
+  }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('目标', deps(browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(observes, 1, '一次 observe = 一次进程')
+  assert.equal(snapshots, 0, '不该再单独取整树')
+})

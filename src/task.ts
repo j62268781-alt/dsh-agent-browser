@@ -15,7 +15,7 @@ import type {
   JudgmentQuestions,
   JudgmentAnswer,
 } from 'dsh-judgment/contract'
-import type { AgentBrowser, Snapshot } from './cli.js'
+import { CliError, type AgentBrowser, type ObservedPage, type Snapshot } from './cli.js'
 
 /** 本插件编译时对齐的契约版本。不匹配就降级（dsh-judgment 契约 §13.3）。 */
 export const EXPECTED_API_VERSION = 1
@@ -377,34 +377,48 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     //
     // P3（jev-ultrafast 的 `observe()` 纪律）：文档在变（"Document changed during evaluation"）
     // 或超重页面取全树超时，都**重试**几次而不是直接失败；最后一次降深度再取。
-    const observe = async (): Promise<Snapshot> => {
-      const readOnce = async (depth?: number): Promise<Snapshot> => {
-        const started = now()
-        try {
-          return await deps.browser.snapshot(
+    // **一次进程拿齐树 + 正文 + 标题**（`batch` 合并）：分三次调用是 3×63ms 的进程启动，
+    // 合并后 1×63ms（实测 176ms → 62ms）。这就是 jev-ultrafast 用 CDP 长连接省下的那部分，
+    // 我们在 CLI 层用 `batch` 等价拿到。
+    const observeOnce = async (depth?: number): Promise<ObservedPage> => {
+      const started = now()
+      try {
+        if (typeof deps.browser.observe === 'function') {
+          return await deps.browser.observe(
             { interactiveOnly: true, ...(depth === undefined ? {} : { depth }) },
             { signal: deps.signal },
           )
-        } finally {
-          timings.snapshotMs += now() - started
         }
+        // 兜底（替身/旧实现）：三次独立调用，语义相同只是慢。
+        const snapshot = await deps.browser.snapshot(
+          { interactiveOnly: true, ...(depth === undefined ? {} : { depth }) },
+          { signal: deps.signal },
+        )
+        if (snapshot === undefined) throw new CliError('bad-output', '快照替身没有返回')
+        const text = await deps.browser.read(undefined, { signal: deps.signal })
+        const title = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
+        return { ...snapshot, text, title: String(title) }
+      } finally {
+        timings.snapshotMs += now() - started // 读数合并进这一项（read/title 已含在 batch 里）
       }
+    }
+    const observe = async (): Promise<ObservedPage> => {
       let lastError: unknown
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
-          return await readOnce()
+          return await observeOnce()
         } catch (error) {
           lastError = error
           if (attempt < 3) await sleep(40 * attempt)
         }
       }
-      trace.push(`第 ${step} 步：取快照连续失败（${message(lastError)}）→ 降深度（depth=8）再试一次`)
-      return readOnce(8)
+      trace.push(`第 ${step} 步：观察连续失败（${message(lastError)}）→ 降深度（depth=8）再试一次`)
+      return observeOnce(8)
     }
     // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
     // 用"连续两次结构一致"作为稳定判据（最多再探 2 次、每次 40ms）——比盲目 sleep 精确，
     // 也避免"弹层还没出来就让 Jev 选"（jev-ultrafast 的 after_input 短等待同理）。
-    const observeSettled = async (): Promise<Snapshot> => {
+    const observeSettled = async (): Promise<ObservedPage> => {
       let current = await observe()
       // 只探 1 次（40ms）：动画页永远"不稳定"，探多了就是白付延迟；
       // jev-ultrafast 的 after_input 也只有 50/200ms 两个档位。
@@ -416,13 +430,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
       return current
     }
-    const snapshot: Snapshot = delivered === undefined ? await observe() : await observeSettled()
-    const readStarted = now()
-    const pageText = await visibleText(deps, snapshot, trace, step)
-    timings.readMs += now() - readStarted
-    const titleStarted = now()
-    const pageTitle = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
-    timings.titleMs += now() - titleStarted
+    const observed = delivered === undefined ? await observe() : await observeSettled()
+    const snapshot: Snapshot = observed
+    // 正文太短（GitHub 只回 "Skip to content"）→ 退回无障碍树文本（同一页面的可见结构）。
+    const trimmedText = observed.text.replace(/\s+/g, ' ').trim()
+    const pageText = trimmedText.length >= MIN_PAGE_TEXT ? observed.text : snapshot.snapshot
+    if (trimmedText.length < MIN_PAGE_TEXT && trimmedText.length > 0) {
+      trace.push(`第 ${step} 步：read 只拿到 ${trimmedText.length} 个字符（页面可能还在渲染）→ 用无障碍树文本兜底`)
+    }
+    const pageTitle = observed.title
     last = snapshot
     const candidates = candidatesOf(snapshot, goal)
     // P2（dsh-jev-plugin 的 no-request bypass）：控制项永远在候选里，所以"0/1 个候选"

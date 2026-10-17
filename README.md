@@ -200,6 +200,7 @@ scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
 > 结束时只给 `needs_verification` + `next`（"怎么验"），从不宣布完成。
 > 真机端到端：`pnpm e2e`（真 Chrome + 真 Jev，两步点击后被独立确认为 SUCCESS）；
 > 真机测试（真的 `dsh` 进程 + agent 自己调工具）：`pnpm live --run "<任务>"`；
+> 每步观测走 CLI 的 `batch`（树+正文+标题一次进程，省 ~114ms）；
 > 耗时基准（决策 vs 原子工具，hao123 首页）：`pnpm bench`；
 > 真实网站手试：`pnpm try --url <url> --goal "<目标>" [--expect <正则>]`
 > （实测 jevusers.com → Browser → jev-browser-use，2 步完成，见 `docs/try-jevusers.png`）。

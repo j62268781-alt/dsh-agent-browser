@@ -424,23 +424,33 @@ export class AgentBrowserService extends TypertRemoteService {
       name: 'browser_snapshot',
       description:
         '取当前页面的无障碍树（带 @eN ref）。**先快照再动作**：ref 是元素身份绑定的，页面变了旧的 ref 会以 ' +
-        '`Unknown ref` 失败（不会点到别的元素）。返回 origin、refs、digest。' + UNTRUSTED,
+        '`Unknown ref` 失败（不会点到别的元素）。返回 origin、refs、digest。' +
+        '**需要正文/标题时用 includeText / includeTitle**：这三样在同一次 `batch` 里取回（一次进程启动），' +
+        '比分别调 browser_read / browser_get 快约 120ms，也少两次模型回合。' + UNTRUSTED,
       parameters: {
         interactiveOnly: { type: 'boolean', description: '只保留可交互元素（推荐，省 token）' },
         depth: { type: 'number', description: '限制树深度' },
         selector: { type: 'string', description: '只快照某个 CSS 选择器范围内' },
+        includeText: { type: 'boolean', description: '同时返回页面可见正文（省一次进程启动，推荐）' },
+        includeTitle: { type: 'boolean', description: '同时返回页面标题（省一次进程启动）' },
       },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args, exec) {
         await ensureVersion(exec)
-        const snapshot = await browser.snapshot(
-          {
-            ...(args.interactiveOnly === undefined ? {} : { interactiveOnly: args.interactiveOnly }),
-            ...(args.depth === undefined ? {} : { depth: args.depth }),
-            ...(args.selector === undefined ? {} : { selector: args.selector }),
-          },
-          { signal: exec.signal },
-        )
+        const options = {
+          ...(args.interactiveOnly === undefined ? {} : { interactiveOnly: args.interactiveOnly }),
+          ...(args.depth === undefined ? {} : { depth: args.depth }),
+          ...(args.selector === undefined ? {} : { selector: args.selector }),
+        }
+        if (args.includeText === true || args.includeTitle === true) {
+          const page = await browser.observe(options, { signal: exec.signal })
+          const lines = [`origin: ${page.origin}`, `digest: ${page.digest}`]
+          if (args.includeTitle === true) lines.push(`title: ${page.title}`)
+          lines.push(page.snapshot)
+          if (args.includeText === true) lines.push('', '--- 页面正文 ---', page.text)
+          return lines.join('\n')
+        }
+        const snapshot = await browser.snapshot(options, { signal: exec.signal })
         return [
           `origin: ${snapshot.origin}`,
           `digest: ${snapshot.digest}`,

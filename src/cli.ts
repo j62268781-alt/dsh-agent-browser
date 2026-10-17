@@ -32,6 +32,59 @@ export interface RefInfo {
 }
 
 /** 归一化后的快照（只保留我们真正用到的字段）。 */
+/** `observe()` 的返回：树 + 可见正文 + 标题（一次进程拿齐）。 */
+export interface ObservedPage extends Snapshot {
+  readonly text: string
+  readonly title: string
+}
+
+/** `snapshot --json` 的 data 形状。 */
+interface SnapshotData {
+  origin?: string
+  url?: string
+  snapshot?: string
+  refs?: Record<string, { name?: string; role?: string }>
+  removedRefs?: string[]
+}
+
+/**
+ * 快照 data → 归一化快照。
+ *
+ * 两个真机细节都在这里：① JSON 的 refs 里有些元素**名字是空的**（hao123 顶部的城市切换
+ * generic 在文本树里有「茂名切换城市取消B 北京S…」，refs 里却是空串）——名字只存在于
+ * 可读文本时从文本回填；② 文本里标了 `clickable` 的非语义元素也要能被候选枚举认出来。
+ */
+function normalizeSnapshot(data: SnapshotData): Snapshot {
+  const origin = String(data.origin ?? data.url ?? '')
+  const text = String(data.snapshot ?? '')
+  if (text === '') throw new CliError('bad-output', 'snapshot --json 没有返回 data.snapshot')
+  const refs: Record<string, RefInfo> = {}
+  for (const [ref, value] of Object.entries(data.refs ?? {})) {
+    refs[ref] = { name: String(value?.name ?? ''), role: String(value?.role ?? '') }
+  }
+  for (const line of text.split('\n')) {
+    const match = /^-\s+([\w-]+)(?:\s+"((?:[^"\\]|\\.)*)")?.*\[ref=([\w-]+)\]/.exec(line.trim())
+    if (match === null) continue
+    const [, role, rawName, ref] = match
+    const name = rawName === undefined ? '' : rawName.replace(/\\"/g, '"')
+    const clickable = /\bclickable\b/.test(line)
+    const current = refs[ref]
+    if (current !== undefined) {
+      const nextName = current.name === '' && name !== '' ? name : current.name
+      if (nextName !== current.name || clickable) refs[ref] = { name: nextName, role: current.role, ...(clickable ? { clickable: true } : {}) }
+    } else {
+      refs[ref] = { name, role, ...(clickable ? { clickable: true } : {}) }
+    }
+  }
+  return {
+    origin,
+    snapshot: text,
+    refs,
+    removedRefs: (data.removedRefs ?? []).map(String),
+    digest: createHash('sha1').update(`${origin}\n${text}`).digest('hex').slice(0, 16),
+  }
+}
+
 export interface Snapshot {
   /** CLI 的 `data.origin`（0.38.2 上 `data.url` 不存在）。 */
   readonly origin: string
@@ -381,37 +434,60 @@ export class AgentBrowser {
       removedRefs?: string[]
     }>(args, run)
 
-    const origin = String(data.origin ?? data.url ?? '')
-    const text = String(data.snapshot ?? '')
-    if (text === '') throw new CliError('bad-output', 'snapshot --json 没有返回 data.snapshot')
-    const refs: Record<string, RefInfo> = {}
-    for (const [ref, value] of Object.entries(data.refs ?? {})) {
-      refs[ref] = { name: String(value?.name ?? ''), role: String(value?.role ?? '') }
-    }
-    // JSON 的 refs 里有些元素**名字是空的**（真机：hao123 顶部的城市切换 generic 在文本树里
-    // 明明有「茂名切换城市取消B 北京S…」，refs 里却是空串）。名字只存在于可读文本时从文本回填：
-    // 决策层和模型都靠这个名字认元素，空名字等于"看不见它"。
-    for (const line of text.split('\n')) {
-      const match = /^-\s+([\w-]+)(?:\s+"((?:[^"\\]|\\.)*)")?.*\[ref=([\w-]+)\]/.exec(line.trim())
-      if (match === null) continue
-      const [, role, rawName, ref] = match
-      const name = rawName === undefined ? '' : rawName.replace(/\\"/g, '"')
-      const clickable = /\bclickable\b/.test(line)
-      const current = refs[ref]
-      if (current !== undefined) {
-        const nextName = current.name === '' && name !== '' ? name : current.name
-        if (nextName !== current.name || clickable) refs[ref] = { name: nextName, role: current.role, ...(clickable ? { clickable: true } : {}) }
-      } else {
-        refs[ref] = { name, role, ...(clickable ? { clickable: true } : {}) }
-      }
-    }
+    return normalizeSnapshot(data)
+  }
+
+  /**
+   * **一次进程**拿齐"决策需要的一切"：无障碍树 + 可见正文 + 标题。
+   *
+   * 为什么要合并：这个 CLI **每次调用都要新起一个进程**（实测 `--version` 就要 64ms，
+   * 而真正的浏览器操作只占几毫秒）。分三次调用 = 3×63ms；用 `batch` 合并后 =
+   * 1×63ms（实测 176ms → 62ms）。jev-ultrafast 用 CDP 长连接拿到的是同一个效果，
+   * 我们在 CLI 这一层用 `batch` 等价实现。
+   */
+  async observe(
+    options: { interactiveOnly?: boolean; depth?: number; selector?: string } = {},
+    run: CliRunOptions = {},
+  ): Promise<ObservedPage> {
+    const snapshotCommand = ['snapshot']
+    if (options.interactiveOnly !== false) snapshotCommand.push('-i')
+    if (options.depth !== undefined) snapshotCommand.push('-d', String(options.depth))
+    if (options.selector !== undefined && options.selector !== '') snapshotCommand.push('-s', options.selector)
+    const [snapshotData, readData, titleData] = (await this.batch([snapshotCommand, ['read'], ['get', 'title']], run)) as [
+      SnapshotData,
+      { content?: string } | null,
+      { title?: string } | null,
+    ]
+    const page = normalizeSnapshot(snapshotData)
     return {
-      origin,
-      snapshot: text,
-      refs,
-      removedRefs: (data.removedRefs ?? []).map(String),
-      digest: createHash('sha1').update(`${origin}\n${text}`).digest('hex').slice(0, 16),
+      ...page,
+      text: String(readData?.content ?? ''),
+      title: String(titleData?.title ?? ''),
     }
+  }
+
+  /** `batch [--bail] <cmd...>`：一次进程执行多条命令，返回逐条结果（失败即抛）。 */
+  async batch(commands: readonly string[][], run: CliRunOptions = {}): Promise<unknown[]> {
+    if (commands.length === 0) return []
+    // 注意：`--json` 是 **batch 自己的**旗标（放在子命令之前），不是子命令的参数。
+    const argv = ['batch', '--json', ...commands.map((command) => command.join(' '))]
+    const stdout = await this.run(argv, run)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(stdout)
+    } catch {
+      throw new CliError('bad-output', `batch 的输出不是 JSON：${stdout.slice(0, 300)}`)
+    }
+    if (!Array.isArray(parsed)) throw new CliError('bad-output', 'batch 的输出不是数组')
+    const results: unknown[] = []
+    for (const item of parsed as Array<{ command?: string[]; error?: unknown; result?: unknown; success?: boolean }>) {
+      if (item?.success !== true) {
+        const name = Array.isArray(item?.command) ? item.command.join(' ') : 'batch 命令'
+        throw new CliError('cli-error', `批处理里的「${name}」失败：${String(item?.error ?? '未知错误')}`)
+      }
+      results.push(item.result)
+    }
+    return results
   }
 
   /** 一个变更类动作 → CLI 子命令。**一次一个**，永远不串。 */

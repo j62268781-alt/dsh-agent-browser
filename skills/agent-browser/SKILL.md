@@ -127,4 +127,27 @@ agent-browser auth login app
 | 截图/URL 与预期不符 | 站点**弹窗广告**抢占了活动标签（hao123 等常见）。先 `tab` 查列表，再 `tab tN` 切回 |
 | 其他异常 | 先跑 `agent-browser doctor` |
 
+## 批量命令（batch）：每一步都省 60–120ms
+
+**这个 CLI 每次调用都要新起一个进程**（实测 `agent-browser --version` 就要 **64ms**，
+而真正的浏览器操作只占几毫秒）。所以"多调几条命令"的成本主要是**进程启动**，不是干活。
+
+`batch` 在**一个进程**里顺序执行多条命令：
+
+```bash
+# 3 次独立调用：176ms ；一条 batch：62ms（实测中位数）
+agent-browser batch --json 'snapshot -i' 'read' 'get title'
+agent-browser batch --bail 'open https://example.com/' 'wait --load load' 'snapshot -i'
+agent-browser batch 'fill @e1 "jev"' 'press Enter' 'wait 500' 'snapshot -i'
+```
+
+- `--json` 返回**逐条结果数组**（`[{command, result, error, success}, …]`），失败条目带 `error`；
+- `--bail` 遇到第一条失败就停（默认继续执行后面的命令）；
+- 适合批量：**观察组**（树 + 正文 + 标题）、**导航组**（open + wait + snapshot）、**表单组**（fill + press + wait + snapshot）；
+- **不要**把"需要看了结果再决定下一条"的命令硬塞进一条 batch——中间结果在进程内不可读。
+
+用本插件的工具时等价写法：`browser_snapshot` 带 `includeText: true` / `includeTitle: true`
+（内部就是一次 `batch`），比先 `browser_snapshot` 再 `browser_read` 再 `browser_get` 少两次进程启动、
+**也少两个模型回合**。
+
 多步复用 daemon：`agent-browser batch "open X" "snapshot -i"`，或 `open X && wait --load load && snapshot -i`。用完 `agent-browser close`。

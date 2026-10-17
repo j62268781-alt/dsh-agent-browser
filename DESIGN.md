@@ -547,6 +547,34 @@ open 2.9–4.3 s（站点本身慢） · snapshot 40–70 ms · click 13–170 m
 估算成本 **$0.0008**/任务。**瓶颈仍然在判断层**：这个部署的 Σp 实测 0.95–0.98（与候选数无关），
 重采吃掉的 `ask` 时间占总耗时一半以上——那是 provider 侧的上限，不是循环能修的。
 
+### 4.5.2f 批量命令（batch）：在 CLI 这一层把"每步进程启动"压下来
+
+这个 CLI **每次调用都要新起一个进程**——实测 `agent-browser --version`（什么都不干）就要
+**64 ms**，而 `get url` / `snapshot -i` / `read` 分别是 63 / 63 / 65 ms：**成本 99% 是进程启动，
+浏览器干活只占几毫秒**。所以"CDP 消息条数"对我们没意义（`jev-ultrafast` 数的是那个），
+**"一步起了几个进程"才是**。
+
+`batch` 在**一个进程**里顺序执行多条命令（`batch [--bail] --json <cmd...>`，
+`--json` 返回逐条结果数组）。实测同一组命令：
+
+```
+3 次独立调用（snapshot + read + get title）   176.3 ms
+1 次 batch（同样三条）                        62.4 ms      → 每步省 ~114 ms
+```
+
+落地：
+
+- `AgentBrowser.observe()`：一次进程拿齐**树 + 正文 + 标题**（内部就是 `batch`），
+  决策循环的每步观测改用它（`timings.readMs/titleMs` 归零，合并进 `snapshotMs`）；
+- `browser_snapshot` 工具新增 `includeText` / `includeTitle`：模型**一次工具调用**就能拿到
+  三样东西——这不仅省进程，还**省两个模型回合**（每回合 ≥1.7 s）；
+- 内置 skill 增加「批量命令（batch）」一节：给出实测数字、观察组/导航组/表单组三种模式、
+  `--json` / `--bail` 语义，以及"不要批量包含需要决策的命令"的边界。
+
+拿不到的：像 `jev-ultrafast` 那样**一次 evaluate 返回精简控件清单**、in-page O(1) 新鲜度守卫、
+把状态从"无障碍树文本"换成"紧凑结构"。那些要么自己讲 CDP，要么用 `eval`/init script 在
+页面里维护索引（等于把 CLI 当隧道用，与 CLI 的 snapshot 语义脱节）——定位不同，不做。
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，
