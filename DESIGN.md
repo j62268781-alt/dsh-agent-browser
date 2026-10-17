@@ -531,6 +531,22 @@ open 2.9–4.3 s（站点本身慢） · snapshot 40–70 ms · click 13–170 m
 同一任务改用原子工具的真机对照两次都在 13–20 分钟后仍停在 2 步（环境/浏览器会话卡住，
 不计入对照）。所以**端到端**的"决策 vs 无决策"没有拿到可信的完整样本，只有每步成本这一层可信。
 
+### 4.5.2e 从两个高星项目移植的优化（P1–P5）
+
+对照 `dsh-jev-plugin` 与 `jev-ultrafast` 的实现，移植了五条结构性优化：
+
+| # | 优化 | 依据 | 效果 |
+|---|---|---|---|
+| **P1** | **删掉"执行前再取一次树"**：直接 act；CLI 的 `@eN` 是身份绑定的，失效会报 `Unknown ref`（绝不点错元素），按 stale 重观察 | jev-ultrafast `fresh()` 只做 O(1) 的 in-page 守卫，因为它那层协议不绑身份；我们的 CLI 绑，所以全树快照是纯浪费 | 每步快照 **2 → 1**；`stale_state` 误判类消失 |
+| **P2** | 候选按**总数**封顶 40（原为 40 点击 + 20 输入 = 64）；页面上没有可操作元素时**不发请求**；唯一输入框**免判断**直接交回宿主 | dsh-jev-plugin 的 40/12 配比与 "no-request bypass" | 大选项集的不合法分布变少；简单页省整次请求 |
+| **P3** | 快照失败**重试** 3 次（40/80ms 退避）+ 最后降深度 | jev-ultrafast `observe()` 重试 10 次 | 少一类 `action_error` |
+| **P4** | 结果带 `timings`（snapshot/read/title/ask/act/total）与 `usage.estCostUsd`（$0.042/M 输入 tokens，取自 dsh-jev-plugin 冻结费率） | dsh-jev-plugin 的 receipts 纪律 | 优化可被 `pnpm bench` 直接对照，不再靠印象 |
+| **P5** | 执行过动作后，观察要求"结构稳定"（**1 次** 40ms 探测） | jev-ultrafast 的 after_input 短等待（50/200ms） | 少"弹层没出来就选"的空转；动画页只探 1 次，不白付延迟 |
+
+实测（hao123，`pnpm bench`）：`snapshot 316ms / read 126ms / title 42ms / ask 1906ms / act 5604ms`，
+估算成本 **$0.0008**/任务。**瓶颈仍然在判断层**：这个部署的 Σp 实测 0.95–0.98（与候选数无关），
+重采吃掉的 `ask` 时间占总耗时一半以上——那是 provider 侧的上限，不是循环能修的。
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，

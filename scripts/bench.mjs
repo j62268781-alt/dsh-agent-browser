@@ -95,7 +95,9 @@ try {
   // 无决策的固定成本 = 打开 + 快照 + 点击；**再加**调用方模型每一步的决策时间
   const atomicFixed = open.ms + snapshotAvg + click.ms
   console.log(`  无决策固定成本（open+snapshot+click）= ${atomicFixed.toFixed(0)} ms，另加调用方模型每步的决策时间`)
-  console.log(`  有决策总耗时 = ${decision.ms.toFixed(0)} ms · status=${decision.result.status} · steps=${decision.result.steps.length} · Jev ${decision.result.usage.calls} 次 · tokens ${decision.result.usage.inputTokens}`)
+  const d = decision.result
+  console.log(`  有决策总耗时 = ${decision.ms.toFixed(0)} ms · status=${d.status} · steps=${d.steps.length} · Jev ${d.usage.calls} 次 · tokens ${d.usage.inputTokens} · 估算 $${(d.usage.estCostUsd ?? 0).toFixed(6)}`)
+  console.log(`  分项实测：snapshot ${d.timings.snapshotMs}ms · read ${d.timings.readMs}ms · title ${d.timings.titleMs}ms · ask ${d.timings.askMs}ms · act ${d.timings.actMs}ms · 总计 ${d.timings.totalMs}ms`)
   for (const line of decision.result.trace) console.log(`    · ${line}`)
   const finalUrl = await browser.get('url', undefined, undefined).catch(() => '')
   console.log(`  最终 URL：${finalUrl}`)

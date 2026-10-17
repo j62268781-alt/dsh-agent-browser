@@ -90,13 +90,33 @@ export interface TaskStep {
   readonly confirm?: number
 }
 
+/**
+ * 每类操作累计耗时（毫秒）。来自 dsh-jev-plugin 的 `receipts` 纪律：
+ * 优化要靠**可复跑的账**，不是印象。`pnpm bench` 直接读这些字段做前后对照。
+ */
+export interface TaskTimings {
+  readonly snapshotMs: number
+  readonly readMs: number
+  readonly titleMs: number
+  readonly askMs: number
+  readonly actMs: number
+  readonly totalMs: number
+}
+
 export interface TaskResult {
   readonly status: TaskStatus
   readonly reason: string
   readonly steps: readonly TaskStep[]
   readonly trace: readonly string[]
   readonly url: string
-  readonly usage: { readonly calls: number; readonly inputTokens: number; readonly outputTokens: number }
+  readonly usage: {
+    readonly calls: number
+    readonly inputTokens: number
+    readonly outputTokens: number
+    /** 估算成本（美元）：按 dsh-jev-plugin 冻结的 Jev 费率 $0.042/百万输入 tokens。 */
+    readonly estCostUsd: number
+  }
+  readonly timings: TaskTimings
   /**
    * 结束语不是"已完成"，而是"交回宿主校验"。这里给出**怎么验**的下一步提示
    * （三家参考实现都是这个分工：Jev 负责把页面推到目标附近，调用方独立验证）。
@@ -173,7 +193,12 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
 
   // 目标像是"要打字"时，输入候选排最前：对比 40 个链接，输入框才是要操作的目标。
   const wantsTyping = /输入|填写|填|搜索|查询|检索|type|fill|search|enter|query/i.test(goal)
-  const head = wantsTyping ? [...rank(inputs).slice(0, 20), ...rank(clicks).slice(0, MAX_CLICK_CANDIDATES)] : [...rank(clicks).slice(0, MAX_CLICK_CANDIDATES), ...rank(inputs).slice(0, 20)]
+  // 预算按**总数**封顶（dsh-jev-plugin 的 40/12 配比）：早先"40 点击 + 20 输入"最多 64 个选项，
+  // 判断层在大选项集上更容易给出不合法分布（实测 Σp 0.95–0.98）。
+  const head = (wantsTyping
+    ? [...rank(inputs).slice(0, 20), ...rank(clicks).slice(0, MAX_CLICK_CANDIDATES)]
+    : [...rank(clicks).slice(0, MAX_CLICK_CANDIDATES), ...rank(inputs).slice(0, 20)]
+  ).slice(0, MAX_CLICK_CANDIDATES)
   const controls: TaskCandidate[] = [
     { id: 'control:scroll_down', description: '向下滚动一屏（看更多内容）', kind: 'control' },
     { id: 'control:scroll_up', description: '向上滚动一屏', kind: 'control' },
@@ -309,7 +334,9 @@ export function pickAlternate(
 export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult> {
   const steps: TaskStep[] = []
   const trace: string[] = []
-  const usage = { calls: 0, inputTokens: 0, outputTokens: 0 }
+  const usage = { calls: 0, inputTokens: 0, outputTokens: 0, estCostUsd: 0 }
+  /** 分项耗时（P4）：优化前后用同一份账对照。 */
+  const timings = { snapshotMs: 0, readMs: 0, titleMs: 0, askMs: 0, actMs: 0, startedAt: now() }
 
   if (goal.trim() === '') throw new JudgeUnavailableError('browser_run 需要 goal')
   if (deps.judge === undefined) {
@@ -347,18 +374,65 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 1) 永远用**刚取**的树做决策；另外取一次**可见正文**——
     //    goal_done 只认这个字段（无障碍树里的控件名/历史会被当成"看起来完成了"）。
-    // 超重的页面（真机：GitHub 的仓库页）一次性取全树可能超时：降深度再取一次。
-    let snapshot: Snapshot
-    try {
-      snapshot = await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal })
-    } catch (error) {
-      trace.push(`第 ${step} 步：取快照失败（${message(error)}）→ 降深度（depth=8）重试一次`)
-      snapshot = await deps.browser.snapshot({ interactiveOnly: true, depth: 8 }, { signal: deps.signal })
+    //
+    // P3（jev-ultrafast 的 `observe()` 纪律）：文档在变（"Document changed during evaluation"）
+    // 或超重页面取全树超时，都**重试**几次而不是直接失败；最后一次降深度再取。
+    const observe = async (): Promise<Snapshot> => {
+      const readOnce = async (depth?: number): Promise<Snapshot> => {
+        const started = now()
+        try {
+          return await deps.browser.snapshot(
+            { interactiveOnly: true, ...(depth === undefined ? {} : { depth }) },
+            { signal: deps.signal },
+          )
+        } finally {
+          timings.snapshotMs += now() - started
+        }
+      }
+      let lastError: unknown
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          return await readOnce()
+        } catch (error) {
+          lastError = error
+          if (attempt < 3) await sleep(40 * attempt)
+        }
+      }
+      trace.push(`第 ${step} 步：取快照连续失败（${message(lastError)}）→ 降深度（depth=8）再试一次`)
+      return readOnce(8)
     }
+    // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
+    // 用"连续两次结构一致"作为稳定判据（最多再探 2 次、每次 40ms）——比盲目 sleep 精确，
+    // 也避免"弹层还没出来就让 Jev 选"（jev-ultrafast 的 after_input 短等待同理）。
+    const observeSettled = async (): Promise<Snapshot> => {
+      let current = await observe()
+      // 只探 1 次（40ms）：动画页永远"不稳定"，探多了就是白付延迟；
+      // jev-ultrafast 的 after_input 也只有 50/200ms 两个档位。
+      for (let probe = 0; probe < 1; probe += 1) {
+        await sleep(40)
+        const next = await observe()
+        if (!stateChanged(current, next)) return next
+        current = next
+      }
+      return current
+    }
+    const snapshot: Snapshot = delivered === undefined ? await observe() : await observeSettled()
+    const readStarted = now()
     const pageText = await visibleText(deps, snapshot, trace, step)
+    timings.readMs += now() - readStarted
+    const titleStarted = now()
     const pageTitle = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
+    timings.titleMs += now() - titleStarted
     last = snapshot
     const candidates = candidatesOf(snapshot, goal)
+    // P2（dsh-jev-plugin 的 no-request bypass）：控制项永远在候选里，所以"0/1 个候选"
+    // 实际指的是**页面上的可操作元素**。没有可操作元素 → 不发请求，直接停；
+    // 只有一个且是输入框 → 无论如何都要交回宿主拿文字，也不必问判断层。
+    const actionable = candidates.filter((candidate) => candidate.kind !== 'control')
+    if (actionable.length === 0) {
+      trace.push(`第 ${step} 步：页面上没有可操作的元素 → 停（不发判断请求）`)
+      return finish('no_progress', '页面上没有可操作的元素', snapshot)
+    }
     const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]))
     const interaction = interactionSignature(snapshot)
 
@@ -396,7 +470,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 而契约 §0.3 允许消费者把重试当作"新一次采样"。所以策略是：
     // **同样的状态、更少的候选**再问——不是重复同一个请求（同一规模下常常重复失败）。
     const askOnce = async (subset: readonly TaskCandidate[]): Promise<Readonly<Record<string, JudgmentAnswer>>> => {
+      const askStarted = now()
       const result = await judge.ask(state, questionsOf(goal, subset), { purpose: deps.purpose })
+      timings.askMs += now() - askStarted
       usage.calls += 1
       usage.inputTokens += result.usage.inputTokens ?? 0
       usage.outputTokens += result.usage.outputTokens ?? 0
@@ -404,6 +480,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     let answers: Readonly<Record<string, JudgmentAnswer>>
     let askedCount = candidates.length
+    if (actionable.length === 1 && actionable[0].kind === 'input') {
+      // 唯一可操作元素就是输入框：不需要判断是哪个框，直接交回宿主（省一次请求）。
+      const only = actionable[0]
+      trace.push(`第 ${step} 步：页面上只有一个输入框（${only.id}）→ 免判断，交回宿主填内容`)
+      answers = { action: { kind: 'choice', optionId: only.id, probabilities: { [only.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
+    } else
     try {
       answers = await askOnce(candidates)
     } catch (error) {
@@ -525,33 +607,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     attempted.add(chosen.id)
 
-    // 7) 新鲜度：执行前再取一次树。变了 → 丢弃这次决策（判断看的是旧树）。
-    const fresh = await deps.browser.snapshot({ interactiveOnly: true }, { signal: deps.signal })
-    // 用**语义签名**而不是 digest：hao123 这种门户有轮播/广告，digest 每帧都在变，
-    // 用 digest 会把"页面自己在动"误判成"决策过期"，整轮都在 stale_state 里空转。
-    if (stateChanged(snapshot, fresh)) {
-      staleStreak += 1
-      trace.push(`第 ${step} 步：决策后页面已变（stale_state，连续 ${staleStreak} 次）→ 丢弃这次动作，重新观察`)
-      steps.push({ step, origin: fresh.origin, digest: fresh.digest, action: chosen.id, executed: false, reason: 'stale_state', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }), ...(confidence === undefined ? {} : { confidence }) })
-      last = fresh
-      if (staleStreak >= 3) {
-        const confirmed = await confirmGoal(judge, deps, fresh, goal, usage, trace)
-        if (confirmed.confirmed) {
-          trace.push(`页面一直在变，但结束前独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
-          return finish('needs_verification', `连续 ${staleStreak} 次页面变动；确认 p=${confirmed.probability.toFixed(2)}`, fresh)
-        }
-        return finish('no_progress', `连续 ${staleStreak} 次"决策后页面已变"：页面一直在动，判断跟不上`, fresh)
-      }
-      continue
-    }
-    staleStreak = 0
-
+    // 7) **不做"执行前再取一次树"**（P1）。
+    //
+    // 依据 jev-ultrafast：它的 `fresh()` 只做一次 in-page 的 `[pageKey, guard(node)]` 比较，
+    // 因为它那层协议不绑定元素身份；而我们的 CLI 里 `@eN` 是**身份绑定**的——页面变了旧 ref
+    // 会以 `Unknown ref` 失败，绝不会点到别的元素。所以再取一次全树是纯浪费（~50ms/步），
+    // 而且会引入"页面自己在动 → stale_state"的误判（hao123 的轮播就踩过）。
+    // 现在直接执行；失败时按错误类型分类：身份失效 → stale（重观察），其它 → 动作失败。
     // 8) 执行**一个**动作。失败**不立刻终止**：门户页上"元素被广告遮罩"是常态，
     //    换一个动作继续往往就通了；连续 2 次失败才判定这一轮没法推进。
     try {
+      const actStarted = now()
       await execute(deps.browser, chosen, deps.signal)
+      timings.actMs += now() - actStarted
       actionFailures = 0
-      delivered = { id: chosen.id, snapshot: fresh }
+      staleStreak = 0
+      delivered = { id: chosen.id, snapshot } // 执行前的树：下一步用 stateChanged(它, 新树) 判"有没有推进"
       trace.push(`第 ${step} 步：${chosen.description} ✓`)
       steps.push({
         step,
@@ -566,11 +637,29 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         ...(alternateOf === undefined ? {} : { alternateOf }),
       })
     } catch (error) {
-      actionFailures += 1
       attempted.add(chosen.id) // 失败的动作不能再被选（真机：被广告遮罩的链接连选两次）
-      trace.push(`第 ${step} 步：${chosen.description} ✗ ${message(error)}（连续失败 ${actionFailures} 次）`)
-      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: `action_error: ${message(error)}`, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
-      if (actionFailures >= 2) return finish('action_error', message(error), snapshot)
+      const detail = message(error)
+      const stale = /Unknown ref|未知的 ref|stale|no longer exists|不存在/i.test(detail)
+      if (stale) {
+        // 身份失效 = 判断看的是旧树：丢弃这次决策，重新观察（不是"动作失败"）。
+        staleStreak += 1
+        trace.push(`第 ${step} 步：${chosen.id} 的 ref 已失效（stale_state，连续 ${staleStreak} 次）→ 重新观察`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: `stale_state: ${detail}`, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+        delivered = undefined
+        if (staleStreak >= 3) {
+          const confirmed = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
+          if (confirmed.confirmed) {
+            trace.push(`ref 一直失效，但结束前独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
+            return finish('needs_verification', `连续 ${staleStreak} 次 ref 失效；确认 p=${confirmed.probability.toFixed(2)}`, snapshot)
+          }
+          return finish('no_progress', `连续 ${staleStreak} 次 ref 失效：页面一直在重建，判断跟不上`, snapshot)
+        }
+        continue
+      }
+      actionFailures += 1
+      trace.push(`第 ${step} 步：${chosen.description} ✗ ${detail}（连续失败 ${actionFailures} 次）`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: `action_error: ${detail}`, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+      if (actionFailures >= 2) return finish('action_error', detail, snapshot)
       continue
     }
   }
@@ -586,6 +675,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   return finish('budget', `达到最大步数 ${deps.maxSteps}`, last)
 
   function finish(status: TaskStatus, reason: string, snapshot: Snapshot | undefined): TaskResult {
+    usage.estCostUsd = Math.round((usage.inputTokens * 0.042 / 1_000_000) * 1e9) / 1e9 // $0.042/M 输入 tokens
     return {
       status,
       reason,
@@ -593,6 +683,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       trace,
       url: snapshot?.origin ?? '',
       usage,
+      timings: {
+        snapshotMs: Math.round(timings.snapshotMs),
+        readMs: Math.round(timings.readMs),
+        titleMs: Math.round(timings.titleMs),
+        askMs: Math.round(timings.askMs),
+        actMs: Math.round(timings.actMs),
+        totalMs: Math.round(now() - timings.startedAt),
+      },
       next: NEXT_HINTS[status],
     }
   }
@@ -719,6 +817,9 @@ async function visibleText(deps: TaskDeps, snapshot: Snapshot, trace: string[], 
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 毫秒级计时（分项账用）。 */
+const now = (): number => Number(process.hrtime.bigint() / 1000n) / 1000
 
 /** dsh-judgment 的「响应结构不合法」错误：只换一次采样，不修复答案本身。 */
 function isInvalidResponse(error: unknown): boolean {

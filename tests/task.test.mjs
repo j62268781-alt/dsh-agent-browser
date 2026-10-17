@@ -316,23 +316,23 @@ test('pickAlternate 按概率降序、排除已试过与不允许的', () => {
   assert.equal(pickAlternate(undefined, new Set(), new Set(['a'])), undefined)
 })
 
-test('连续 stale_state（页面一直在动）→ 熔断成 no_progress，而不是把步数烧光', async () => {
-  // 每次取快照 digest 都变：决策后必然"页面已变"（真机：点链接触发同页导航）
+test('动作因 ref 失效失败（页面在重建）→ 连续 3 次后熔断成 no_progress', async () => {
+  // P1 之后 stale 不再靠"执行前再取一次树"判定，而是靠 CLI 的 ref 身份绑定：
+  // 页面重建 → 旧 ref 失效（Unknown ref）→ 归类为 stale，重观察；连续 3 次就熔断。
   let snapshots = 0
   const browser = {
-    // 每次名字都变 = **语义**变了（digest 变但语义没变不算 stale，见 stateSignature 的注释）
     snapshot: async () => {
       snapshots += 1
       return {
         origin: 'https://a.test/',
         digest: `digest-${snapshots}`,
-        snapshot: `button "继续 ${snapshots}" @e1`,
-        refs: { e1: { role: 'button', name: `继续 ${snapshots}` } },
+        snapshot: 'button "继续" @e1\nbutton "取消" @e2',
+        refs: { e1: { role: 'button', name: '继续' }, e2: { role: 'button', name: '取消' } },
       }
     },
     read: async () => '页面正文',
     get: async () => '标题',
-    act: async () => {},
+    act: async () => { throw new Error('Unknown ref @e1') },
     run: async () => {},
   }
   const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confirmProbability: 0.1 }])
@@ -340,6 +340,70 @@ test('连续 stale_state（页面一直在动）→ 熔断成 no_progress，而�
   assert.equal(result.status, 'no_progress')
   assert.match(result.trace.join('\n'), /连续 3 次/)
   assert.ok(result.steps.length <= 4, `不该烧完 10 步，实际 ${result.steps.length} 步`)
+})
+
+test('P1：每一步只取一次快照（不再有"执行前再取一次树"）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成了' } }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(result.steps.length, 1)
+  // 第 1 步观察 1 次；停止后 goal 确认里不再取树（用同一份 snapshot）
+  assert.equal(page.state.snapshots, 1, `期望 1 次快照，实际 ${page.state.snapshots}`)
+})
+
+test('P2：页面上没有可操作元素 → 不发判断请求就停（no-request bypass）', async () => {
+  const browser = {
+    snapshot: async () => ({ origin: 'https://a.test/', digest: 'd', snapshot: 'heading "无操作"', refs: {} }),
+    read: async () => '页面正文',
+    get: async () => '标题',
+    act: async () => {},
+    run: async () => {},
+  }
+  const judge = fakeJudge([{ action: 'control:scroll_down' }])
+  const result = await runTask('目标', deps(browser, judge))
+  assert.equal(result.status, 'no_progress')
+  assert.equal(judge.asked.length, 0, '没有可操作元素时不该问判断层')
+})
+
+test('P2：唯一可操作元素是输入框 → 免判断直接交回宿主', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'textbox', name: '搜索' }])
+  const judge = fakeJudge([])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(judge.asked.length, 0, '唯一的输入框不必问判断层')
+  assert.equal(result.status, 'input_required')
+})
+
+test('P3：快照失败会自动重试（文档在变时不该直接失败）', async () => {
+  let attempts = 0
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '完成' }])
+  page.browser.snapshot = async () => {
+    attempts += 1
+    if (attempts <= 2) throw new Error('Document changed during evaluation')
+    page.state.snapshots += 1
+    return {
+      origin: page.state.origin,
+      digest: 'd',
+      snapshot: 'button "完成" @e1',
+      refs: { e1: { role: 'button', name: '完成' } },
+    }
+  }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.ok(attempts >= 3, `应该重试过，实际 ${attempts} 次`)
+})
+
+test('P4：结果带分项耗时与估算成本（可复跑的账）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成' } }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  for (const key of ['snapshotMs', 'readMs', 'titleMs', 'askMs', 'actMs', 'totalMs']) {
+    assert.equal(typeof result.timings[key], 'number', `timings.${key} 应该是数字`)
+  }
+  assert.ok(result.timings.totalMs >= 0)
+  assert.equal(typeof result.usage.estCostUsd, 'number')
+  assert.ok(result.usage.estCostUsd > 0, '有 tokens 就应有正的估算成本')
 })
 
 test('无名称的可交互元素也要进候选（真实站点：hao123 首页的搜索框没有可访问名）', () => {
