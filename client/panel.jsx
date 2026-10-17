@@ -25,17 +25,49 @@ export function Panel(props) {
   /** 安装自检结果（宿主 `ctx.browser.probe()` 的返回值）。 */
   const [probe, setProbe] = useState(null)
   /**
-   * 「决策」的依赖检查：`probe.judgment` 由 host 半告诉客户端（`ctx.judgment` 在不在）。
-   * `undefined`（自检还没回来 / host 半是旧码）→ 不拦；只有明确 false 才置灰。
+   * 开关「决策」：**开启前向宿主现问一次依赖**（不信任挂载时那次缓存）。
+   * 依赖不在 → 不写配置、给明确原因。关掉则不需要检查。
    */
-  const judgmentReady = probe === null || probe === undefined || probe.apiVersion !== PROBE_API_VERSION
-    ? undefined
-    : probe.judgment === true
+  async function toggleDecision(next) {
+    if (!next) {
+      await setGroup('tools', tools, 'decision', false)
+      return
+    }
+    try {
+      const envelope = await props.browser?.checkJudgment?.()
+      if (envelope?.ok !== true || envelope.value?.available !== true) {
+        setError(String(envelope?.value?.reason ?? envelope?.error?.message ?? '无法确认 dsh-judgment 是否可用，未开启「决策」'))
+        return
+      }
+    } catch (cause) {
+      setError(`无法确认 dsh-judgment 是否可用（${String(cause?.message ?? cause)}），未开启「决策」`)
+      return
+    }
+    await setGroup('tools', tools, 'decision', true)
+  }
+
   const [probing, setProbing] = useState(false)
   const [probeError, setProbeError] = useState('')
   /** 帮忙装 CLI 的进度与结果。 */
   const [installing, setInstalling] = useState(false)
   const [installNote, setInstallNote] = useState('')
+
+  /**
+   * 「决策」的依赖检查（`dsh-judgment` 提供的 `ctx.judgment`）。**四态，未知一律不许开启**：
+   *
+   * - `checking`：挂载时那次自检还没回来；
+   * - `unknown`：自检失败了，或 host 半是旧码（载荷版本不匹配）——无法确认；
+   * - `missing`：宿主明确说没有 `ctx.judgment`；
+   * - `ready`：宿主明确说有。
+   *
+   * 之前"未知 = 不拦"是个漏洞：依赖不存在时开关能点开，开了 browser_run 也只会报错。
+   */
+  const judgmentState = probe === null
+    ? (probeError === '' ? 'checking' : 'unknown')
+    : probe.apiVersion !== PROBE_API_VERSION
+      ? 'unknown'
+      : probe.judgment === true ? 'ready' : 'missing'
+  const judgmentReady = judgmentState === 'ready'
 
   useEffect(() => {
     if (typeof form?.subscribe !== 'function') return undefined
@@ -181,19 +213,17 @@ export function Panel(props) {
         />
         <Row
           title="决策"
-          subtitle={judgmentReady === false
-            ? '需要 dsh-judgment 提供的 ctx.judgment（当前未检测到）。装上它并重启 DSH 后再开启；现在开了 browser_run 也只会报错。'
-            : decision
-              ? `开启：多一个 browser_run，每步由 ctx.judgment 判断（用途名 ${String(judgment.purpose ?? 'browser.action')}）。`
-              : '开启后多一个 browser_run：插件内部跑有界循环，每步由 ctx.judgment 在代码枚举的候选里选一个动作。'}
+          subtitle={judgmentState === 'ready'
+            ? `${JUDGMENT_HINTS.ready}（用途名 ${String(judgment.purpose ?? 'browser.action')}）`
+            : JUDGMENT_HINTS[judgmentState] ?? JUDGMENT_HINTS.unknown}
           control={(
             <Switch
               primitives={props.primitives}
               label="决策"
-              // **先检查再允许开启**：依赖不在就置灰（而不是让用户开了再撞错）。
               checked={decision}
-              disabled={!enabled || busy || !writable || judgmentReady === false}
-              onChange={(next) => { void setGroup('tools', tools, 'decision', next) }}
+              // **依赖不在（或确认不了）就不许开启**：不是"开了再撞错"。
+              disabled={!enabled || busy || !writable || !judgmentReady}
+              onChange={(next) => { void toggleDecision(next) }}
             />
           )}
         />
@@ -339,6 +369,14 @@ export function Panel(props) {
       </section>
     </div>
   )
+}
+
+/** 「决策」行在四种依赖状态下的说明。依赖名与后果写清楚——避免"开着却没用"。 */
+const JUDGMENT_HINTS = {
+  ready: '依赖 dsh-judgment（已就绪）：开启后多一个 browser_run，每步由 ctx.judgment 判断。',
+  checking: '正在检查依赖 dsh-judgment（ctx.judgment）…',
+  unknown: '无法确认 dsh-judgment 是否可用（自检未返回，或 host 半版本不匹配）：重启 DSH 后再试。',
+  missing: '需要 dsh-judgment 提供的 ctx.judgment（当前未检测到）。装上它并重启 DSH 后才允许开启——否则 browser_run 只会报错。',
 }
 
 /* ─────────────────────────── 自检卡片 ─────────────────────────── */

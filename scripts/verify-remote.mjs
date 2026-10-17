@@ -72,6 +72,13 @@ check('probe 恰好两项检查（cli / chrome）', Array.isArray(probeCall?.val
 check('probe 返回值不含可执行文件路径', typeof probeCall?.value?.title === 'string' && probeCall?.value?.command === undefined)
 check('probe 带载荷版本号（两侧错配时客户端能说出来）', probeCall?.value?.apiVersion === 2)
 
+const judgmentCall = await hostCtx.typertGateway.invokeRpc('browser/checkJudgment', { args: {} }, undefined, undefined)
+check(
+  'browser/checkJudgment 可调用（「决策」开启前的依赖检查）',
+  judgmentCall?.ok === true && typeof judgmentCall.value?.available === 'boolean' && typeof judgmentCall.value?.reason === 'string',
+  JSON.stringify(judgmentCall)?.slice(0, 200),
+)
+
 const unmarked = await hostCtx.typertGateway.invokeRpc('browser/sessionInfo', { args: {} }, undefined, undefined)
 check('未标 @Remote 的 sessionInfo 不会被暴露', unmarked?.ok === false, JSON.stringify(unmarked)?.slice(0, 160))
 
@@ -126,13 +133,22 @@ const { browserContribution } = await import(`${REPO}/client/browser-remote.js`)
 console.log('\nclient 半（手写 contribution 过 Gateway 校验）')
 const dispose = await clientCtx.remote.$mount(browserContribution())
 check('$mount 成功并返回 disposer', typeof dispose === 'function')
-check('命名空间暴露了 probe 与 installCli', typeof clientCtx.remote.browser?.probe === 'function' && typeof clientCtx.remote.browser?.installCli === 'function')
+check(
+  '命名空间暴露了 probe / installCli / checkJudgment',
+  typeof clientCtx.remote.browser?.probe === 'function'
+    && typeof clientCtx.remote.browser?.installCli === 'function'
+    && typeof clientCtx.remote.browser?.checkJudgment === 'function',
+)
 
 const clientProbe = await clientCtx.remote.browser.probe()
 check('客户端调用 probe() 拿到信封', clientProbe?.ok === true)
 
 const probeWire = wires.at(-1)
 check('probe 走零实参的 wire 调用', JSON.stringify(probeWire.args) === '{}', JSON.stringify(probeWire))
+
+const clientJudgment = await clientCtx.remote.browser.checkJudgment()
+check('客户端调用 checkJudgment() 拿到信封', clientJudgment?.ok === true)
+check('checkJudgment 走零实参的 wire 调用', JSON.stringify(wires.at(-1).args) === '{}', JSON.stringify(wires.at(-1)))
 
 const clientInstall = await clientCtx.remote.browser.installCli('cli')
 check('客户端调用 installCli("cli") 拿到信封', clientInstall?.ok === true)

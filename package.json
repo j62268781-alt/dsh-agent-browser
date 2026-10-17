@@ -58,7 +58,7 @@
     "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.4",
-    "dsh-judgment": "*"
+    "dsh-judgment": ">=0.1.0 <1.0.0"
   },
   "peerDependenciesMeta": {
     "dsh-judgment": {

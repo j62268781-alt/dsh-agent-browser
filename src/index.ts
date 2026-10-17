@@ -78,6 +78,13 @@ export interface ProbeResult {
   readonly judgment: boolean
 }
 
+export interface JudgmentCheck {
+  /** `ctx.judgment`（dsh-judgment 提供的可选服务）在不在。 */
+  readonly available: boolean
+  /** 面板可以直接显示的一句话：在 = 就绪；不在 = 怎么补上。 */
+  readonly reason: string
+}
+
 export interface InstallResult {
   readonly ok: boolean
   readonly message: string
@@ -229,6 +236,21 @@ export class AgentBrowserService extends TypertRemoteService {
       checks,
       checkedAt,
       judgment: this.judgmentAvailable(),
+    }
+  }
+
+  /**
+   * 「决策」开关的依赖检查。面板在**允许开启之前**现问一次（不依赖挂载时那次的缓存），
+   * 因为 `ctx.judgment` 是可选服务：依赖不在时开着这个开关没有意义。
+   */
+  @Remote
+  async checkJudgment(): Promise<JudgmentCheck> {
+    const available = this.judgmentAvailable()
+    return {
+      available,
+      reason: available
+        ? 'dsh-judgment 已就绪（ctx.judgment）'
+        : '需要 dsh-judgment 提供的 ctx.judgment：装上它并重启 DSH 后再开启「决策」',
     }
   }
 
@@ -553,11 +575,13 @@ export class AgentBrowserService extends TypertRemoteService {
       const log = ctx.logger('agent-browser')
       const judge = readJudge(ctx, log)
       if (judge === undefined) {
+        // 依赖不在就**不注册**：注册一个必然报错的工具只会浪费模型一次调用。
+        // 正常情况下面板根本不允许开启（四态判定 + 开启前现问宿主），这里是配置被手改时的兜底。
         log.warn(
-          '决策已开启，但 ctx.get("judgment") 不可用：browser_run 会在调用时明确报错。' +
-          '请安装 dsh-judgment（重启 DSH），或在「设置 → 浏览器」里关掉决策。',
+          '决策已开启，但 ctx.get("judgment") 不可用（dsh-judgment 未安装/未激活）：这次不注册 browser_run。' +
+          '装上 dsh-judgment 并重启 DSH 后自动生效；也可以在「设置 → 浏览器」里关掉决策。',
         )
-      }
+      } else {
       this.registrations.push(ctx.tools.register(defineTool({
         name: 'browser_run',
         description:
@@ -582,7 +606,8 @@ export class AgentBrowserService extends TypertRemoteService {
           })
           return JSON.stringify(result, null, 2)
         },
-    })))
+      })))
+      }
     }
 
     const log = ctx.logger('agent-browser')

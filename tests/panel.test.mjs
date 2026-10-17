@@ -66,7 +66,8 @@ test('设置页画出了页头、所有行（标题 + 子标题）与两行开�
   assert.match(html, /关闭后不注册任何工具/)
   assert.match(html, /决策/)
   assert.match(html, /browser_run/)
-  assert.match(html, /browser\.action/)          // 用途名进子标题
+  // 依赖检查是四态的：静态渲染时自检还没回来 → 「正在检查依赖 dsh-judgment」
+  assert.match(html, /正在检查依赖 dsh-judgment/)
   // 每一行都是同一条 .ab-row（16px 竖距 + 下边框由 CSS 保证；这里断言结构一致）
   // 普通行是 `class="ab-row"`，上下布局的行是 `class="ab-row ab-rowStacked"`——都算一行
   const rows = html.match(/class="ab-row(?: [\w-]+)?"/g) ?? []

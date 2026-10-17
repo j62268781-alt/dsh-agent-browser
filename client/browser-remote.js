@@ -52,6 +52,8 @@ export function browserContribution() {
       descriptor('probe', []),
       // host: install(target) —— 帮忙装 CLI（'cli'）；wire 名必须等于形参名
       descriptor('installCli', ['target']),
+      // host: checkJudgment() —— 「决策」的依赖检查（零实参）：dsh-judgment 的 ctx.judgment 在不在
+      descriptor('checkJudgment', []),
     ],
   }
 }

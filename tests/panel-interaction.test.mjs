@@ -270,3 +270,62 @@ test('决策：配置里已开启但依赖缺失 → 明确报错（不是只有
     await view.unmount()
   }
 })
+
+/**
+ * 依赖检查是**四态**的，而且"确认不了"也算不许开启（之前的漏洞：未知 → 放行）。
+ */
+test('决策：自检还没回来（checking）→ 先不许开启', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const view = await mount(Panel, {
+    form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined,
+    browser: { probe: () => new Promise(() => {}) }, // 永不 resolve
+  })
+  try {
+    const decision = view.document.querySelector('input[aria-label="决策"]')
+    assert.equal(decision.disabled, true, '依赖状态未知时不许开启')
+    assert.match(view.document.body.textContent, /检查依赖 dsh-judgment/)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('决策：host 半是旧码（载荷版本不匹配）→ 也不许开启', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const view = await mount(Panel, {
+    form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined,
+    browser: {
+      probe: async () => ({
+        ok: true,
+        value: { apiVersion: 1, ok: true, title: '浏览器环境就绪', checkedAt: '', judgment: true, checks: [] },
+      }),
+    },
+  })
+  try {
+    const decision = view.document.querySelector('input[aria-label="决策"]')
+    assert.equal(decision.disabled, true, '版本不匹配时无法确认依赖，不许开启')
+    assert.match(view.document.body.textContent, /无法确认 dsh-judgment/)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('决策：开启前向宿主现问一次依赖，宿主说没有 → 不写配置并报错', async () => {
+  const { Panel } = await loadModule('client/panel.jsx')
+  const form = fakeForm(VALUE)
+  const browser = {
+    ...probeWith(true),
+    checkJudgment: async () => ({ ok: true, value: { available: false, reason: '需要 dsh-judgment' } }),
+  }
+  const view = await mount(Panel, { form, entryId: 'agent-browser', primitives: undefined, browser })
+  try {
+    const decision = view.document.querySelector('input[aria-label="决策"]')
+    assert.equal(decision.disabled, false, '自检回来说可用 → 可点')
+    click(decision)
+    await tick()
+    assert.equal(form.calls.some((call) => call.field === 'tools'), false, '依赖不可用就不能写配置')
+    const alerts = [...view.document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
+    assert.ok(alerts.some((text) => /dsh-judgment/.test(text)), `现有 alert：${alerts.join(' | ')}`)
+  } finally {
+    await view.unmount()
+  }
+})

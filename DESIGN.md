@@ -376,10 +376,27 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
 
-**先检查再允许开启**：`probe()` 载荷里带 `judgment: boolean`（宿主用 `ctx.get('judgment')` 判断
-`dsh-judgment` 在不在）。依赖缺失时面板把「决策」开关**置灰**，副标题说明"需要 dsh-judgment，
-装上并重启 DSH"；如果配置里已经开着而依赖没了，页面上另给一条红字（`browser_run` 不会注册）。
-宿主侧同时兜底：`apply()` 里发现 `tools.decision === true` 但 `ctx.judgment` 缺失只警告、不注册该工具。
+**依赖是显式声明的**（`package.json`）：
+
+```json
+"peerDependencies": { "dsh-judgment": ">=0.1.0 <1.0.0" },
+"peerDependenciesMeta": { "dsh-judgment": { "optional": true } }
+```
+
+可选 peer：不装 dsh-judgment 插件照常能装、能用浏览器工具，只是不能开「决策」。
+
+**先检查再允许开启**，判定是**四态**的（`probe.judgment` + `apiVersion` 共同决定）：
+
+| 状态 | 含义 | 开关 |
+|---|---|---|
+| `ready` | 宿主明确说 `ctx.judgment` 在 | 可开启 |
+| `checking` | 挂载时那次自检还没回来 | 置灰 |
+| `unknown` | 自检失败，或 host 半是旧码（载荷版本不匹配） | 置灰 |
+| `missing` | 宿主明确说没有 `ctx.judgment` | 置灰 |
+
+**未知一律不许开启**——早先"未知 = 不拦"是漏洞：依赖不在也能点开，开了 `browser_run` 只会报错。
+点开启时面板还会调宿主 `checkJudgment()` **现问一次**（不信任挂载缓存），不可用就不写配置。
+宿主侧兜底：`apply()` 里 `tools.decision === true` 但 `ctx.judgment` 缺失 → 警告、不注册该工具。
 
 | `tools.decision` | 模型面前有什么 | 谁在驱动 |
 |---|---|---|

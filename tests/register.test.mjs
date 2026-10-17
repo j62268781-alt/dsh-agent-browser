@@ -27,6 +27,13 @@ class FakeTools extends Service {
   }
 }
 
+/** dsh-judgment 提供的 `ctx.judgment` 替身：只证明"依赖在不在"这两条路径。 */
+class FakeJudgment extends Service {
+  constructor(ctx) {
+    super(ctx, 'judgment')
+  }
+}
+
 /** skill 注册表替身。 */
 class FakeSkills extends Service {
   constructor(ctx) {
@@ -43,10 +50,11 @@ class FakeSkills extends Service {
   }
 }
 
-async function boot(config = {}, { skills = false } = {}) {
+async function boot(config = {}, { skills = false, judgment = false } = {}) {
   const ctx = new Context()
   await ctx.plugin(FakeTools)
   if (skills) await ctx.plugin(FakeSkills)
+  if (judgment) await ctx.plugin(FakeJudgment)
   // 传**原始配置**（不是 `Config(config)`）：cordis 会解析一次并包成 Volatile；
   // 传已解析的值会被二次解析成非法形状（volatile 字段包着 get/write）。
   await ctx.plugin(AgentBrowserService, config)
@@ -71,9 +79,14 @@ test('关掉工具面也照样注册内置 skill（skill 说的是怎么用 CLI�
   assert.equal(ctx.get('skills').skills[0].name, 'agent-browser')
 })
 
-test('开「决策」：多一个 browser_run；judgment 缺失只警告，不阻断注册', async () => {
-  const ctx = await boot({ tools: { decision: true } })
+test('开「决策」且依赖在：多一个 browser_run', async () => {
+  const ctx = await boot({ tools: { decision: true } }, { judgment: true })
   assert.ok(names(ctx).includes('browser_run'))
+})
+
+test('开「决策」但 dsh-judgment 不在：**不注册** browser_run（注册一个必然报错的工具没有意义）', async () => {
+  const ctx = await boot({ tools: { decision: true } })
+  assert.ok(!names(ctx).includes('browser_run'))
 })
 
 test('逃生舱默认关；打开才注册 browser_raw', async () => {

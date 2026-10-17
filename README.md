@@ -194,8 +194,12 @@ scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
 > 当前验证过的运行时：dsh 0.2.1-rc.1 / cordis 4.0.5 / schemastery 3.18.5 /
 > dsh-tools 0.2.1-rc.1 / dsh-typert-protocol 0.2.1-rc.1。
 
-> ⚠️ **「决策」依赖 dsh-judgment**：设置页会先检查 `ctx.judgment` 在不在（`probe()` 载荷带
-> `judgment` 字段）；缺失时开关**置灰**并说明原因，不会让你开了再去撞 `judge_error`。
+> ⚠️ **「决策」依赖 dsh-judgment**（依赖在 `package.json` 里显式声明：`peerDependencies.dsh-judgment`
+> + `peerDependenciesMeta.dsh-judgment.optional = true`，所以不装也能用插件，只是不能开决策）。
+> 设置页的判定是**四态**的——`ready`（可开启）/ `checking`（自检未返回）/ `unknown`（自检失败或
+> host 半版本不匹配）/ `missing`（宿主明确说没有 `ctx.judgment`）。**只有 `ready` 才允许开启**：
+> 其余三态开关一律置灰并说明原因；点开启时还会向宿主 `checkJudgment()` **现问一次**（不信任缓存），
+> 依赖不在就不写配置。宿主侧也有兜底：`apply()` 发现 `tools.decision` 开着但依赖缺失只警告、不注册工具。
 
 ## 许可
 
