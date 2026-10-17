@@ -620,11 +620,19 @@ export class AgentBrowserService extends TypertRemoteService {
         name: 'browser_run',
         description:
           '用一句话目标驱动浏览器：插件内部跑一个有界循环（每步重新快照 → 由 ctx.judgment 在代码枚举的候选里选一个动作 → 执行一个动作）。' +
-          '**文字输入与敏感动作不做决策**：需要时会以 input_required 交回你。结束时状态是 needs_verification（不是"已完成"）——' +
-          '它只负责把页面推到目标状态附近，最终校验由你来做。' + UNTRUSTED,
+          '**文字输入与敏感动作不做决策**：需要时会以 input_required 交回你——' +
+          '但如果你已经知道要填什么，**用 `inputs` 一次给进来**，插件会在同一次调用里填/选/勾完，省掉每个字段一轮往返。' +
+          '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' + UNTRUSTED,
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
           maxSteps: { type: 'number', description: `最大步数（默认 ${config.limits.maxSteps}）` },
+          inputs: {
+            type: 'string',
+            description:
+              '可选：一次给全字段值，JSON 对象字符串，例如 {"Destination":"Lisbon","Stay category":"Design","Free cancellation":"true"}。' +
+              '按字段名匹配（不区分大小写，支持包含匹配）：输入框→fill、下拉→select、勾选框→check/uncheck。' +
+              '值由你提供，插件绝不猜文字；已处于目标状态的字段会被跳过。',
+          },
         },
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
         async execute(args, exec) {

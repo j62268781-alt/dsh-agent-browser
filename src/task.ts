@@ -91,6 +91,8 @@ export interface TaskCandidate {
   /** 元素的角色/名字（`input_required` 要告诉宿主"填哪个框"，不能只给句柄）。 */
   readonly role?: string
   readonly name?: string
+  /** 当前状态摘要（`已勾选` / `未勾选` / `当前值: x` / `已有内容: x`）——状态守卫与判断层都用它。 */
+  readonly state?: string
 }
 
 export interface TaskStep {
@@ -163,6 +165,14 @@ export interface TaskDeps {
   readonly goalThreshold: number
   readonly stuckThreshold: number
   readonly signal: AbortSignal
+  /**
+   * 调用方**一次给全**的字段值（`{ 字段名: 值 }`）。
+   *
+   * 为什么需要：文字必须由调用方提供（插件绝不猜），但"每填一个字段就返回一次
+   * `input_required`、宿主再发一轮"的代价很大——每轮至少一次主模型回合（~1.7s）。
+   * 有了这个映射，插件能在**同一次调用内**把能填的都填掉。
+   */
+  readonly inputs?: Readonly<Record<string, string>>
 }
 
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
@@ -183,6 +193,7 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
       ref: handleOf(item.index),
       role,
       name: item.name,
+      state: item.state,
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox' || role === 'input' || role === 'textarea' || role === 'select') {
       inputs.push({ ...candidate, id: `input:${item.index}`, description: `在${label}里输入/选择`, kind: 'input' })
@@ -191,6 +202,68 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
     }
   }
   return [...rankByGoal(clicks, goal), ...rankByGoal(inputs, goal)]
+}
+
+/** goal 里的"开启/关闭"动词：状态守卫用（已处于目标状态就不必再点）。 */
+const ENABLE_VERBS = /(enable|check|tick|turn on|activate|打开|开启|勾选|选中|启用)/i
+const DISABLE_VERBS = /(disable|uncheck|untick|turn off|deactivate|取消勾选|关闭|禁用)/i
+
+/** 从抽取的 `state` 文本里读出"当前状态"。 */
+export function stateOf(candidate: TaskCandidate): { checked?: boolean; value?: string } {
+  const state = candidate.state ?? ''
+  if (state.includes('已勾选')) return { checked: true }
+  if (state.includes('未勾选')) return { checked: false }
+  const value = /当前值: (.*)$/.exec(state)?.[1] ?? /已有内容: (.*)$/.exec(state)?.[1]
+  return value === undefined ? {} : { value: value.trim() }
+}
+
+/**
+ * **状态守卫**：这个候选是不是已经满足目标、不需要再操作。
+ *
+ * 真机踩过：goal "enable Free cancellation" 在已经勾选的状态下又被点了两次
+ * （已勾选 → 未勾选），把状态弄反。判断层只看"目标词"，不看"当前状态"，所以这条
+ * 必须由代码确定性判定，不能指望判断层。
+ */
+export function isAlreadySatisfied(candidate: TaskCandidate, goal: string, inputs?: Readonly<Record<string, string>>): boolean {
+  const state = stateOf(candidate)
+  if (state.checked !== undefined) {
+    if (ENABLE_VERBS.test(goal) && !DISABLE_VERBS.test(goal)) return state.checked
+    if (DISABLE_VERBS.test(goal) && !ENABLE_VERBS.test(goal)) return !state.checked
+    return false
+  }
+  if (state.value !== undefined) {
+    const wanted = matchInputValue(candidate, inputs)
+    if (wanted !== undefined) return wanted.trim() === state.value.trim()
+  }
+  return false
+}
+
+/** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
+export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Record<string, string>>): string | undefined {
+  if (inputs === undefined) return undefined
+  const name = (candidate.name ?? '').trim().toLowerCase()
+  if (name === '') return undefined
+  for (const [key, value] of Object.entries(inputs)) {
+    const normalized = key.trim().toLowerCase()
+    if (normalized === name || name.includes(normalized) || normalized.includes(name)) return value
+  }
+  return undefined
+}
+
+/** 有值时直接执行（不再交回宿主）：combobox→select，checkbox→check/uncheck，其它→fill。 */
+async function fillFromInputs(browser: AgentBrowser, candidate: TaskCandidate, value: string, signal: AbortSignal): Promise<void> {
+  const ref = candidate.ref
+  if (ref === undefined) throw new CliError('bad-request', `候选 ${candidate.id} 没有动作目标`)
+  const role = (candidate.role ?? '').toLowerCase()
+  if (role === 'combobox' || role === 'select') {
+    await browser.act('select', ref, { value }, { signal })
+    return
+  }
+  if (role === 'checkbox' || role === 'radio' || role === 'switch') {
+    await browser.act(/^(1|true|yes|on|y|是)$/i.test(value.trim()) ? 'check' : 'uncheck', ref, {}, { signal })
+    return
+  }
+  await browser.act('fill', ref, { value }, { signal })
 }
 
 /** 快照 → 候选。文本输入字段单独标注 `input:*`（让循环知道该交回宿主）。 */
@@ -550,7 +623,18 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const pageText = observedPage.text
     const pageTitle = observedPage.title
     last = snapshot
-    const candidates = observedPage.candidates
+    let candidates = observedPage.candidates
+    // **状态守卫**：已处于目标状态的候选不再发给判断层（避免"已勾选又点一下"这种破坏性重复）。
+    const satisfied = candidates.filter((candidate) => isAlreadySatisfied(candidate, goal, deps.inputs))
+    if (satisfied.length > 0) {
+      const names = satisfied.slice(0, 3).map((candidate) => candidate.name ?? candidate.id).join('、')
+      trace.push(`第 ${step} 步：${satisfied.length} 个候选已处于目标状态（${names}${satisfied.length > 3 ? '…' : ''}）→ 跳过`)
+      candidates = candidates.filter((candidate) => !satisfied.includes(candidate))
+      if (candidates.filter((candidate) => candidate.kind !== 'control').length === 0) {
+        trace.push(`第 ${step} 步：可操作元素都已满足目标状态 → 停在待验证（交回宿主复核）`)
+        return finish('needs_verification', '目标涉及的元素已处于目标状态', snapshot)
+      }
+    }
     // P2（dsh-jev-plugin 的 no-request bypass）：控制项永远在候选里，所以"0/1 个候选"
     // 实际指的是**页面上的可操作元素**。没有可操作元素 → 不发请求，直接停；
     // 只有一个且是输入框 → 无论如何都要交回宿主拿文字，也不必问判断层。
@@ -692,11 +776,36 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
-      // ref 存的是**完整动作目标**（`@e3` / CSS 选择器），查 refs 时要去掉 `@`。
+      // 调用方**已经给了值** → 同一次调用内直接填/选/勾（不再交回宿主，省一整轮）。
+      const given = matchInputValue(chosen, deps.inputs)
+      if (given !== undefined) {
+        const started = now()
+        try {
+          await fillFromInputs(deps.browser, chosen, given, deps.signal)
+          timings.actMs += now() - started
+          actionFailures = 0
+          trace.push(`第 ${step} 步：按调用方的值填 ${chosen.role ?? 'field'}「${chosen.name ?? chosen.id}」= ${given} ✓`)
+          steps.push({
+            step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'filled_from_inputs',
+            ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }),
+            ...(confidence === undefined ? {} : { confidence }),
+          })
+          delivered = { id: chosen.id, snapshot }
+          continue
+        } catch (error) {
+          actionFailures += 1
+          attempted.add(chosen.id)
+          trace.push(`第 ${step} 步：按调用方的值填「${chosen.name ?? chosen.id}」失败：${message(error)}`)
+          if (actionFailures >= 2) return finish('action_error', message(error), snapshot)
+          continue
+        }
+      }
       const info = chosen.ref === undefined ? undefined : snapshot.refs[chosen.ref.replace(/^@/, '')]
-      trace.push(`第 ${step} 步：需要输入「${info?.name ?? chosen.ref}」的内容 → 交回宿主（input_required）`)
+      const role = chosen.role ?? info?.role ?? 'field'
+      const name = chosen.name ?? info?.name ?? chosen.ref ?? ''
+      trace.push(`第 ${step} 步：需要 ${role}「${name}」的值 → 交回宿主（input_required）`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'input_required', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
-      return finish('input_required', `需要 ${info?.role ?? 'field'}「${info?.name ?? chosen.ref}」的值`, snapshot)
+      return finish('input_required', `需要 ${role}「${name}」的值`, snapshot)
     }
 
     // 6) 「交付了但页面没变」又被选中 → 从**概率分布**里换次优候选；没有就停。
@@ -745,7 +854,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     //    换一个动作继续往往就通了；连续 2 次失败才判定这一轮没法推进。
     try {
       const actStarted = now()
-      await execute(deps.browser, chosen, deps.signal)
+      await execute(deps.browser, chosen, deps.signal, deps.inputs)
       timings.actMs += now() - actStarted
       actionFailures = 0
       staleStreak = 0
@@ -887,8 +996,21 @@ async function confirmGoal(
   }
 }
 
-async function execute(browser: AgentBrowser, candidate: TaskCandidate, signal: AbortSignal): Promise<void> {
+async function execute(
+  browser: AgentBrowser,
+  candidate: TaskCandidate,
+  signal: AbortSignal,
+  inputs?: Readonly<Record<string, string>>,
+): Promise<void> {
   if (candidate.kind === 'click' && candidate.ref !== undefined) {
+    // 勾选框/单选框：调用方给了布尔值时用 check/uncheck（**幂等**），否则退回 click（切换）。
+    // 真机踩过：goal "enable X" 在已勾选状态下又被点一次 → 变成未勾选。
+    const role = (candidate.role ?? '').toLowerCase()
+    const given = matchInputValue(candidate, inputs)
+    if (given !== undefined && (role === 'checkbox' || role === 'radio' || role === 'switch')) {
+      await browser.act(/^(1|true|yes|on|y|是)$/i.test(given.trim()) ? 'check' : 'uncheck', candidate.ref, {}, { signal })
+      return
+    }
     // ref 已经是**完整目标**：`@e12`（快照路径）或 `[data-dsh-idx="7"]`（抽取路径）。
     await browser.act('click', candidate.ref, {}, { signal })
     return

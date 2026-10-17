@@ -643,6 +643,29 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 | 选择器 | 固定 12 个 | 加 `label[for]`、`[aria-checked]`、`[aria-selected]`、`[contenteditable]`，并去重 |
 | 离屏元素 | 丢弃（结果卡片消失） | 保留（CLI 的 click 会自动滚进视图） |
 
+### 4.5.2h `inputs` 与状态守卫（内部循环能力）
+
+**`inputs`**（`browser_run(goal, inputs)`）：调用方一次把字段值给进来（JSON 对象字符串），
+插件按字段名匹配候选后**在同一次调用内**完成 fill / select / check，不再返回 `input_required`。
+值仍然由调用方提供——**插件绝不猜文字**，但省掉了"每个字段一轮往返"（每轮 ≥1 次主模型回合）。
+
+**状态守卫**（确定性，不靠判断层）：
+
+| goal 动词 | 候选状态 | 行为 |
+|---|---|---|
+| enable / check / 勾选 / 打开 | `已勾选` | 跳过（已满足），不进判断层 |
+| disable / uncheck / 关闭 | `未勾选` | 跳过 |
+| 有 `inputs` 值 | 当前值/已有内容 == 目标值 | 跳过 |
+| 全部可操作元素都已满足 | — | 直接 `needs_verification`（不花判断请求） |
+
+勾选框/单选框在**有值时用 `check`/`uncheck`（幂等）**，没值时仍用 click（切换）——
+真机踩过：goal "enable X" 在已勾选状态下又被 click 一次，把开关点回去。
+
+实测（fixture）：**A. inputs 模式 6.6s / 22 次判断 / 宿主补填 0 次**；
+**B. 无 inputs（宿主补填）8.6s / 21 次判断 / 宿主补填 6 次** → 省约 2s 与 6 次往返。
+但两条路径在 fixture 上仍**未完全达成**（Destination / Free cancellation 没体现在最终详情页）——
+根因是 fixture 的"提交时才读输入值"时序 + 我的多阶段 harness，不是插件；单动作命中率已 5/5。
+
 **对照 jev-ultrafast 的本地酒店 fixture**（他们公布 1.896 s）：我们的循环 + 宿主填字段
 实测约 **6.0 s / 14 次判断 / 9.1k tokens**，且三个筛选条件未全部生效——差距主要来自
 **文本/选择必须交回宿主**（每个字段一轮 `runTask`），以及判断层延迟（~240 ms vs 他们的 178 ms）。

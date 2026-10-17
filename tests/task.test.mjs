@@ -514,3 +514,70 @@ test('P8：目标英文、页面中文时不因"相关性为 0"误退回整树',
   assert.equal(treeCalls, 0, '语言不一致时不该退回整树')
   assert.ok(result.trace.some((line) => /页面内抽取/.test(line)))
 })
+
+/* ───────────────── 调用方一次给全字段值（inputs）与状态守卫 ───────────────── */
+
+function extractPage(items) {
+  return {
+    async extract() {
+      return { items, text: '页面正文'.repeat(20), title: '标题', url: 'https://a.test/' }
+    },
+    async snapshot() { throw new Error('不该退回整树') },
+    async read() { return '页面正文' },
+    async get() { return '标题' },
+    async act(action, target, payload) { this.acts = [...(this.acts ?? []), `${action} ${target} ${JSON.stringify(payload ?? {})}`] },
+    async run() {},
+  }
+}
+
+test('inputs：调用方给值 → 同一次调用内直接 fill，不再 input_required', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'searchbox', name: 'Destination', covered: false, state: '' },
+  ])
+  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.99 }])
+  const result = await runTask('type Lisbon into Destination', deps(browser, judge, { inputs: { Destination: 'Lisbon' } }))
+  assert.equal(result.status, 'needs_verification', '不该再返回 input_required')
+  assert.ok((browser.acts ?? []).some((line) => line.startsWith('fill ')), `应该执行 fill，实际：${browser.acts}`)
+  assert.ok(result.trace.some((line) => /按调用方的值填/.test(line)))
+})
+
+test('inputs：下拉框 → select（不是 fill）', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'combobox', name: 'Stay category', covered: false, state: '当前值: all' },
+  ])
+  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.99 }])
+  await runTask('choose the Design category', deps(browser, judge, { inputs: { 'Stay category': 'Design' } }))
+  assert.ok((browser.acts ?? []).some((line) => line.startsWith('select ')), `应该执行 select，实际：${browser.acts}`)
+})
+
+test('inputs：勾选框 → check（幂等，不是 click 切换）', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'checkbox', name: 'Free cancellation', covered: false, state: '未勾选' },
+  ])
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.1 }])
+  await runTask('enable Free cancellation', deps(browser, judge, { inputs: { 'Free cancellation': 'true' } }))
+  assert.ok((browser.acts ?? []).some((line) => line.startsWith('check ')), `应该执行 check，实际：${browser.acts}`)
+})
+
+test('状态守卫：已勾选又要求 enable → 不再点它（避免把开关点回去）', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'checkbox', name: 'Free cancellation', covered: false, state: '已勾选' },
+    { index: 1, role: 'button', name: 'Open Casa Flora', covered: false, state: '' },
+  ])
+  const judge = fakeJudge([{ action: 'click:1', goalDone: 0.99 }])
+  const result = await runTask('enable Free cancellation then open Casa Flora', deps(browser, judge))
+  assert.ok(result.trace.some((line) => /已处于目标状态/.test(line)), '应该记录状态守卫跳过')
+  const asked = judge.asked[0]?.questions.action.options ?? {}
+  assert.ok(!Object.keys(asked).includes('click:0'), `已满足的候选不该发给判断层：${Object.keys(asked)}`)
+  assert.ok(!(browser.acts ?? []).some((line) => line.includes('checkbox') || /click \[data-dsh-idx="0"\]/.test(line)), '不该点那个已勾选的复选框')
+})
+
+test('状态守卫：可操作元素全已满足 → needs_verification（交回宿主复核）', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'checkbox', name: 'Free cancellation', covered: false, state: '已勾选' },
+  ])
+  const judge = fakeJudge([])
+  const result = await runTask('enable Free cancellation', deps(browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(judge.asked.length, 0, '全已满足时不该花判断请求')
+})
