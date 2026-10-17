@@ -55,7 +55,8 @@
     "e2e": "pnpm build && node scripts/e2e-run.mjs",
     "try": "node scripts/try.mjs",
     "live": "node scripts/live-profile.mjs",
-    "bench": "node scripts/bench.mjs"
+    "bench": "node scripts/bench.mjs",
+    "bench:vote": "node scripts/bench-vote.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.4 <5.0.0",

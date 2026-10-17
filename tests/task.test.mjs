@@ -480,7 +480,7 @@ test('P8：优先用页面内抽取（一次 eval 拿候选），判断层收到
   assert.equal(treeCalls, 0, '抽取成功就不该退回整树')
   assert.equal(result.status, 'needs_verification')
   const asked = judge.asked[0].questions.action.options
-  assert.ok(Object.keys(asked).length <= 16, `判断层选项 ${Object.keys(asked).length} 个，超过上限`)
+  assert.ok(Object.keys(asked).length <= 10, `判断层选项 ${Object.keys(asked).length} 个，超过上限`)
 })
 
 test('P8：抽取失败时退回整树（功能不降级）', async () => {

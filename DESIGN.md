@@ -621,6 +621,28 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 5. **离屏元素不要丢**：CLI 的 click 会自动滚进视图；丢掉会把首屏之下的结果卡片藏起来
    （真机：fixture 的 "View Casa Flora"）。
 
+**"少选项 + 多次采样投票"实测**（`pnpm bench:vote`，fixture + hao123，每个目标独立采样 6 次）：
+
+| 选项上限 | 命中率（5 个目标） | tokens/次（hao123） | 不合法率 | 每次决策成本 |
+|---|---|---|---:|---:|
+| **10** | **5/5** | **2,879** | **0/6** | **$0.000121** |
+| 16 | 4/5（"七日天气"选错） | 3,026 | 0/6 | $0.000127 |
+| 40 | 3/5（"新华网"分布不合法 6/6） | 3,689 | 6/6（该目标） | $0.000155 |
+
+**结论**：选项越少越准也越便宜（前提是候选池按目标相关性排过序）。
+**投票没有收益**——单次采样已经全对，错误是**系统性**的（由选项集决定，不是随机抖动），
+3/5 次采样只会把成本放大 3–5 倍。所以 `JUDGE_OPTION_CAP = 10`，默认不投票。
+
+**抽取命中率的改进**（真机 fixture/hao123 上验证）：
+
+| 改进 | 之前 | 现在 |
+|---|---|---|
+| 名字来源 | 只有 `aria-label`/`innerText`（checkbox 名字是 "on"） | `aria-label` → 关联 `<label for>` → 最近的 `<label>` → innerText/value/placeholder |
+| 角色 | 一律 `input` | 按 `input[type]` 细分（searchbox/textbox/checkbox/radio）、`select`→combobox、`textarea`→textbox |
+| 状态 | 没有 | 勾选态（未勾选/已勾选）、当前值、已有内容、链接目标（`链接: host/path`） |
+| 选择器 | 固定 12 个 | 加 `label[for]`、`[aria-checked]`、`[aria-selected]`、`[contenteditable]`，并去重 |
+| 离屏元素 | 丢弃（结果卡片消失） | 保留（CLI 的 click 会自动滚进视图） |
+
 **对照 jev-ultrafast 的本地酒店 fixture**（他们公布 1.896 s）：我们的循环 + 宿主填字段
 实测约 **6.0 s / 14 次判断 / 9.1k tokens**，且三个筛选条件未全部生效——差距主要来自
 **文本/选择必须交回宿主**（每个字段一轮 `runTask`），以及判断层延迟（~240 ms vs 他们的 178 ms）。

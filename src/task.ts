@@ -32,10 +32,19 @@ export const MAX_CLICK_CANDIDATES = 40
  * **发给判断层的选项上限**。
  *
  * 用户提出的可信度问题在这里落地：候选池可以有 40 个（页面里挑得全），但**一次问给判断层的
- * 不能那么多**——实测这个部署在 40+ 选项上系统性欠归一（Σp 0.95–0.98，整批被拒），
- * 且选项越多"选错"的概率越高。16 是实测能稳定给出合法分布的规模。
+ * 不能那么多**。实测（`pnpm bench:vote`，fixture + hao123，每个目标 6 次采样）：
+ *
+ * | 选项上限 | 命中率 | tokens/次（hao123） | 不合法率 |
+ * |---|---|---|---|
+ * | **10** | **100%（5/5 目标）** | **2,879** | **0/6** |
+ * | 16 | 4/5（"七日天气"选错） | 3,026 | 0/6 |
+ * | 40 | 3/5（"新华网" 6/6 分布不合法） | 3,689 | 6/6（一个目标） |
+ *
+ * 也就是说：**选项越少越准、越便宜**（前提是候选池按目标相关性排过序）。
+ * 投票（3/5 次采样取多数）在实测里没有收益——单次已经全对，错误是**系统性**的
+ * （由选项集决定，不是随机抖动），多采只会 3–5 倍成本。所以默认不投票。
  */
-export const JUDGE_OPTION_CAP = 16
+export const JUDGE_OPTION_CAP = 10
 
 /**
  * 状态里快照文本的上限（字符）。状态随**每一批问题**重复发送，是成本的主要变量
@@ -79,6 +88,9 @@ export interface TaskCandidate {
   readonly kind: 'click' | 'control' | 'input'
   /** **完整动作目标**：快照路径是 `@e12`，页面内抽取路径是 `[data-dsh-idx="7"]`。 */
   readonly ref?: string
+  /** 元素的角色/名字（`input_required` 要告诉宿主"填哪个框"，不能只给句柄）。 */
+  readonly role?: string
+  readonly name?: string
 }
 
 export interface TaskStep {
@@ -162,12 +174,15 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
   for (const item of items) {
     if (item.covered) continue
     const role = item.role.toLowerCase()
-    const label = item.name === '' ? `（无名称的 ${role}）` : `「${item.name}」（${role}）`
+    const state = item.state === undefined || item.state === '' ? '' : `，${item.state}`
+    const label = item.name === '' ? `（无名称的 ${role}${state}）` : `「${item.name}」（${role}${state}）`
     const candidate: TaskCandidate = {
       id: `click:${item.index}`,
       description: `点击${label}`,
       kind: 'click',
       ref: handleOf(item.index),
+      role,
+      name: item.name,
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox' || role === 'input' || role === 'textarea' || role === 'select') {
       inputs.push({ ...candidate, id: `input:${item.index}`, description: `在${label}里输入/选择`, kind: 'input' })
@@ -218,6 +233,8 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
       description: `点击${label}`,
       kind: 'click',
       ref: `@${ref}`,
+      role,
+      name,
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
       inputs.push({ ...candidate, id: `input:${ref}`, description: `在${label}里输入/选择`, kind: 'input' })

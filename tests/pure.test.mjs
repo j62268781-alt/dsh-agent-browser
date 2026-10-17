@@ -147,7 +147,7 @@ test('抽取结果解析：eval 返回值再解一层，且带正文/标题/URL'
   })
   const page = parseExtracted(JSON.stringify(payload))
   assert.equal(page.items.length, 3)
-  assert.deepEqual(page.items[0], { index: 0, role: 'a', name: '七日天气', covered: false })
+  assert.deepEqual(page.items[0], { index: 0, role: 'a', name: '七日天气', covered: false, state: '' })
   assert.equal(page.items[2].covered, true)
   assert.equal(page.text, '页面正文')
   assert.equal(page.title, '标题')
@@ -174,4 +174,9 @@ test('抽取脚本不依赖容易被打字机吃掉的正则转义（真机：�
   assert.ok(!/replace\(\/s\+/.test(EXTRACT_SCRIPT), '不能出现被吃成 /s+/ 的正则')
   assert.ok(!EXTRACT_SCRIPT.includes(String.fromCharCode(96)), '脚本里不能有反引号（它本身是模板内容）')
   assert.match(EXTRACT_SCRIPT, /split\(String\.fromCharCode\(10\)\)/, '空白归一化要用 split/join')
+})
+
+test('判断层选项上限是 10（实测：10 最准也最便宜；16/40 会选错或分布不合法）', async () => {
+  const { JUDGE_OPTION_CAP } = await import('../lib/task.js')
+  assert.equal(JUDGE_OPTION_CAP, 10)
 })

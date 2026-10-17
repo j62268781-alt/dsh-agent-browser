@@ -32,15 +32,18 @@ const SCRIPT_LINES = [
   "  document.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx'))",
   '  const out = []',
   '  let idx = 0',
-  '  const nodes = document.querySelectorAll(\'a,button,input,select,textarea,summary,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="menuitem"],[role="tab"],[onclick],[tabindex]\')',
+  '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
+  '  const nodes = Array.from(new Set(document.querySelectorAll(selector)))',
   '  for (const el of nodes) {',
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
   '    const style = getComputedStyle(el)',
   "    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue",
-  "    const labelEl = el.labels && el.labels.length > 0 ? el.labels[0] : null",
-  "    const labelText = labelEl ? String(labelEl.innerText || '') : ''",
-  "    const raw = el.getAttribute('aria-label') || labelText || el.innerText || el.value || el.placeholder || el.title || ''",
+  "    let labelText = ''",
+  "    if (el.labels && el.labels.length > 0) labelText = String(el.labels[0].innerText || '')",
+  "    if (!labelText && el.id) { const byFor = document.querySelector('label[for=\"' + el.id + '\"]'); if (byFor) labelText = String(byFor.innerText || '') }",
+  "    if (!labelText) { const wrap = el.closest ? el.closest('label') : null; if (wrap) labelText = String(wrap.innerText || '') }",
+  "    const raw = el.getAttribute('aria-label') || el.getAttribute('title') || labelText || el.innerText || el.value || el.placeholder || ''",
   '    let name = String(raw)',
   "    name = name.split(String.fromCharCode(10)).join(' ')",
   "    name = name.split(String.fromCharCode(9)).join(' ')",
@@ -61,7 +64,19 @@ const SCRIPT_LINES = [
   "    if (tag === 'input') role = type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'search' ? 'searchbox' : type === 'submit' || type === 'button' ? 'button' : 'textbox'",
   "    else if (tag === 'select') role = 'combobox'",
   "    else if (tag === 'textarea') role = 'textbox'",
-  "    out.push([idx, role, name, covered])",
+  "    let extra = ''",
+  "    if (role === 'checkbox' || role === 'radio' || role === 'switch' || el.hasAttribute('aria-checked')) {",
+  "      const on = el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked)",
+  "      extra = on ? '已勾选' : '未勾选'",
+  "    } else if (tag === 'select') {",
+  "      extra = '当前值: ' + String(el.value || '')",
+  "    } else if (tag === 'input' || tag === 'textarea') {",
+  "      const v = String(el.value || '')",
+  "      if (v) extra = '已有内容: ' + v.slice(0, 30)",
+  "    } else if (tag === 'a' && el.href) {",
+  "      try { const u = new URL(el.href); extra = '链接: ' + u.host + u.pathname.slice(0, 40) } catch (e) { extra = '' }",
+  "    }",
+  "    out.push([idx, role, name, covered, extra])",
   '    idx += 1',
   '    if (out.length >= 80) break',
   '  }',
@@ -92,6 +107,8 @@ export interface ExtractedItem {
   readonly name: string
   /** 被其它元素挡住（点击会落到遮挡物上）；默认不进候选池。 */
   readonly covered: boolean
+  /** 当前状态摘要：已勾选/未勾选、当前值、已有内容、链接目标（给判断层的"现状"）。 */
+  readonly state?: string
 }
 
 /**
@@ -134,12 +151,13 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered] = entry as [unknown, unknown, unknown, unknown]
+    const [index, role, name, covered, extra] = entry as [unknown, unknown, unknown, unknown, unknown]
     items.push({
       index: Number(index),
       role: String(role ?? ''),
       name: String(name ?? ''),
       covered: Number(covered) === 1,
+      state: String(extra ?? ''),
     })
   }
   return items
