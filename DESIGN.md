@@ -607,9 +607,24 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 （旧路径同规模 19–28k）→ 单次判断平均 **~1.07k tokens / ~239ms**，比之前 4.3k / ~380ms
 降了 4 倍（tokens）与 1.6 倍（延迟）。**仍受判断层质量限制**：Σp 欠归一依然要靠重采。
 
-**实现注意**：`batch` 会把每条命令按空白切分，而 JS 关键字之间必须有空白——所以抽取
-**不能放进 batch**，单走一次 `eval`（反而更省进程）；`--content-boundaries` 会把 `eval`
-输出包住，解析前必须剥掉。
+**实现注意**（三条都是真机踩出来的）：
+
+1. `batch` 会把每条命令按空白切分，而 JS 关键字之间必须有空白——抽取**不能放进 batch**，
+   单走一次 `eval`（反而更省进程）；
+2. `--content-boundaries` 会把 `eval` 输出包住，解析前必须剥掉；
+3. **脚本里不能写正则的空白转义**：模板字符串会把 `\s` 当未知转义吃掉成 `s`，
+   结果把所有 s 换成空格（真机：fixture 上 "Find stays" 变成 "Find  tay"、"Casa" 变成 "Ca a"）。
+   现在用 `split(String.fromCharCode(10))` 之类的**零转义**写法归一化空白。
+4. **名字要取 `<label>`**：checkbox/select 的 `innerText` 是空的，只有关联 label 才有
+   真实名字（"Free cancellation"）；角色也要按 `input[type]` 细分
+   （`type=search` → searchbox、`type=checkbox` → checkbox），否则判断层看到一堆 `input`。
+5. **离屏元素不要丢**：CLI 的 click 会自动滚进视图；丢掉会把首屏之下的结果卡片藏起来
+   （真机：fixture 的 "View Casa Flora"）。
+
+**对照 jev-ultrafast 的本地酒店 fixture**（他们公布 1.896 s）：我们的循环 + 宿主填字段
+实测约 **6.0 s / 14 次判断 / 9.1k tokens**，且三个筛选条件未全部生效——差距主要来自
+**文本/选择必须交回宿主**（每个字段一轮 `runTask`），以及判断层延迟（~240 ms vs 他们的 178 ms）。
+这条也说明：本插件适合"点击型目标"，表单型目标要宿主配合、成本更高。
 
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 

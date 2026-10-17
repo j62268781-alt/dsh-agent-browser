@@ -168,3 +168,10 @@ test('抽取候选：跳过被遮挡的、输入框单独标注、动作用 data
   assert.equal(input.kind, 'input')
   assert.match(input.description, /搜索/)
 })
+
+test('抽取脚本不依赖容易被打字机吃掉的正则转义（真机：把所有 s 换成了空格）', async () => {
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  assert.ok(!/replace\(\/s\+/.test(EXTRACT_SCRIPT), '不能出现被吃成 /s+/ 的正则')
+  assert.ok(!EXTRACT_SCRIPT.includes(String.fromCharCode(96)), '脚本里不能有反引号（它本身是模板内容）')
+  assert.match(EXTRACT_SCRIPT, /split\(String\.fromCharCode\(10\)\)/, '空白归一化要用 split/join')
+})

@@ -3,8 +3,8 @@
  * 而不是把整棵无障碍树（+ 几百个 refs）发给判断层。
  *
  * 实测（hao123，354 个 refs 的门户页）：
- *   - CLI `snapshot -i --json`：13,985 字符文本 + 354 refs（当前状态约 4.3k tokens）
- *   - 本抽取：40 个可见候选 → 1,021 字符 ≈ **256 tokens**，耗时 7.8ms
+ *   - CLI `snapshot -i --json`：13,985 字符文本 + 354 refs（状态约 4.3k tokens）
+ *   - 本抽取：80 个可见元素 → 1,021 字符 ≈ **1.1–1.9k tokens**，耗时 7.8ms
  *
  * 为什么不能用 `@eN`：refs 只存在 Rust daemon 里，页面里没有任何映射
  * （实测 `window` 无句柄、DOM 无 `data-*ref` 属性）。所以脚本给元素打**自己的**属性
@@ -18,47 +18,64 @@
 export const HANDLE_ATTRIBUTE = 'data-dsh-idx'
 
 /**
- * 在页面里跑的抽取脚本：**一次 `eval`** 同时拿候选 + 正文 + 标题 + URL。
+ * 在页面里跑的抽取脚本：一次 `eval` 同时拿候选 + 正文 + 标题 + URL。
  *
- * 为什么不塞进 `batch`：`batch` 会把每条命令按空白重新切分，而 JS 里 `const x`、`for (const …)`
- * 这些关键字之间**必须有空白**，多行/带空格的脚本会被切碎（实测直接失败）。
- * 所以这里单走一次 `eval`（7ms 量级），反而比"batch 三条命令"更省一个进程。
+ * 三条硬约束（都是真机踩出来的）：
+ * 1. **不能放进 `batch`**：batch 会把命令按空白切分，而 JS 里 `const x`、`for (const …)`
+ *    关键字之间必须有空白，脚本会被切碎。所以单走一次 `eval`。
+ * 2. **脚本里不能出现反引号**：它本身就是模板拼接的产物。
+ * 3. **不能写正则的空白转义**：模板/字符串层会把 `\s` 当未知转义吃掉成 `s`，
+ *    结果把所有 s 换成空格（fixture 上 "Find stays" 变成 "Find  tay"）。这里用 split/join。
  */
-export const EXTRACT_SCRIPT = `(() => {
-  document.querySelectorAll('[${HANDLE_ATTRIBUTE}]').forEach((el) => el.removeAttribute('${HANDLE_ATTRIBUTE}'))
-  const out = []
-  let idx = 0
-  const nodes = document.querySelectorAll(
-    'a,button,input,select,textarea,summary,[role="button"],[role="link"],[role="textbox"],' +
-    '[role="searchbox"],[role="combobox"],[role="checkbox"],[role="menuitem"],[role="tab"],[onclick],[tabindex]'
-  )
-  for (const el of nodes) {
-    const rect = el.getBoundingClientRect()
-    if (rect.width < 2 || rect.height < 2) continue
-    const style = getComputedStyle(el)
-    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue
-    if (rect.bottom < 0 || rect.top > innerHeight || rect.right < 0 || rect.left > innerWidth) continue
-    const raw = el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || ''
-    const name = String(raw).replace(/\s+/g, ' ').trim().slice(0, 60)
-    const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-    if (name === '' && !isField) continue
-    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
-    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
-    const top = document.elementFromPoint(cx, cy)
-    const covered = top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0
-    el.setAttribute('${HANDLE_ATTRIBUTE}', String(idx))
-    out.push([idx, el.getAttribute('role') || el.tagName.toLowerCase(), name, covered])
-    idx += 1
-    if (out.length >= 80) break
-  }
-  const body = document.body ? document.body.innerText : ''
-  return JSON.stringify({
-    items: out,
-    text: String(body || '').slice(0, 4000),
-    title: document.title || '',
-    url: location.href,
-  })
-})()`
+const SCRIPT_LINES = [
+  '(() => {',
+  "  document.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx'))",
+  '  const out = []',
+  '  let idx = 0',
+  '  const nodes = document.querySelectorAll(\'a,button,input,select,textarea,summary,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="menuitem"],[role="tab"],[onclick],[tabindex]\')',
+  '  for (const el of nodes) {',
+  '    const rect = el.getBoundingClientRect()',
+  '    if (rect.width < 2 || rect.height < 2) continue',
+  '    const style = getComputedStyle(el)',
+  "    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue",
+  "    const labelEl = el.labels && el.labels.length > 0 ? el.labels[0] : null",
+  "    const labelText = labelEl ? String(labelEl.innerText || '') : ''",
+  "    const raw = el.getAttribute('aria-label') || labelText || el.innerText || el.value || el.placeholder || el.title || ''",
+  '    let name = String(raw)',
+  "    name = name.split(String.fromCharCode(10)).join(' ')",
+  "    name = name.split(String.fromCharCode(9)).join(' ')",
+  "    name = name.split(String.fromCharCode(13)).join(' ')",
+  "    name = name.split(String.fromCharCode(160)).join(' ')",
+  "    while (name.indexOf('  ') >= 0) name = name.split('  ').join(' ')",
+  '    name = name.trim().slice(0, 60)',
+  "    const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)",
+  "    if (name === '' && !isField) continue",
+  '    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))',
+  '    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))',
+  '    const top = document.elementFromPoint(cx, cy)',
+  '    const covered = top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0',
+  "    el.setAttribute('data-dsh-idx', String(idx))",
+  "    const tag = el.tagName.toLowerCase()",
+  "    const type = String(el.getAttribute('type') || '').toLowerCase()",
+  "    let role = el.getAttribute('role') || tag",
+  "    if (tag === 'input') role = type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'search' ? 'searchbox' : type === 'submit' || type === 'button' ? 'button' : 'textbox'",
+  "    else if (tag === 'select') role = 'combobox'",
+  "    else if (tag === 'textarea') role = 'textbox'",
+  "    out.push([idx, role, name, covered])",
+  '    idx += 1',
+  '    if (out.length >= 80) break',
+  '  }',
+  "  const body = document.body ? document.body.innerText : ''",
+  '  return JSON.stringify({',
+  '    items: out,',
+  "    text: String(body || '').slice(0, 4000),",
+  "    title: document.title || '',",
+  '    url: location.href,',
+  '  })',
+  '})()',
+]
+
+export const EXTRACT_SCRIPT = SCRIPT_LINES.join('\n')
 
 /** `parseExtracted` 的返回（与 `cli.ts` 的 `ExtractedPage` 同形）。 */
 export interface ExtractedPage {
@@ -94,7 +111,7 @@ export function parseExtracted(raw: string): ExtractedPage {
   try {
     value = JSON.parse(stripBoundaries(raw))
   } catch {
-    throw new Error(`抽取脚本的返回值不是 JSON：${raw.slice(0, 200)}`)
+    throw new Error(`抽取脚本的返回值不是 JSON：${stripBoundaries(raw).slice(0, 200)}`)
   }
   if (typeof value === 'string') {
     try {
