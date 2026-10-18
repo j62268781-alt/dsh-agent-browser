@@ -671,6 +671,36 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 **文本/选择必须交回宿主**（每个字段一轮 `runTask`），以及判断层延迟（~240 ms vs 他们的 178 ms）。
 这条也说明：本插件适合"点击型目标"，表单型目标要宿主配合、成本更高。
 
+### 4.5.2i 对照 Ying-Kai-Liao/jev-browser（MCP 服务器，42 任务 benchmark）
+
+他们的做法（README + 布局）：**调用方（LLM）每步只说要什么结果，Jev 决定怎么做**。
+一次 ~300ms 请求里同时问：目标元素 / 动作 / 值 / 完成? / 错误? / 不可逆?；
+`values` 由调用方给、**Jev 只选哪个值**（永不写字）；Playwright 执行。
+状态齐：`done / likely_done / needs_login / needs_confirmation / error / stuck / max_actions / ambiguous / blocked`。
+另有 `browser_read(question)`（Jev 分块排序页面文本，<8k 字符不调用）、`diff`、两阶段选择（2000+ 元素）、
+双向成本账（caller tokens vs Jev tokens，`net` 可为负）、42 任务 benchmark（40/42 正确、**0 次假 done**）。
+
+**今天采纳的三项**：
+
+1. **一次请求问全**：问题批次从 3 个涨到 **5 个**（+`irreversible`、+`page_error`）。
+   实测（fixture，真实判断层）：5 问 **357ms / 1,033 tokens**，3 问 890 tokens —— 只多 16%，
+   换来"下单前停一下"和"报错就停"两个能力。
+2. **`needs_confirmation`**：下一步 p(irreversible) ≥ 0.7 且是点击 → 停在动作之前，
+   调用方可带 `allowIrreversible` 重新调用。
+3. **`page_error`**：p(页面报错) ≥ 0.8 → 直接返回 `page_error`（不是 `no_progress`），
+   让宿主去修输入而不是盲目重试。
+
+**还没采纳、按价值排序**：
+
+| 项 | 他们的做法 | 我们的现状 | 价值 |
+|---|---|---|---|
+| `values` 语义 | 值带 key，Jev **选 key** | `inputs` 名字匹配 | 一个值填多个字段、模糊字段名 |
+| `likely_done` / `ambiguous` | 0.7–0.85 与低置信度单独成状态 | 归到"没完成" | 会把有用的中间态丢掉 |
+| 两阶段选择 | 2000+ 元素先选区域再选元素 | 相关性排序 + cap 10 | 大页面里目标可能不在 top10 |
+| `diff` 状态 | 只把变化喂给 Jev | 每步发全量紧凑候选 | 候选少时收益小，大页面才有 |
+| cost ledger | caller tokens vs Jev tokens + `net` | 只有 timings/tokens/成本 | 判断"这步到底值不值" |
+| 42 任务 / 0 假 done | 固定 benchmark + 独立校验 | fixture + hao123 + 真机 | 质量纪律，值得搬 |
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，

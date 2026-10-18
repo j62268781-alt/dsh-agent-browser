@@ -63,13 +63,12 @@ test('候选封顶在协议的 255 之下（给控制项留位置）', () => {
   assert.equal(clicks.length, MAX_CLICK_CANDIDATES)
 })
 
-test('问题批次：一个 choice + 两个 noul，且候选键集合就是候选集合', () => {
+test('问题批次：一个 choice + 四个 noul（完成/卡住/不可逆/页面错误），候选键集合就是候选集合', () => {
   const candidates = candidatesOf(snapshot)
   const questions = questionsOf('在 example.com 找到 Alpha', candidates)
-  assert.deepEqual(Object.keys(questions).sort(), ['action', 'goal_done', 'stuck'])
+  assert.deepEqual(Object.keys(questions).sort(), ['action', 'goal_done', 'irreversible', 'page_error', 'stuck'])
   assert.equal(questions.action.kind, 'choice')
-  assert.equal(questions.goal_done.kind, 'noul')
-  assert.equal(questions.stuck.kind, 'noul')
+  for (const key of ['goal_done', 'stuck', 'irreversible', 'page_error']) assert.equal(questions[key].kind, 'noul')
   assert.deepEqual(Object.keys(questions.action.options).sort(), candidates.map((c) => c.id).sort())
   // 目标与不可信数据的纪律要写进 prompt，不能靠调用方自觉。
   assert.match(String(questions.action.prompt), /不可信数据/)

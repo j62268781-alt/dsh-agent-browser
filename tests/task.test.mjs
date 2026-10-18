@@ -581,3 +581,90 @@ test('状态守卫：可操作元素全已满足 → needs_verification（交回
   assert.equal(result.status, 'needs_verification')
   assert.equal(judge.asked.length, 0, '全已满足时不该花判断请求')
 })
+
+/* ───────────────── 结构化校验失败 → 确定性缩容（dsh-judgment §B） ───────────────── */
+
+test('nextJudgeOptionCap：用 optionCount 减半，而不是固定阶梯', async () => {
+  const { nextJudgeOptionCap } = await import('../lib/task.js')
+  const error = Object.assign(new Error('分布不合法'), {
+    code: 'invalid-response',
+    validation: { optionCount: 40, sum: 0.95, tolerance: 0.02 },
+  })
+  assert.equal(nextJudgeOptionCap(error, 40), 20)
+  assert.equal(nextJudgeOptionCap(error, 20), 10)
+  assert.equal(nextJudgeOptionCap(error, 10), 5)
+  assert.equal(nextJudgeOptionCap(error, 6), 4, '不低于下限 4')
+})
+
+test('nextJudgeOptionCap：没有结构化数值时退回减半，且一定比当前小', async () => {
+  const { nextJudgeOptionCap } = await import('../lib/task.js')
+  const error = Object.assign(new Error('x'), { code: 'invalid-response' })
+  assert.equal(nextJudgeOptionCap(error, 40), 20)
+  assert.equal(nextJudgeOptionCap(error, 5), 4)
+  const tiny = Object.assign(new Error('x'), { code: 'invalid-response', validation: { optionCount: 3 } })
+  assert.equal(nextJudgeOptionCap(tiny, 3), 2, 'optionCount 很小时仍要缩到更小')
+})
+
+test('distribution 不合法 → 用结构化数值缩容，并在 trace 里写出 Σp 与容差', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成' } }])
+  let calls = 0
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const wrapped = {
+    apiVersion: judge.apiVersion,
+    async ask(state, questions, options) {
+      calls += 1
+      if (calls === 1) {
+        throw Object.assign(new Error('答案 "action" 的概率和 0.95 偏离 1 超过容差 0.02'), {
+          code: 'invalid-response',
+          validation: { optionCount: 5, sum: 0.95, tolerance: 0.02 },
+        })
+      }
+      return judge.ask(state, questions, options)
+    },
+  }
+  const result = await runTask('目标', deps(page.browser, wrapped))
+  const trace = result.trace.join('\n')
+  assert.match(trace, /Σp 0\.95/)
+  assert.match(trace, /容差 0\.02/)
+  assert.match(trace, /缩到 4 个/)
+  assert.equal(result.status, 'needs_verification')
+})
+
+/* ───────────────── 一次请求问全：页面错误 / 不可逆（Ying-Kai-Liao/jev-browser） ───────────────── */
+
+function judgeWith(extra) {
+  const base = fakeJudge([{ action: extra.action ?? 'click:e1', goalDone: 0.1 }])
+  return {
+    apiVersion: base.apiVersion,
+    asked: base.asked,
+    async ask(state, questions, options) {
+      const result = await base.ask(state, questions, options)
+      return { ...result, answers: { ...result.answers, ...extra.answers } }
+    },
+  }
+}
+
+test('页面显示错误 → status=page_error（不是"没做完"）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '登录', onClick: (state) => { state.text = '错误' } }])
+  const judge = judgeWith({ answers: { page_error: { kind: 'noul', probability: 0.95 } } })
+  const result = await runTask('登录', deps(page.browser, judge))
+  assert.equal(result.status, 'page_error')
+  assert.ok(result.trace.some((line) => /页面显示错误/.test(line)))
+  assert.deepEqual(page.state.acts, [], '报错时不该继续动作')
+})
+
+test('不可逆动作 → status=needs_confirmation，且不执行', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '提交订单', onClick: (state) => { state.text = '已下单' } }])
+  const judge = judgeWith({ answers: { irreversible: { kind: 'noul', probability: 0.92 } } })
+  const result = await runTask('下单', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_confirmation')
+  assert.deepEqual(page.state.acts, [], '未确认前不该执行不可逆动作')
+})
+
+test('不可逆动作：调用方确认后（allowIrreversible）照常执行', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '提交订单', onClick: (state) => { state.text = '已下单' } }])
+  const judge = judgeWith({ answers: { irreversible: { kind: 'noul', probability: 0.92 }, goal_done: { kind: 'noul', probability: 0 } } })
+  const result = await runTask('下单', deps(page.browser, judge, { allowIrreversible: true }))
+  assert.notEqual(result.status, 'needs_confirmation')
+  assert.ok(page.state.acts.length >= 1, `确认后应该真的执行，实际：${page.state.acts}`)
+})

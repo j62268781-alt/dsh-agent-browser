@@ -80,6 +80,10 @@ export type TaskStatus =
   | 'input_required'
   | 'judge_error'
   | 'action_error'
+  /** 下一步看起来**不可逆**（下单/支付/发送/删除）：停下来让调用方确认（Ying-Kai-Liao/jev-browser 的 needs_confirmation）。 */
+  | 'needs_confirmation'
+  /** 页面显示了错误（登录失败、校验错误…）：不是"没做完"，是"做错了"。 */
+  | 'page_error'
 
 export interface TaskCandidate {
   readonly id: string
@@ -173,6 +177,12 @@ export interface TaskDeps {
    * 有了这个映射，插件能在**同一次调用内**把能填的都填掉。
    */
   readonly inputs?: Readonly<Record<string, string>>
+  /**
+   * 调用方**已经确认**可以执行不可逆动作（下单/支付/发送/删除）。
+   * 默认 false：不可逆动作会以 `needs_confirmation` 停下来等确认
+   * （Ying-Kai-Liao/jev-browser 的 `allow_irreversible`）。
+   */
+  readonly allowIrreversible?: boolean
 }
 
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
@@ -379,6 +389,20 @@ export function questionsOf(goal: string, candidates: readonly TaskCandidate[]):
       kind: 'noul',
       prompt: '最近的动作在原地打转：重复、交付了但没有效果、或者没有安全动作可做',
       criteria: { true: '需要换策略或交回宿主', false: '还有可见的推进空间' },
+    },
+    // 以下两个问题来自 Ying-Kai-Liao/jev-browser 的做法：**一次请求里同时问**"完成/卡住/错误/不可逆"，
+    // 比事后才发现便宜得多（同一份 state，多问两个 noul 几乎不涨 tokens）。
+    irreversible: {
+      kind: 'noul',
+      prompt:
+        '候选里被选中的下一步是否为**不可逆**操作：真的下单、支付、发送消息、删除数据、提交后不能撤回。' +
+        '普通导航、切换分类、展开面板、勾选筛选条件都**不是**不可逆。',
+      criteria: { true: '执行后无法撤回（花钱/发出去/删掉）', false: '可以返回或撤销' },
+    },
+    page_error: {
+      kind: 'noul',
+      prompt: '页面当前是否显示了**错误**（登录失败、表单校验报错、404/500、权限不足、验证码拦截）',
+      criteria: { true: '页面上明确报了错', false: '没有错误提示' },
     },
   }
 }
@@ -702,17 +726,20 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (isInvalidResponse(error)) {
         let last = error
         let recovered: Readonly<Record<string, JudgmentAnswer>> | undefined
-        for (const size of [24, 16, 8]) {
-          if (size >= 2 && size < askedCount) {
-            trace.push(`第 ${step} 步：${askedCount} 个候选时分布不合法（${message(last)}）→ 缩到 ${size} 个再采一次`)
-            try {
-              recovered = await askOnce(candidates.slice(0, size))
-              askedCount = size
-              break
-            } catch (again) {
-              last = again
-              askedCount = size
-            }
+        for (let attempt = 0; attempt < MAX_RESAMPLES; attempt += 1) {
+          const size = nextJudgeOptionCap(last, askedCount)
+          const numbers = validationOf(last)
+          const facts = numbers.optionCount === undefined
+            ? ''
+            : `（候选 ${numbers.optionCount}${numbers.sum === undefined ? '' : `，Σp ${numbers.sum.toFixed(2)}`}${numbers.tolerance === undefined ? '' : `，容差 ${numbers.tolerance}`}）`
+          trace.push(`第 ${step} 步：${askedCount} 个候选时分布不合法${facts} → 缩到 ${size} 个再采一次`)
+          try {
+            recovered = await askOnce(candidates.slice(0, size))
+            askedCount = size
+            break
+          } catch (again) {
+            last = again
+            askedCount = size
           }
         }
         if (recovered === undefined) {
@@ -731,6 +758,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const actionAnswer = answers.action
     const goalDone = goalAnswer?.kind === 'noul' ? goalAnswer.probability : undefined
     const stuck = stuckAnswer?.kind === 'noul' ? stuckAnswer.probability : undefined
+    const irreversible = answers.irreversible?.kind === 'noul' ? answers.irreversible.probability : undefined
+    const pageError = answers.page_error?.kind === 'noul' ? answers.page_error.probability : undefined
     // choice 的**完整分布**是协议的证据：既能记进 trace，也能在"重复但无效"时给出次优候选。
     const probabilities = actionAnswer?.kind === 'choice' ? actionAnswer.probabilities : undefined
     const confidence = actionAnswer?.kind === 'choice' ? actionAnswer.confidence : undefined
@@ -752,6 +781,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         return finish('needs_verification', `goal_done=${goalDone.toFixed(2)}，确认 p=${confirm.probability.toFixed(2)}`, snapshot)
       }
       trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但独立确认没通过（p=${confirm.probability.toFixed(2)}）→ 不结束，继续推进`)
+    }
+    // 页面报错（登录失败/校验错误/404）：这是"做错了"，不是"没做完"——交回宿主修输入，别盲目重试。
+    if (pageError !== undefined && pageError >= PAGE_ERROR_THRESHOLD) {
+      trace.push(`第 ${step} 步：页面显示错误（p=${pageError.toFixed(2)} ≥ ${PAGE_ERROR_THRESHOLD}）→ 停，交回宿主`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:page_error', executed: false, reason: 'page_error', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+      return finish('page_error', `页面显示错误（p=${pageError.toFixed(2)}）`, snapshot)
     }
     if (stuck !== undefined && stuck >= deps.stuckThreshold) {
       trace.push(`第 ${step} 步：stuck=${stuck.toFixed(2)} ≥ ${deps.stuckThreshold} → 停`)
@@ -842,6 +877,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       chosen = alternate
     }
     attempted.add(chosen.id)
+
+    // **不可逆门**（Ying-Kai-Liao/jev-browser 的 needs_confirmation）：下单/支付/发送/删除之前停下来。
+    // 判断层已经用**同一个请求**回答了这个问题（不额外花钱），这里只在执行前做拦截。
+    if (
+      deps.allowIrreversible !== true &&
+      irreversible !== undefined &&
+      irreversible >= IRREVERSIBLE_THRESHOLD &&
+      chosen.kind === 'click'
+    ) {
+      trace.push(`第 ${step} 步：${chosen.description} 看起来不可逆（p=${irreversible.toFixed(2)} ≥ ${IRREVERSIBLE_THRESHOLD}）→ 等调用方确认`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'needs_confirmation', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+      return finish('needs_confirmation', `下一步「${chosen.description}」可能不可逆（p=${irreversible.toFixed(2)}）`, snapshot)
+    }
 
     // 7) **不做"执行前再取一次树"**（P1）。
     //
@@ -941,6 +989,8 @@ const NEXT_HINTS: Readonly<Record<TaskStatus, string>> = {
   input_required: '需要你提供要输入的内容：用 browser_act fill 填进去，然后重新调用 browser_run。',
   judge_error: '判断层出错：检查「设置 → 决策」里的连接与凭据，必要时关掉决策改用原子工具。',
   action_error: '动作执行失败：看 trace 里的错误信息；必要时用 browser_snapshot 重新观察页面。',
+  needs_confirmation: '下一步可能不可逆（下单/支付/发送/删除）：确认用户确实要这么做，再带 allowIrreversible 重新调用。',
+  page_error: '页面显示了错误：读 page_text 确认原因（例如密码错误、表单校验失败），修正后再继续，不要盲目重试。',
 }
 
 /**
@@ -1074,6 +1124,48 @@ const now = (): number => Number(process.hrtime.bigint() / 1000n) / 1000
 /** dsh-judgment 的「响应结构不合法」错误：只换一次采样，不修复答案本身。 */
 function isInvalidResponse(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'invalid-response'
+}
+
+/** 失败里能拿到的结构化数值（dsh-judgment ≥ 2a9d4cb 的 `validation`）。 */
+interface ValidationNumbers {
+  readonly optionCount?: number
+  readonly sum?: number
+  readonly tolerance?: number
+}
+
+/** 缩容的下限：再少就不足以表达"选哪个"了。 */
+/** 页面报错的判定阈值（低一点更安全：宁可停下来看一眼）。 */
+const PAGE_ERROR_THRESHOLD = 0.8
+/** 不可逆动作的判定阈值（宁可多问一次：误下单的代价远大于多一轮）。 */
+const IRREVERSIBLE_THRESHOLD = 0.7
+
+export const MIN_JUDGE_OPTIONS = 4
+/** 一次决策最多重采几次（每次都是新采样，契约 §0.3 允许）。 */
+const MAX_RESAMPLES = 3
+
+function validationOf(error: unknown): ValidationNumbers {
+  const validation = (error as { validation?: unknown } | null)?.validation
+  if (typeof validation !== 'object' || validation === null) return {}
+  const record = validation as Record<string, unknown>
+  const number = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+  return { optionCount: number(record.optionCount), sum: number(record.sum), tolerance: number(record.tolerance) }
+}
+
+/**
+ * 下一次重采用多少个候选。
+ *
+ * 依据 dsh-judgment 新增的结构化数值**确定性计算**（交接文档 §B），不再用固定阶梯猜：
+ * `nextCap = max(MIN, floor(optionCount / 2))`；拿不到 `optionCount` 才退回减半。
+ * 关键是它**一定比当前小**（否则重采没有意义）且不低于下限。
+ */
+export function nextJudgeOptionCap(error: unknown, askedCount: number): number {
+  const { optionCount } = validationOf(error)
+  // 以**当前实际问出去的规模**为基准（失败信息的 optionCount 是那次的规模，可能已经过时）。
+  const base = Math.min(askedCount, Math.max(2, optionCount ?? askedCount))
+  const halved = Math.floor(base / 2)
+  // 下限随当前规模收缩：问 3 个时不强求 4 个，但**必须比当前小**才有重采的意义。
+  const lower = Math.min(MIN_JUDGE_OPTIONS, Math.max(1, askedCount - 1))
+  return Math.max(lower, Math.min(halved, askedCount - 1))
 }
 
 function message(error: unknown): string {

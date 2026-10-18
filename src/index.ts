@@ -626,6 +626,11 @@ export class AgentBrowserService extends TypertRemoteService {
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
           maxSteps: { type: 'number', description: `最大步数（默认 ${config.limits.maxSteps}）` },
+          allowIrreversible: {
+            type: 'boolean',
+            description:
+              '可选：调用方**已确认**允许执行不可逆动作（下单/支付/发送/删除）。默认会先停下返回 needs_confirmation。',
+          },
           inputs: {
             type: 'string',
             description:
