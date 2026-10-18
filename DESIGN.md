@@ -701,6 +701,36 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 | cost ledger | caller tokens vs Jev tokens + `net` | 只有 timings/tokens/成本 | 判断"这步到底值不值" |
 | 42 任务 / 0 假 done | 固定 benchmark + 独立校验 | fixture + hao123 + 真机 | 质量纪律，值得搬 |
 
+### 4.5.2j `values` 语义：判断层只选 key，值由调用方给（对齐 Ying-Kai-Liao/jev-browser）
+
+他们的核心做法：调用方传 `values`，**Jev 只选"用哪个值"（key），永远不写字**。
+我们没有直接抄"让 Jev 填答案"，而是按我们的纪律落地：
+
+1. **问题批次里多一个 `value` 选择**（只在"页面有输入框 且 调用方给了 ≥2 个值"时出现）：
+   选项是值的 **key**（敏感 key 只显示名字与长度，**值绝不出门**），外加 `value:none`。
+2. **填写顺序**：名字匹配（确定性）→ 判断层选的 key → 都没有才 `input_required`。
+3. 实测（fixture，真实判断层）：6 个问题一次 **378ms / 1,085 tokens**（5 问时 1,033，+5%），
+   判断层正确选了 `value:style` → 填进 `Stay category`；字段名故意与 key 对不上时也能映射。
+
+配套修掉的真机问题（都是这一轮实测暴露的）：
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| **重复填同一字段** | 填完 Lisbon 后又填 3 次（"填了值"本身算页面变化，停滞检测抓不到） | `filledFields` 记账 + 状态比对：已生效的字段从候选里剔除 |
+| **goal_done 假阳性** | 目标词出现在下拉选项/卡片文字里 → `goal_done=0.94` 而筛选器仍是 `all` | ① state 里**带上字段状态**（`当前值: all`）；② **待生效字段守卫**：调用方给的值还没生效 → 不许以 goal_done 结束 |
+| 假阳性的另一半 | 判断层"看到 DESIGN 卡片"就以为已筛选 | 判据里加一条：**已生效 ≠ 出现在页面上**（下拉选项/正文里出现不算） |
+
+最终三个字段用例的实测（fixture，真实判断层）：
+
+| 目标 | 结果 | 耗时 | 判断次数 | tokens |
+|---|---|---:|---:|---:|
+| type Lisbon into Destination | Destination=`Lisbon` ✓ | — | — | — |
+| choose the Design category | `Stay category=Design` ✓ · `needs_verification` | **741ms** | 3 | 2,882 |
+| enable Free cancellation | `Free cancellation=已勾选` ✓ | — | — | — |
+
+**仍不完美**：单字段完成后，判断层有时继续乱点（goal_done 被独立确认拦住），最后落在 `budget`；
+没有 `inputs` 时（调用方没给值）"待生效字段"守卫无从判断，goal_done 假阳性仍可能发生。
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，

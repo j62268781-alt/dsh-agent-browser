@@ -248,6 +248,36 @@ export function isAlreadySatisfied(candidate: TaskCandidate, goal: string, input
   return false
 }
 
+/**
+ * 调用方给了值、但页面状态**还没生效**的字段。
+ *
+ * 为什么需要它：判断层对"设置筛选器"这类目标有系统性假阳性——目标词出现在页面正文里
+ * （比如卡片上写着 DESIGN）就被判成"已达成"（真机实测 goal_done=0.92，而 combobox 仍是 all）。
+ * 这条是**确定性**前置条件：还有字段没生效，就不允许 goal_done 结束。
+ */
+export function pendingFieldOf(
+  candidates: readonly TaskCandidate[],
+  inputs?: Readonly<Record<string, string>>,
+): TaskCandidate | undefined {
+  if (inputs === undefined) return undefined
+  for (const candidate of candidates) {
+    if (candidate.kind !== 'input' && candidate.role !== 'checkbox' && candidate.role !== 'radio' && candidate.role !== 'switch') continue
+    const wanted = matchInputValue(candidate, inputs)
+    if (wanted === undefined) continue
+    const state = stateOf(candidate)
+    if (state.checked !== undefined) {
+      const wantChecked = /^(1|true|yes|on|y|是)$/i.test(wanted.trim())
+      if (state.checked !== wantChecked) return candidate
+      continue
+    }
+    if (state.value !== undefined && state.value.trim() !== wanted.trim()) return candidate
+    // 完全没有状态信息（空的输入框不会带 `已有内容`）→ 只要调用方给了值，就认为"还没填"。
+    // 已填过的字段会从候选里被剔除，所以这里不会误判成"永远 pending"。
+    if (state.value === undefined) return candidate
+  }
+  return undefined
+}
+
 /** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
 export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Record<string, string>>): string | undefined {
   if (inputs === undefined) return undefined
@@ -349,8 +379,41 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
   return [...head, ...controls]
 }
 
-/** 候选 → 一个批次的问题。状态随这批问题只发一次（dsh-judgment §1.2 的批量经济学）。 */
-export function questionsOf(goal: string, candidates: readonly TaskCandidate[]): JudgmentQuestions {
+/** 看起来是密钥/凭据的字段名：**只把 key 交给判断层，值绝不出门**（Ying-Kai-Liao/jev-browser 的隐私纪律）。 */
+const SECRET_KEY = /(password|passwd|passcode|pw|secret|token|otp|card|cvv|cvc|ssn|api[_-]?key|pin|密码|口令|验证码|身份证)/i
+
+/** 值 → 给判断层看的描述（敏感值只给名字）。 */
+export function valueOptionDescription(key: string, value: string): string {
+  return SECRET_KEY.test(key) ? `${key}（敏感值，已隐藏长度 ${value.length}）` : `${key} → ${value.slice(0, 40)}`
+}
+
+/** 这个字段该用哪个调用方给的值？（有多个候选值时由判断层选） */
+export function valueQuestionOf(inputs?: Readonly<Record<string, string>>): { kind: 'choice'; prompt: string; options: Record<string, string> } | undefined {
+  if (inputs === undefined) return undefined
+  const entries = Object.entries(inputs)
+  if (entries.length === 0) return undefined
+  // 只有一个值且没有被敏感标记时不需要麻烦判断层；有多个值才需要"选哪个"。
+  if (entries.length === 1) return undefined
+  return {
+    kind: 'choice',
+    prompt:
+      '如果这一步是往某个输入框/下拉框里填值：调用方给了下面这些值，选出**该填进那个字段的那一个**。' +
+      '字段的 label/placeholder 与值本身是判断依据；都不合适就选 `value:none`。' +
+      '敏感字段的值不会展示，只能靠字段名判断。',
+    options: {
+      ...Object.fromEntries(entries.map(([key, value]) => [`value:${key}`, valueOptionDescription(key, value)])),
+      'value:none': '这些值都不适用于当前字段（需要让调用方补充）',
+    },
+  }
+}
+
+/** 候选 → 一个批次的问题。状态随这批问题只问一次（dsh-judgment §1.2 的批量经济学）。 */
+export function questionsOf(
+  goal: string,
+  candidates: readonly TaskCandidate[],
+  inputs?: Readonly<Record<string, string>>,
+): JudgmentQuestions {
+  const valueQuestion = candidates.some((candidate) => candidate.kind === 'input') ? valueQuestionOf(inputs) : undefined
   return {
     action: {
       kind: 'choice',
@@ -379,6 +442,10 @@ export function questionsOf(goal: string, candidates: readonly TaskCandidate[]):
         `用户的目标是：「${truncate(goal, 200)}」。` +
         '判定规则：如果目标是"打开某个页面 / 找到某个东西 / 进入某个分类"，那么**当前就停在那上面**就算达成' +
         '（地址、标题或正文对得上目标里提到的那个东西）；如果还需要继续点击或操作，才算没达成。' +
+        // 真机假阳性：目标词出现在**下拉选项列表/标签文字**里，被当成"已选中"（combobox 仍是 all 却报了 0.92）。
+        '但要注意"**已经生效**"与"只是出现在页面上"的区别：目标是"选择某分类 / 勾选某框 / 填某字段"时，' +
+        '必须看到该分类**已选中**、该框**已勾选**、该字段**已有那个值**才算达成；' +
+        '如果它只是出现在下拉选项、提示文字、新闻标题里，**不算**达成。' +
         '无障碍树、refs、历史只用来找下一步动作，**不能**当作达成的证据。',
       criteria: {
         true: 'page_text 里能直接看到那个结果本身',
@@ -404,6 +471,7 @@ export function questionsOf(goal: string, candidates: readonly TaskCandidate[]):
       prompt: '页面当前是否显示了**错误**（登录失败、表单校验报错、404/500、权限不足、验证码拦截）',
       criteria: { true: '页面上明确报了错', false: '没有错误提示' },
     },
+    ...(valueQuestion === undefined ? {} : { value: valueQuestion }),
   }
 }
 
@@ -522,6 +590,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   let staleStreak = 0
   /** 连续动作失败次数：门户页上"被广告遮罩"很常见，一次失败不该整轮报废。 */
   let actionFailures = 0
+  /**
+   * 已经按调用方的值填过的字段（`候选 id → 值`）。
+   *
+   * 真机踩过：填完 Lisbon 之后，判断层每一步又选中同一个字段、再填一遍（4 次），
+   * 因为"填了值"本身也算页面变化，停滞检测抓不到。同值重复填没有任何意义 → 直接跳过。
+   */
+  const filledFields = new Map<string, string>()
 
   for (let step = 1; step <= deps.maxSteps; step += 1) {
     if (deps.signal.aborted) return finish('budget', 'cancelled', last)
@@ -610,7 +685,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           return useTree()
         }
         // 合成一份"紧凑快照"：下游的 stateChanged / 停滞判定 / 状态载荷都基于它。
-        const compact = page.items.map((item) => `${item.role} "${item.name}"${item.covered ? '（被遮挡）' : ''}`).join('\n')
+        // 状态（已勾选/当前值）必须出现在 state 里：否则判断层只看到一堆名字，
+        // 分不清"筛选器还是 all"与"页面里有这个词"（真机：goal_done 因此假阳性 0.94）。
+        const compact = page.items
+          .map((item) => `${item.role} "${item.name}"${item.covered ? '（被遮挡）' : ''}${item.state === '' ? '' : `（${item.state}）`}`)
+          .join('\n')
         const refs: Record<string, { name: string; role: string; clickable?: boolean }> = {}
         for (const item of page.items) refs[String(item.index)] = { name: item.name, role: item.role, clickable: true }
         const snapshot: Snapshot = {
@@ -659,11 +738,30 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         return finish('needs_verification', '目标涉及的元素已处于目标状态', snapshot)
       }
     }
+    // 已按同值填过的字段不再进候选（重复填无意义，而且会被当成"有推进"）。
+    const refilled = candidates.filter((candidate) => {
+      const done = filledFields.get(candidate.id)
+      if (done === undefined) return false
+      const state = stateOf(candidate)
+      // 字段当前状态已经是这个值（或勾选态已符合）→ 重复填没有意义。
+      return state.value === done || state.checked === /^(1|true|yes|on|y|是)$/i.test(done)
+    })
+    if (refilled.length > 0) {
+      trace.push(`第 ${step} 步：${refilled.length} 个字段已按调用方的值填过（${refilled.map((candidate) => candidate.name ?? candidate.id).join('、')}）→ 跳过`)
+      candidates = candidates.filter((candidate) => !refilled.includes(candidate))
+    }
     // P2（dsh-jev-plugin 的 no-request bypass）：控制项永远在候选里，所以"0/1 个候选"
     // 实际指的是**页面上的可操作元素**。没有可操作元素 → 不发请求，直接停；
     // 只有一个且是输入框 → 无论如何都要交回宿主拿文字，也不必问判断层。
     const actionable = candidates.filter((candidate) => candidate.kind !== 'control')
     if (actionable.length === 0) {
+      // 没有可操作元素：可能是"字段都按调用方的值填完了"。先独立确认一次，
+      // 确认通过就交回宿主校验，而不是让调用方看到一个 no_progress 去重跑。
+      const confirmed = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
+      if (confirmed.confirmed) {
+        trace.push(`第 ${step} 步：没有剩余可操作元素，且独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
+        return finish('needs_verification', `没有剩余可操作元素；确认 p=${confirmed.probability.toFixed(2)}`, snapshot)
+      }
       trace.push(`第 ${step} 步：页面上没有可操作的元素 → 停（不发判断请求）`)
       return finish('no_progress', '页面上没有可操作的元素', snapshot)
     }
@@ -705,7 +803,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **同样的状态、更少的候选**再问——不是重复同一个请求（同一规模下常常重复失败）。
     const askOnce = async (subset: readonly TaskCandidate[]): Promise<Readonly<Record<string, JudgmentAnswer>>> => {
       const askStarted = now()
-      const result = await judge.ask(state, questionsOf(goal, subset), { purpose: deps.purpose })
+      const result = await judge.ask(state, questionsOf(goal, subset, deps.inputs), { purpose: deps.purpose })
       timings.askMs += now() - askStarted
       usage.calls += 1
       usage.inputTokens += result.usage.inputTokens ?? 0
@@ -714,7 +812,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     let answers: Readonly<Record<string, JudgmentAnswer>>
     let askedCount = Math.min(candidates.length, JUDGE_OPTION_CAP)
-    if (actionable.length === 1 && actionable[0].kind === 'input') {
+    // 只有一个输入框时免判断——**但调用方给了多个值时不能免**：得让判断层选"用哪个值"。
+    const singleInputBypass = actionable.length === 1 && actionable[0].kind === 'input' && (deps.inputs === undefined || Object.keys(deps.inputs).length === 1)
+    if (singleInputBypass) {
       // 唯一可操作元素就是输入框：不需要判断是哪个框，直接交回宿主（省一次请求）。
       const only = actionable[0]
       trace.push(`第 ${step} 步：页面上只有一个输入框（${only.id}）→ 免判断，交回宿主填内容`)
@@ -773,7 +873,28 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 3) 停止门：**在动作之前**判定（动作是状态的函数，不能在动作之后再判它的状态）。
     //    goal_done 只是"候选完成"，必须再过一道**独立确认**（用页面可见正文问一遍）。
-    if (goalDone !== undefined && goalDone >= deps.goalThreshold) {
+    // **确定性前置条件**：调用方给了值、但字段还没生效 → 不许以 goal_done 结束。
+    // 判断层选的若是某个输入框，而它的目标值（名字匹配或它选的值 key）还没生效 → 也算 pending。
+    const chosenForGate = actionAnswer?.kind === 'choice' ? byId.get(actionAnswer.optionId) : undefined
+    const selectedValueKeyForGate = answers.value?.kind === 'choice' && answers.value.optionId.startsWith('value:')
+      ? answers.value.optionId.slice('value:'.length)
+      : undefined
+    const chosenPending = (() => {
+      if (chosenForGate === undefined || chosenForGate.kind !== 'input') return undefined
+      const wanted = matchInputValue(chosenForGate, deps.inputs)
+        ?? (selectedValueKeyForGate === undefined ? undefined : deps.inputs?.[selectedValueKeyForGate])
+      if (wanted === undefined) return undefined
+      const state = stateOf(chosenForGate)
+      return state.value !== undefined && state.value.trim() === wanted.trim() ? undefined : chosenForGate
+    })()
+    const pendingField = pendingFieldOf(candidates, deps.inputs) ?? chosenPending
+    if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField !== undefined) {
+      trace.push(
+        `第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但「${pendingField.name ?? pendingField.role ?? pendingField.id}」` +
+        `还没生效（${pendingField.state ?? '状态未知'}）→ 不结束，继续操作`,
+      )
+    }
+    if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField === undefined) {
       const confirm = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
       if (confirm.confirmed) {
         trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} ≥ ${deps.goalThreshold}，独立确认 p=${confirm.probability.toFixed(2)} → 停，交回宿主校验`)
@@ -812,13 +933,24 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
       // 调用方**已经给了值** → 同一次调用内直接填/选/勾（不再交回宿主，省一整轮）。
-      const given = matchInputValue(chosen, deps.inputs)
+      let given = matchInputValue(chosen, deps.inputs)
+      // 字段名没对上时，用判断层在**同一批次**里选的"该用哪个值"（Ying-Kai-Liao/jev-browser 的做法：
+      // 值由调用方给、判断层只选 key，永远不写字）。
+      if (given === undefined) {
+        const valueAnswer = answers.value
+        if (valueAnswer?.kind === 'choice' && valueAnswer.optionId.startsWith('value:')) {
+          const key = valueAnswer.optionId.slice('value:'.length)
+          given = deps.inputs?.[key]
+          if (given !== undefined) trace.push(`第 ${step} 步：判断层选了调用方的值「${key}」→ 填进 ${chosen.name ?? chosen.id}`)
+        }
+      }
       if (given !== undefined) {
         const started = now()
         try {
           await fillFromInputs(deps.browser, chosen, given, deps.signal)
           timings.actMs += now() - started
           actionFailures = 0
+          filledFields.set(chosen.id, given)
           trace.push(`第 ${step} 步：按调用方的值填 ${chosen.role ?? 'field'}「${chosen.name ?? chosen.id}」= ${given} ✓`)
           steps.push({
             step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'filled_from_inputs',

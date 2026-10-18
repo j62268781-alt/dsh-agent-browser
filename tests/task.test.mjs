@@ -362,8 +362,10 @@ test('P2：页面上没有可操作元素 → 不发判断请求就停（no-requ
   }
   const judge = fakeJudge([{ action: 'control:scroll_down' }])
   const result = await runTask('目标', deps(browser, judge))
-  assert.equal(result.status, 'no_progress')
-  assert.equal(judge.asked.length, 0, '没有可操作元素时不该问判断层')
+  // 现在会先做一次**独立确认**（不是动作选择）：确认通过→needs_verification，不通过→no_progress。
+  assert.ok(['no_progress', 'needs_verification'].includes(result.status), `实际 ${result.status}`)
+  // 允许一次"独立确认"（它不是动作选择）；但**动作问题**一次都不该问。
+  assert.equal(judge.asked.filter((entry) => entry.questions.action !== undefined).length, 0, '没有可操作元素时不该问动作')
 })
 
 test('P2：唯一可操作元素是输入框 → 免判断直接交回宿主', async () => {
@@ -534,7 +536,8 @@ test('inputs：调用方给值 → 同一次调用内直接 fill，不再 input_
   const browser = extractPage([
     { index: 0, role: 'searchbox', name: 'Destination', covered: false, state: '' },
   ])
-  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.99 }])
+  // 第 1 步填值（goal_done 低），第 2 步才宣布完成
+  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.1 }, { action: 'control:wait', goalDone: 0.99 }])
   const result = await runTask('type Lisbon into Destination', deps(browser, judge, { inputs: { Destination: 'Lisbon' } }))
   assert.equal(result.status, 'needs_verification', '不该再返回 input_required')
   assert.ok((browser.acts ?? []).some((line) => line.startsWith('fill ')), `应该执行 fill，实际：${browser.acts}`)
@@ -667,4 +670,53 @@ test('不可逆动作：调用方确认后（allowIrreversible）照常执行', 
   const result = await runTask('下单', deps(page.browser, judge, { allowIrreversible: true }))
   assert.notEqual(result.status, 'needs_confirmation')
   assert.ok(page.state.acts.length >= 1, `确认后应该真的执行，实际：${page.state.acts}`)
+})
+
+/* ───────────────── values 语义：判断层只选 key，值由调用方给 ───────────────── */
+
+test('多个值时问"用哪个值"（敏感 key 只显示名字，不展示值）', async () => {
+  const { questionsOf } = await import('../lib/task.js')
+  const candidates = [{ id: 'input:0', description: '在「Password」里输入', kind: 'input', ref: '[data-dsh-idx="0"]' }]
+  const questions = questionsOf('登录', candidates, { email: 'a@b.c', password: 'hunter2', otp: '123456' })
+  assert.ok(questions.value !== undefined, '有多个值时应带 value 问题')
+  const options = questions.value.options
+  assert.match(options['value:email'], /a@b\.c/, '非敏感值可以展示')
+  assert.ok(!options['value:password'].includes('hunter2'), '密码值绝不出现在给判断层的问题里')
+  assert.match(options['value:password'], /敏感值/)
+  assert.ok(options['value:none'] !== undefined, '要允许"都不合适"')
+})
+
+test('只有一个值时不问（直接用）', async () => {
+  const { questionsOf } = await import('../lib/task.js')
+  const candidates = [{ id: 'input:0', description: '在「Destination」里输入', kind: 'input', ref: '[data-dsh-idx="0"]' }]
+  assert.equal(questionsOf('搜索', candidates, { Destination: 'Lisbon' }).value, undefined)
+})
+
+test('字段名对不上时，用判断层选的值 key 来填', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'searchbox', name: 'Search destinations', covered: false, state: '' },
+  ])
+  const base = fakeJudge([{ action: 'input:0', goalDone: 0.1 }])
+  const judge = {
+    apiVersion: base.apiVersion,
+    asked: base.asked,
+    async ask(state, questions, options) {
+      const result = await base.ask(state, questions, options)
+      return { ...result, answers: { ...result.answers, value: { kind: 'choice', optionId: 'value:city', probabilities: { 'value:city': 1 }, confidence: 1 } } }
+    },
+  }
+  const result = await runTask('search somewhere', deps(browser, judge, { inputs: { city: 'Lisbon', other: 'X' } }))
+  assert.ok((browser.acts ?? []).some((line) => line.startsWith('fill ')), `应该用选中的值填，实际：${browser.acts}`)
+  assert.ok(result.trace.some((line) => /判断层选了调用方的值「city」/.test(line)))
+})
+
+test('调用方给的字段还没生效时，不允许 goal_done 结束（假阳性守卫）', async () => {
+  const browser = extractPage([
+    { index: 0, role: 'checkbox', name: 'Free cancellation', covered: false, state: '未勾选' },
+  ])
+  // 判断层两次都说"已完成"（模拟它看到页面正文里有相关词就判完成）
+  const judge = judgeWith({ action: 'click:0', answers: { goal_done: { kind: 'noul', probability: 0.95 } } })
+  const result = await runTask('enable Free cancellation', deps(browser, judge, { inputs: { 'Free cancellation': 'true' } }))
+  assert.ok(result.trace.some((line) => /还没生效/.test(line)), '应该记录"待生效字段"守卫')
+  assert.ok((browser.acts ?? []).some((line) => line.startsWith('check ')), `应该先把字段弄生效，实际：${browser.acts}`)
 })
