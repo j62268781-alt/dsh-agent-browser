@@ -37,6 +37,26 @@ agent-browser snapshot -i        # 页面变化后必须重新快照
 
 多标签站点（门户、电商）会**自动弹窗抢活动标签**。每步前用 `tab` 核对当前标签，`tab t2` 切换——不要假设 `open` 之后活动标签还是你那个。
 
+## 复用窗口：默认不要反复开/关
+
+**同一个任务沿用同一个浏览器窗口/标签。** daemon 常驻，`snapshot`/`click`/`fill` 默认作用在
+**当前活动标签**上——连续操作不要每步 `open`，更不要 `close` 再重开：
+
+```bash
+agent-browser open https://example.com/      # 整条任务只在起点开一次
+agent-browser snapshot -i
+agent-browser click @e3
+agent-browser snapshot -i
+agent-browser goto https://example.com/next  # 同站换页用 goto/点链接，不再 open
+```
+
+- `open` 每次都会**新开一个标签**（还可能被站点弹窗抢走活动标签）；同站导航优先点链接或 `goto`。
+- `close` 会丢掉标签、滚动位置和登录态，下次要重新冷启动 Chrome（约 2–4s，且更容易触发风控）。
+  **任务结束时不要 close**：会话跨对话持久，下次直接接着用。
+- 只有这三种情况才 `close`：浏览器卡死 / 要换 `--profile` 或 `--session` / 要清空登录态。
+- 同一任务内的多页面用 `tab new` 开、`tab close` 关，回到原标签即可，不必关整个浏览器；
+  需要并行或隔离两个任务时才新开**会话**（`--session`）。
+
 ## 两个最容易做错的点
 
 **① 会话隔离** — 默认会话全机共享且跨对话持久，直接用它可能劫持其他 agent 的页面。每个任务先固定具名会话：
@@ -150,4 +170,5 @@ agent-browser batch 'fill @e1 "jev"' 'press Enter' 'wait 500' 'snapshot -i'
 （内部就是一次 `batch`），比先 `browser_snapshot` 再 `browser_read` 再 `browser_get` 少两次进程启动、
 **也少两个模型回合**。
 
-多步复用 daemon：`agent-browser batch "open X" "snapshot -i"`，或 `open X && wait --load load && snapshot -i`。用完 `agent-browser close`。
+多步复用 daemon：`agent-browser batch "open X" "snapshot -i"`，或 `open X && wait --load load && snapshot -i`。
+**任务内复用同一个窗口/标签**；只有浏览器卡死、要换 `--profile`/`--session` 或清登录态时才 `agent-browser close`。

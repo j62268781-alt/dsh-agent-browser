@@ -756,6 +756,57 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 > 这两个 bug 都不会在单条命令里暴露，只有"open 之后立刻操作"/"close 之后立刻 open"才触发——
 > 正是 `browser_run` 这种连续循环的典型用法。
 
+### 4.5.4 任务基准（`bench/`）：用别人的任务集回答"真的做对了吗"
+
+之前所有 bench 只量**时间/token**，不判对错——所以"这套体系在哪些场景真的强"一直没答案。
+新增 `bench/`：移植 4 家 MIT 任务集（出处与许可见 `bench/tasks.mjs` 头部），
+每条 step 带**页面内 JS 断言**（ground truth），跑在本插件上：
+
+- `offline`：jev-ultrafast 的酒店 fixture + jkudish 的 login/select fixture（本地 HTML、可重复）；
+- `base` / `hard` / `guard`：Ying-Kai-Liao/jev-browser 的 41 条任务（真实站点）。
+
+跑法：`pnpm bench:tasks`。**默认复用已打开的浏览器会话**（`--session default`），不冷启动；
+想隔离就 `--session <name>`，想接指定端口 `--cdp`，想跑完关掉 `--close`。
+
+**口径**：`needs_verification` / `likely_done` = 声称完成；断言假却声称完成 = **false done**；
+断言真却没声称 = **missed**；负例任务（`expect: "fail"`）只要求"不许声称完成"。
+
+**首轮结果**（2026-10-19，`decision-model-preview`，复用同一标签）：
+
+| 套件 | 结果 | 说明 |
+|---|---|---|
+| offline（3 条） | **2/3**，0 false-done | jk-login 2 步 4 次判断；jk-select 1 步 11 次；fixture-hotel 5 步 31 次（卡在 submit/checkbox 两步） |
+| live 子集（6 条） | **1/6**，1 false-done | hn-comments 把导航条 "comments" 当成 top story 评论页（goal_done .78 + confirm .62 → likely_done，URL 却是 /newcomments） |
+
+**跑出来的真 bug（已修）**
+
+1. **`stripBoundaries` 在含连字符的 origin 上失效**：`[^-]*` 遇到 `origin=file:///…/dsh-agent-browser/…`
+   就在 "dsh-" 处停住，边界整行去不掉 → `eval` 结果解析失败。改 `[^\n]*`，加单测。
+2. **密码框的值进了判断层状态**：extract 把 `input.value` 写成"已有内容"，密码原文随 state 发出去
+   （jk-login fixture 暴露）。改为 `●●●` + `stateOf().redacted`；状态守卫/待生效/已填记账都按
+   "**填过但值不可见**"处理。
+3. **纯填值目标没有收尾门**：goal_done 在 0.45–0.84 之间徘徊，而独立确认问的是**可见正文**——
+   输入框里的值根本不在正文里，结构性看不见，于是循环继续乱点（点到提交/别的按钮）。
+   新增确定性 `inputsApplied()`：调用方给的值**全部生效**且目标不含后续动作动词 → needs_verification。
+   jk-login 从 9 次判断降到 4 次。
+4. **无 label 的唯一输入框匹配不上 key**：`/inputs` 的 `<input type=number>` 名字为空，
+   "填 42" 也要交回宿主。新增 `soleValueFor()`：**唯一输入框 + 唯一值**确定性绑定。
+
+**仍失败（已知缺口，按 ROI 排序）**
+
+| 现象 | 任务 | 根因 | 对应待办 |
+|---|---|---|---|
+| submit 后页面无变化 → no_progress | fixture-hotel 第 2 步 | 判断层不知道"刚才那一下改变了什么" | **`last_change` diff** |
+| native select 无调用方值 → input_required | ti-dropdown | 只有 values→option 一条路，没有"判断层按 label 选 option" | select 二阶段 |
+| 加载页等 800ms 不够 | ti-dynamic-loading | wait 固定时长，不等条件 | wait-for-text |
+| 稠密页 11 次判断后 budget | wiki-link（Wikipedia） | 抽取按 DOM 序取前 80 个元素 | 两阶段选择 |
+| 目标词命中导航条 → 假阳性 | hn-comments | 候选缺"所在上下文"（near） | 候选上下文 |
+| 同一代码两种结果 | ti-checkboxes | 判断层选择不稳定 | 采样/阈值复测 |
+
+> 这张表就是"我们这套体系哪里强、哪里弱"的第一次可复现回答：
+> **强**：多字段表单填值（有 inputs 时一次调用填完、确定性收尾）、复选框状态守卫；
+> **弱**：页面无变化时的完成判定、稠密页候选覆盖、无值 select、加载等待。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
