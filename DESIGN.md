@@ -939,8 +939,11 @@ false-done 7 → 2/3，但 missed 1 → 5/6（做到了却没声称完成）：�
 
 排查 wiki-link 时实测：
 - 目标链接 "Bletchley Park" 在 **候选第 1 名**、Jev 在 Top-10 里也**选对了**（置信 0.76）；
-- 但点击返回 ok、页面纹丝不动：元素在 y=807（视口外），CDP click 对折叠线下元素是"成功但无效果"，
-  JS `el.click()` 同样不跳转；`scrollintoview` 后再点 → 正常跳转。
+- 但点击返回 ok、页面纹丝不动：元素 rect y=807、高 23，中心 y=818.5，而视口高 812
+  → **鼠标坐标落在视口外 6.5px**，CDP 鼠标事件被丢弃 → "成功但无效果"；
+  `scrollintoview` 后再点 → 正常跳转。
+  （早先"JS `el.click()` 也不跳转"是**测量误差**：没等导航提交就读了 URL；复测确认
+  `el.click()` 会跳转——但它是合成事件，对依赖 pointerdown/hover 的组件不完整。）
 
 修法：click 前先 `scrollintoview`（仅页面内抽取路径）。结果：
 - wiki-link：10 步 budget → **3 次判断/3.1s 通过**；
@@ -955,20 +958,68 @@ false-done 7 → 2/3，但 missed 1 → 5/6（做到了却没声称完成）：�
   （待填输入框、精确命中项、控制项），而不是纯 10；
 - 还要先有一个 recall 评测，recall@K < 95% 就不许上。
 
-**仍失败（已知缺口，按 ROI 排序）**
+**点击层最终形态（`e0cd1a7`）**
 
-| 现象 | 任务 | 根因 | 对应待办 |
+| 元素 | 动作 | 理由 |
+|---|---|---|
+| `<a>` / `<button>` | `el.click()`（合成点击，缺省行为独立于坐标） | 折叠线下也生效；比"滚动+鼠标"少一次 CLI 调用 |
+| 其它（div 按钮、自定义组件、hover 菜单、拖拽） | `scrollintoview` + CDP 真实鼠标 | 依赖 pointerdown/命中测试/坐标 |
+| 回退 | 合成点击后页面没变化 → 同一候选改走"滚动+真实点击"，每候选一次 | 少数 a/button 会检查 `isTrusted` |
+
+**定位候选的速度（实测）**
+
+```
+一次 eval（整页 DOM + 语义遍历）→ 300 元素 → 本地排序 <1ms
+```
+
+| 页面 | 抽取耗时 | 元素数 |
+|---|---|---|
+| 本地 fixture | 8ms | 10 |
+| GitHub 仓库页 | 18ms | 177 |
+| Wikipedia 首页 | 25ms | 276 |
+
+约 **12μs/元素**；兜底 a11y snapshot 路径 10–58ms（只在抽取对不上目标时走）。
+单步耗时构成：**抽取 8–25ms（约 2%）+ 判断 600–1200ms（约 53%）+ 动作/等待（约 35%）**。
+结论：**定位层已经不是瓶颈**；耗时由判断次数决定（成功任务平均 4.4 次判断、失败任务 8.3 次）。
+
+**现状与下一步（2026-10-19 晚，最新两次全量）**
+
+| 配置 | 正确 | false-done | missed | 判断次数 | tokens | 耗时 |
+|---|---|---|---|---|---|---|
+| jev-1.13 · cap24 + 折叠线下点击修复（`d0fcf6a`） | **16/39** | **2** | 5 | 292 | 717k | 297s |
+| 上述 + a/button 直接 `el.click()`（`e0cd1a7`） | 15/39 | 5 | 4 | 257 | 638k | 275s |
+
+两次差异全部集中在 5 条任务的翻转上（hn-comments/wiki-search/github-issue-search/
+guard-checkout/infinite-scroll），无一条能归因到 jsClick 机制 → **±3 条噪声内，都不能当"提升"**。
+
+**最新失败桶（`jev-jsclick`，24 条失败）**
+
+| 桶 | 数量 | 任务 | 性质 |
 |---|---|---|---|
-| 加载完成后判断层不认结果、继续重按 | fixture-lazy | 极简页面上 goal_done 只有 0.35–0.42 | 阈值/提示词校准（或等更强 judge） |
-| native select 无调用方值 → input_required | ti-dropdown | 只有 values→option 一条路 | **select 二阶段**（ykl/jkudish 都实现了） |
-| 稠密页仍 ambiguous / budget | wiki-link（Wikipedia） | 候选上下文不足 + 真实页面噪声 | 两阶段 group→element |
-| 目标词命中导航条 → 假阳性 | hn-comments | 候选缺"所在上下文"（near） | **候选 near 上下文** |
-| 同一代码两种结果 | ti-checkboxes | 判断层选择不稳定 | 采样/阈值复测 |
+| ambiguous（判断层分不清） | 5 | ti-checkboxes、ti-dynamic-controls、ti-hover、hn-comments、saucedemo-coarse | 候选质量 + 判别力 |
+| no_progress（无效动作后停） | 6 | ti-dynamic-loading、todomvc-coarse、ti-js-confirm、ti-entry-ad、saucedemo-fine、guard-webform | **换路策略**（现在"停"，应"换"） |
+| budget（10 步打转） | 2 | webform、ti-sort-table | 同上 + 有序子目标 |
+| 完成判定误判 | 5 | todomvc-fine、infinite-scroll、github-issue-search、webform-fine、guard-checkout | 完成判定 |
+| **能力缺口（不计入"该修"）** | **7** | iframe×2、shadow×1、react-select、无限滚动、drag、key-press | 上游/能力边界 |
 
-> 这张表就是"我们这套体系哪里强、哪里弱"的可复现回答（P0 前）：
-> **强**：多字段表单填值（有 inputs 时一次调用填完、确定性收尾）、复选框状态守卫、
-> 稠密页（抽到 300 + 排序后 40 候选）、提交型动作；
-> **弱**：极简页/加载页的完成判定、无值 select、真实大页的候选上下文。
+**通过 15 条**：ti-login、ti-dropdown、ti-inputs、ti-add-remove、books-poetry、wiki-search、
+wiki-link、github-pulls、neg-bad-password、neg-missing-page、neg-disabled、new-window、
+login-wall、neg-missing-option、guard-login。
+
+**下一步（按 ROI，且必须配 `--repeat` 才能宣称提升）**
+
+1. **测量纪律（P0）**：`bench/run.mjs --repeat 3`，每任务多数票；这是后面所有 A/B 的前提。
+2. **卡死换路（P1）**：无效动作**一次**就把它从本轮候选里排除并换次优，而不是两次后直接
+   `no_progress`——它同时改善完成率与耗时（失败任务 8.3 次判断 vs 成功 4.4 次）。
+3. **候选质量（P1）**：把 `near`/区块标题纳入排序；dense 页把候选上限 40 放开到 80 并做
+   `JUDGE_OPTION_CAP` 24 → 40 的 A/B（干扰项实验 cap40 命中 9/9）。
+4. **动作集合（P2）**：`hover`、任意键、把 `drag` 接进循环——直接吃 interaction 0/4。
+5. **完成判定扩展（P2）**：checkbox/计数/文本出现这类确定性收尾（select/表单/登录已做）。
+6. **能力缺口（P3）**：iframe（需上游 frame 支持）、shadow（JS 穿透+坐标点击）、
+   react-select（键盘/portal）——成本最高，最后做。
+
+> 口径说明：**能力边界之外的任务（iframe/shadow/上传/拖拽/右键）不计入"该修"的范围**，
+> 它们由 skill 引导宿主改用原子工具；循环只对"该做的能做好"负责。
 
 ## 5. 决策形态（v2 定稿）
 
