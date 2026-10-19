@@ -65,3 +65,10 @@ node bench/run.mjs --task-timeout 120000      # 单任务看门狗（默认 180s
 - `fixture-lazy`：点 Start 后 3 秒才出结果 → 验证"自适应 wait + 加载门"。
   **仍失败**：极简页上判断层不认结果（goal_done 0.35），会把 Start 再点一次；这是已知缺口，
   保留为 failing test，别为了让数字好看而删。
+
+## P1 后仍失败的（v0.1 基线）
+
+- `hn-comments`：goal 词 "comments" 同时命中导航链接和 story 的评论链接，判断层选导航；
+  已加 `near` 上下文 + "具体条目 vs 导航"提示词 + 确认时的 target_match 复核，仍误判 → 记在模型能力账上。
+- `ti-checkboxes`：同一代码多次运行结果不一致（有时 4 次判断通过，有时 false-done）→ 稳定性问题。
+- `webform`：多字段 + 提交，判断层中途 ambiguous → 与"有序子目标"同类，按 ykl 的结论应拆成多步。

@@ -798,6 +798,21 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 7. **确认问句区分"结果型目标"与"动作型目标"**：`"直到出现/显示/看到 X"` 必须看到结果；
    只有"提交/点击这个按钮"这类目标才允许"动作已执行即达成"。（fixture-lazy 的 0.94 假阳性就是这句话修出来的。）
 
+**P1（同日）：select 二阶段 + 候选上下文**
+
+| 改动 | 机制 | 效果 |
+|---|---|---|
+| **native select 二阶段** | 抽取时带上 select 的选项（label+value，≤30）；调用方没给值时，**单独一次 choice** 让判断层在选项里选（ykl/jkudish 各自独立都这么做），选不到返回 none → input_required | `ti-dropdown` **通过**（4 次判断，之前 input_required） |
+| **候选 near 上下文** | 抽取每个元素**所在行/容器的文本**（≤80 字符），拼进候选描述（"附近: …"），并在 action 提示词里说明"具体条目 vs 导航条同名链接" | 已生效，但 hn-comments **仍然**选了导航条 "comments"（goal_done .89 + 确认 .91）→ 假阳性 |
+| **确认加 target_match 第二问** | 同一请求里再问一次"上一步点的控件是不是目标指的那个对象"；低于 0.6 就否决确认 | 已实现（省一次往返）；HN 这个例子模型仍判"是" |
+| **inputsApplied 修 goal 传参** | 之前用输入 key 当 goal 判 `enable/disable` 动词，导致勾选类目标永远不算"已生效" | fixture-hotel 的 checkbox 步恢复 |
+
+**P1 后的数字**：offline **4/5**（0 false-done，fixture-lazy 仍失败）；live 子集 2/5（`ti-dropdown`、`ti-inputs` 通过；hn-comments 仍 false-done；webform ambiguous；ti-checkboxes 在多次运行间**时对时错**）。
+
+**结论（要写进下一步的）**：select/填值这类"有确定状态可查"的目标已经稳；
+**"目标词命中同名导航"和"判断层稳定性"是模型能力问题，不是循环逻辑问题**——
+换更强的 judge（或给 judge 做 few-shot 校准）比继续加门更划算；先别在逻辑里堆特例。
+
 **仍失败（已知缺口，按 ROI 排序）**
 
 | 现象 | 任务 | 根因 | 对应待办 |
