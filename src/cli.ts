@@ -632,6 +632,8 @@ export function actionArgs(
       return args
     }
     case 'scrollintoview': return ['scrollintoview', target]
+    // 拖拽：target 是源，value 是目标（CLI：drag <src> <dst>）。
+    case 'drag': return ['drag', target, requireString(payload.value, 'drag 需要 value（目标 ref 或选择器）')]
     // `wait` 的参数是"选择器或毫秒数"：优先 value，其次 target（真机踩过：把 ms 硬塞进 ref 很难看）。
     case 'wait': return ['wait', requireString(payload.value ?? (target === '' ? undefined : target), 'wait 需要 value（毫秒数，如 800，或选择器）')]
     default: throw new CliError('bad-request', `不支持的动作 "${action}"`)

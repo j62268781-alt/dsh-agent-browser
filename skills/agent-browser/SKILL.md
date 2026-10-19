@@ -57,6 +57,28 @@ agent-browser goto https://example.com/next  # 同站换页用 goto/点链接，
 - 同一任务内的多页面用 `tab new` 开、`tab close` 关，回到原标签即可，不必关整个浏览器；
   需要并行或隔离两个任务时才新开**会话**（`--session`）。
 
+## `browser_run` 的能力边界（先看这个）
+
+决策循环（`browser_run`）只解决"**把页面推到目标状态**"这一类任务，能力是**有边界**的：
+
+**它覆盖**：点击、填值（值由调用方给）、原生 select、勾选/取消勾选、滚动、返回、等待、Enter 提交。
+
+**它不覆盖**（别硬塞给它，会白烧判断次数和 token）：
+
+| 场景 | 用什么 |
+|---|---|
+| iframe 里的表单/弹窗 | `browser_raw` 调 CLI，或让用户换页面；CLI 没有 frame 导航 |
+| shadow DOM 里的控件 | `browser_raw` 用 JS 穿透（`el.shadowRoot.querySelector(...)`） |
+| 上传/下载文件 | `browser_act upload`（传本地路径）/ CLI `download` |
+| 拖拽 | `browser_act drag`（value 给目标 ref） |
+| 右键/context menu | `browser_act mouse`/CLI `mouse down right` + `up` |
+| 画布/canvas、复杂键盘宏 | 原子工具逐步做 |
+| 多标签流程 | `browser_session` / `tab` 管理，循环只认当前标签 |
+
+**有序子目标必须拆**：`browser_run` 的 goal 是"一个结果"。
+"先登录、再加购、再结算" 要拆成 3 次调用（每次一个结果），不要写成一个 goal——
+这条来自 ykl 42 任务集的实测结论（他们那三条失败里两条就是"一个 goal 里有顺序子目标"）。
+
 ## 两个最容易做错的点
 
 **① 会话隔离** — 默认会话全机共享且跨对话持久，直接用它可能劫持其他 agent 的页面。每个任务先固定具名会话：

@@ -462,9 +462,10 @@ export class AgentBrowserService extends TypertRemoteService {
     this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_act',
       description:
-        '对当前页面执行**恰好一个**变更动作（click/fill/type/press/select/scroll/hover/check/uncheck/upload/dblclick/focus）。' +
+        '对当前页面执行**恰好一个**变更动作（click/fill/type/press/select/scroll/hover/check/uncheck/upload/drag/dblclick/focus）。' +
         '每次调用只做一个动作，做完再看结果。ref 用快照里的 `e12`（可带或不带 @）。' +
-        '**click/fill/type/select/upload/hover/check/uncheck 需要 ref 或 selector**；press 用 value 给键名、scroll 用 direction/amount、wait 用 value 给毫秒数（都不需要 ref）。' +
+        '**click/fill/type/select/upload/drag/hover/check/uncheck 需要 ref 或 selector**（drag 的 value 是目标 ref/选择器）；' +
+        'press 用 value 给键名、scroll 用 direction/amount、wait 用 value 给毫秒数（都不需要 ref）。' +
         '可选的 expectUrl / expectName 是**新鲜度断言**：与当前页面不一致时在执行前拒绝（stale_page）。' + UNTRUSTED,
       parameters: {
         action: { type: 'string', required: true, description: '动作名，见工具描述里的清单' },
@@ -625,7 +626,9 @@ export class AgentBrowserService extends TypertRemoteService {
           '**文字输入与敏感动作不做决策**：需要时会以 input_required 交回你——' +
           '但如果你已经知道要填什么，**用 `inputs` 一次给进来**，插件会在同一次调用里填/选/勾完，省掉每个字段一轮往返。' +
           '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' +
-          '**默认在当前页面上继续操作**（复用已打开的窗口/标签）；需要换站点时先 browser_session open，不要每个任务重开浏览器。' + UNTRUSTED,
+          '**默认在当前页面上继续操作**（复用已打开的窗口/标签）；需要换站点时先 browser_session open，不要每个任务重开浏览器。' +
+          '**能力边界**：这个循环只做 click/填值/select/勾选/滚动/返回/等待/Enter；iframe、shadow DOM、上传/下载、右键菜单、画布、多标签流程请用 browser_act / browser_raw 直接做；' +
+          '「先 A 再 B」这类有序子目标请拆成多次 browser_run（每次一个结果）。' + UNTRUSTED,
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
           maxSteps: { type: 'number', description: `最大步数（默认 ${config.limits.maxSteps}）` },
