@@ -720,3 +720,31 @@ test('调用方给的字段还没生效时，不允许 goal_done 结束（假阳
   assert.ok(result.trace.some((line) => /还没生效/.test(line)), '应该记录"待生效字段"守卫')
   assert.ok((browser.acts ?? []).some((line) => line.startsWith('check ')), `应该先把字段弄生效，实际：${browser.acts}`)
 })
+
+/* ───────────────── likely_done / ambiguous（Ying-Kai-Liao/jev-browser） ───────────────── */
+
+test('goal_done 落在中间带 + 确认不低 → likely_done（交回宿主验证，不继续乱点）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '继续', onClick: (state) => { state.text = `step-${++state.counter ?? 1}` } }])
+  const judge = fakeJudge([
+    { action: 'click:e1', goalDone: 0.1 },
+    { action: 'click:e1', goalDone: 0.7, confirmProbability: 0.8 },
+  ])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'likely_done')
+  assert.equal(page.state.acts.length, 1, '中间带之后不该继续执行动作')
+  assert.ok(result.trace.some((line) => /likely_done/.test(line)))
+})
+
+test('置信度低且前两名接近 → ambiguous，并给出前 3 名候选', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '保存' },
+    { ref: 'e2', role: 'button', name: '提交' },
+    { ref: 'e3', role: 'button', name: '取消' },
+  ])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confidence: 0.3, probabilities: { 'click:e1': 0.35, 'click:e2': 0.30, 'click:e3': 0.2 } }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'ambiguous')
+  assert.deepEqual(page.state.acts, [], 'ambiguous 时不该执行动作')
+  assert.equal(result.candidates?.length, 3)
+  assert.match(result.candidates[0].description, /保存|提交|取消/)
+})

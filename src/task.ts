@@ -67,6 +67,20 @@ export const GOAL_CONFIRM_THRESHOLD = 0.8
 export const CONFIRM_TEXT_CAP = 2_000
 
 /** 可点的无障碍角色——枚举确定性候选，不把"文案长得像按钮"当候选。 */
+/**
+ * 永远存在的控制项。
+ *
+ * 为什么**必须**带着：choice 契约要求选项数在 2–255（实测只发 1 个会
+ * `invalid-request: 候选数 1 不在 2–255`），而抽取路径只返回页面元素——
+ * 只有 1 个按钮的页面上就会只有 1 个选项。
+ */
+const CONTROL_CANDIDATES: readonly TaskCandidate[] = [
+  { id: 'control:scroll_down', description: '向下滚动一屏（看更多内容）', kind: 'control' },
+  { id: 'control:scroll_up', description: '向上滚动一屏', kind: 'control' },
+  { id: 'control:back', description: '返回上一页（这条路走错了）', kind: 'control' },
+  { id: 'control:wait', description: '页面还在加载：等一会儿再观察一次', kind: 'control' },
+]
+
 const CLICKABLE_ROLES = new Set([
   'button', 'link', 'checkbox', 'radio', 'menuitem', 'menuitemcheckbox',
   'menuitemradio', 'tab', 'switch', 'option', 'combobox', 'textbox', 'searchbox',
@@ -84,6 +98,10 @@ export type TaskStatus =
   | 'needs_confirmation'
   /** 页面显示了错误（登录失败、校验错误…）：不是"没做完"，是"做错了"。 */
   | 'page_error'
+  /** 看起来做完了，但判断层不确定（goal_done 落在中间带）：调用方**先验证再继续**。 */
+  | 'likely_done'
+  /** 低置信度 + 前几名概率接近：**不给动作**，让调用方从候选里挑。 */
+  | 'ambiguous'
 
 export interface TaskCandidate {
   readonly id: string
@@ -145,6 +163,8 @@ export interface TaskResult {
     readonly estCostUsd: number
   }
   readonly timings: TaskTimings
+  /** 仅 `ambiguous` 时给出：前 3 名候选，供调用方用 browser_act 直接指定。 */
+  readonly candidates?: readonly { readonly id: string; readonly description: string }[]
   /**
    * 结束语不是"已完成"，而是"交回宿主校验"。这里给出**怎么验**的下一步提示
    * （三家参考实现都是这个分工：Jev 负责把页面推到目标附近，调用方独立验证）。
@@ -369,12 +389,7 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
     ? [...rank(inputs).slice(0, 20), ...rank(clicks).slice(0, MAX_CLICK_CANDIDATES)]
     : [...rank(clicks).slice(0, MAX_CLICK_CANDIDATES), ...rank(inputs).slice(0, 20)]
   ).slice(0, MAX_CLICK_CANDIDATES)
-  const controls: TaskCandidate[] = [
-    { id: 'control:scroll_down', description: '向下滚动一屏（看更多内容）', kind: 'control' },
-    { id: 'control:scroll_up', description: '向上滚动一屏', kind: 'control' },
-    { id: 'control:back', description: '返回上一页（这条路走错了）', kind: 'control' },
-    { id: 'control:wait', description: '页面还在加载：等一会儿再观察一次', kind: 'control' },
-  ]
+  const controls: TaskCandidate[] = [...CONTROL_CANDIDATES]
 
   return [...head, ...controls]
 }
@@ -663,7 +678,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const started = now()
         const page = await deps.browser.extract({ signal: deps.signal })
         timings.snapshotMs += now() - started
-        const candidates = candidatesFromExtracted(page.items, goal)
+        const candidates = [...candidatesFromExtracted(page.items, goal), ...CONTROL_CANDIDATES]
         // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
         // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
         // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
@@ -813,9 +828,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     let answers: Readonly<Record<string, JudgmentAnswer>>
     let askedCount = Math.min(candidates.length, JUDGE_OPTION_CAP)
     // 只有一个输入框时免判断——**但调用方给了多个值时不能免**：得让判断层选"用哪个值"。
+    // （控制项已保证 choices ≥2 个，所以这里不是为契约兜底，纯粹为省一次请求。）
     const singleInputBypass = actionable.length === 1 && actionable[0].kind === 'input' && (deps.inputs === undefined || Object.keys(deps.inputs).length === 1)
     if (singleInputBypass) {
-      // 唯一可操作元素就是输入框：不需要判断是哪个框，直接交回宿主（省一次请求）。
       const only = actionable[0]
       trace.push(`第 ${step} 步：页面上只有一个输入框（${only.id}）→ 免判断，交回宿主填内容`)
       answers = { action: { kind: 'choice', optionId: only.id, probabilities: { [only.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
@@ -902,6 +917,23 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         return finish('needs_verification', `goal_done=${goalDone.toFixed(2)}，确认 p=${confirm.probability.toFixed(2)}`, snapshot)
       }
       trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但独立确认没通过（p=${confirm.probability.toFixed(2)}）→ 不结束，继续推进`)
+    }
+    // **likely_done**（Ying-Kai-Liao/jev-browser）：goal_done 落在中间带 + 独立确认也不低 →
+    // 不要"猜着继续"（会乱点），也不要报"完成"（可能假阳性）：交回宿主先验证。
+    if (
+      goalDone !== undefined &&
+      goalDone >= LIKELY_DONE_FLOOR &&
+      goalDone < deps.goalThreshold &&
+      pendingField === undefined &&
+      steps.some((item) => item.executed)
+    ) {
+      const confirm = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
+      if (confirm.probability >= LIKELY_CONFIRM_FLOOR) {
+        trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)}（中间带）且确认 p=${confirm.probability.toFixed(2)} → likely_done，交回宿主验证`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:likely_done', executed: false, reason: 'likely_done', ...(goalDone === undefined ? {} : { goalDone }), confirm: confirm.probability })
+        return finish('likely_done', `goal_done=${goalDone.toFixed(2)}，确认 p=${confirm.probability.toFixed(2)}：看起来完成，需验证`, snapshot)
+      }
+      trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但确认只有 p=${confirm.probability.toFixed(2)} → 继续推进`)
     }
     // 页面报错（登录失败/校验错误/404）：这是"做错了"，不是"没做完"——交回宿主修输入，别盲目重试。
     if (pageError !== undefined && pageError >= PAGE_ERROR_THRESHOLD) {
@@ -1009,6 +1041,21 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       chosen = alternate
     }
     attempted.add(chosen.id)
+
+    // **ambiguous 门**（Ying-Kai-Liao/jev-browser）：置信度低且前几名概率接近 → 不猜，把候选交回宿主。
+    if (chosen.kind === 'click' && confidence !== undefined && confidence < AMBIGUOUS_CONFIDENCE && probabilities !== undefined) {
+      const ranked = Object.entries(probabilities).sort((left, right) => right[1] - left[1])
+      const gap = (ranked[0]?.[1] ?? 0) - (ranked[1]?.[1] ?? 0)
+      if (gap < AMBIGUOUS_GAP) {
+        const top = ranked.slice(0, 3).map(([id]) => {
+          const candidate = byId.get(id)
+          return { id, description: candidate?.description ?? id }
+        })
+        trace.push(`第 ${step} 步：判断层分不清（置信 ${confidence.toFixed(2)}，前两名差 ${gap.toFixed(2)}）→ ambiguous，交回候选`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:ambiguous', executed: false, reason: 'ambiguous', ...(goalDone === undefined ? {} : { goalDone }), ...(confidence === undefined ? {} : { confidence }) })
+        return { ...finish('ambiguous', `置信 ${confidence.toFixed(2)}、前两名差 ${gap.toFixed(2)}：请从候选里挑`, snapshot), candidates: top }
+      }
+    }
 
     // **不可逆门**（Ying-Kai-Liao/jev-browser 的 needs_confirmation）：下单/支付/发送/删除之前停下来。
     // 判断层已经用**同一个请求**回答了这个问题（不额外花钱），这里只在执行前做拦截。
@@ -1123,6 +1170,8 @@ const NEXT_HINTS: Readonly<Record<TaskStatus, string>> = {
   action_error: '动作执行失败：看 trace 里的错误信息；必要时用 browser_snapshot 重新观察页面。',
   needs_confirmation: '下一步可能不可逆（下单/支付/发送/删除）：确认用户确实要这么做，再带 allowIrreversible 重新调用。',
   page_error: '页面显示了错误：读 page_text 确认原因（例如密码错误、表单校验失败），修正后再继续，不要盲目重试。',
+  likely_done: '看起来已经完成但不十分确定：先用 browser_read / browser_snapshot 验证，再决定要不要继续。',
+  ambiguous: '判断层在几个候选之间分不清：看 candidates（前 3 名），用 browser_act 直接指定其中一个，或把 goal 写具体一点。',
 }
 
 /**
@@ -1268,6 +1317,13 @@ interface ValidationNumbers {
 /** 缩容的下限：再少就不足以表达"选哪个"了。 */
 /** 页面报错的判定阈值（低一点更安全：宁可停下来看一眼）。 */
 const PAGE_ERROR_THRESHOLD = 0.8
+/** goal_done 的"中间带"下界：低于它算没做完，高于 goalThreshold 算完成，中间算"看起来做完了"。 */
+const LIKELY_DONE_FLOOR = 0.6
+/** 中间带里独立确认到这个概率才算 likely_done。 */
+const LIKELY_CONFIRM_FLOOR = 0.6
+/** 置信度低于它 + 前两名概率差小于 AMBIGUOUS_GAP → 不给动作，交回候选。 */
+const AMBIGUOUS_CONFIDENCE = 0.45
+const AMBIGUOUS_GAP = 0.15
 /** 不可逆动作的判定阈值（宁可多问一次：误下单的代价远大于多一轮）。 */
 const IRREVERSIBLE_THRESHOLD = 0.7
 

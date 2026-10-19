@@ -731,6 +731,20 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 **仍不完美**：单字段完成后，判断层有时继续乱点（goal_done 被独立确认拦住），最后落在 `budget`；
 没有 `inputs` 时（调用方没给值）"待生效字段"守卫无从判断，goal_done 假阳性仍可能发生。
 
+### 4.5.2k `likely_done` / `ambiguous`：把"中间态"与"分不清"交回宿主
+
+来自 Ying-Kai-Liao/jev-browser 的状态分类。我们原来把这两个区间都归到"没完成 → 继续猜"，
+结果是**乱点**（真机：单字段填完后继续点无关按钮直到 budget）。
+
+| 状态 | 触发条件 | 交给调用方做什么 |
+|---|---|---|
+| `likely_done` | `0.6 ≤ goal_done < goalThreshold` + 独立确认 ≥ 0.6 + 至少执行过一步 + 没有待生效字段 | **先验证再继续**（不要当成"完成"，也不要继续乱点） |
+| `ambiguous` | 置信度 < 0.45 **且** 前两名概率差 < 0.15 | 结果里带 `candidates`（前 3 名），用 `browser_act` 直接指定 |
+
+同时修掉一个真 bug：**抽取路径只返回页面元素、不带控制项**，所以"只有一个按钮的页面"
+会发出只有 1 个选项的 `choice` → 契约拒绝（`invalid-request: 候选数 1 不在 2–255`）。
+现在 `CONTROL_CANDIDATES`（上滚/下滚/返回/等待）在两条路径里都常驻（实测：单按钮页 → 5 个候选）。
+
 ### 4.5.3 顺手修掉的两个真 bug（都是 e2e 跑出来的）
 
 1. **`open` 返回 ≠ 导航已提交**：真机（0.38.2）上紧接着取快照还是 `about:blank`，
