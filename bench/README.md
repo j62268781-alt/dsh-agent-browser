@@ -8,6 +8,9 @@ pnpm bench:tasks:offline            # 只跑本地 fixture（离线、可重复�
 node bench/run.mjs --tier base --only ti-dropdown,wiki-link
 node bench/run.mjs --tier hard --verbose
 
+# 选 judge 连接（Settings → 决策 里可以配多条；不传就用第一条）
+node bench/run.mjs --connection typesafe
+
 # 复用浏览器（默认 --session default：接你已经开着的那扇窗口，不冷启动）
 node bench/run.mjs --session dsh-ab-bench     # 另起/复用一个具名会话
 node bench/run.mjs --cdp 9222                 # 接一个指定 CDP 端口

@@ -44,7 +44,15 @@ export const MAX_CLICK_CANDIDATES = 40
  * 投票（3/5 次采样取多数）在实测里没有收益——单次已经全对，错误是**系统性**的
  * （由选项集决定，不是随机抖动），多采只会 3–5 倍成本。所以默认不投票。
  */
-export const JUDGE_OPTION_CAP = 10
+/**
+ * 一次判断最多送多少个候选。
+ *
+ * 默认 10 是**预览模型**上量的（它在 40 个候选时 Σp 不归一，整批被拒）；
+ * 真 jev-1.13 在 10/16/24/40 上 **0 次不合法**，且稠密干扰页上 40 个候选反而更准。
+ * 环境变量 `JEV_OPTION_CAP` 只用于 bench 对照实验，正式值等实验结论再定。
+ */
+export const JUDGE_OPTION_CAP =
+  Number(process.env.JEV_OPTION_CAP ?? '') > 1 ? Number(process.env.JEV_OPTION_CAP) : 10
 
 /**
  * 状态里快照文本的上限（字符）。状态随**每一批问题**重复发送，是成本的主要变量

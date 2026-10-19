@@ -41,6 +41,8 @@ const taskTimeoutMs = Number(arg('task-timeout', '180000'))
 // **复用浏览器**：默认接一个已经存在的会话（用户开着的那扇窗口），不再自己冷启动。
 // 想另起一个隔离会话时显式 --session <name>；想跑完关掉时加 --close。
 const session = arg('session', 'default')
+// 用哪条 judgment 连接（Settings → 决策 里配置的多条连接可以按名字选）。
+const connectionName = arg('connection', undefined)
 const connect = arg('connect', undefined)
 const closeAtEnd = flag('close')
 const out = resolve(arg('out', resolve(HERE, 'results', `run-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`)))
@@ -58,7 +60,7 @@ const browser = new AgentBrowser({
   ],
   timeoutMs: 60_000,
 })
-const { judge, describe } = await createLiveJudge(config.judgment.purpose)
+const { judge, describe } = await createLiveJudge(config.judgment.purpose, connectionName)
 const judgeOptions = {
   purpose: config.judgment.purpose,
   goalThreshold: 0.85,
