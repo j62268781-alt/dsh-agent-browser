@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, diffCandidates, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, soleValueFor, stateOf } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, candidatesFromExtracted, candidatesOf, diffCandidates, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, stateOf } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -278,4 +278,32 @@ test('抽取上限截断会回传 truncated', () => {
   const page = parseExtracted(JSON.stringify({ items: [[0, 'button', 'A', 0]], text: '', title: '', url: '', truncated: true }))
   assert.equal(page.truncated, true)
   assert.equal(parseExtracted(JSON.stringify({ items: [], text: '', title: '', url: '' })).truncated, false)
+})
+
+test('抽取解析：select 选项与所在行上下文（near）', () => {
+  const page = parseExtracted(JSON.stringify({
+    items: [
+      [0, 'combobox', 'Cabin', 0, '当前值: economy', [['Economy', 'economy'], ['Business', 'business']], ''],
+      [1, 'a', 'comments', 0, '链接: news.ycombinator.com/newcomments', null, ''],
+      [2, 'a', '42 comments', 0, '链接: news.ycombinator.com/item', null, '123 points by someone 2 hours ago | 42 comments'],
+    ],
+    text: '', title: '', url: '',
+  }))
+  assert.deepEqual(page.items[0].options, [['Economy', 'economy'], ['Business', 'business']])
+  assert.equal(page.items[2].near.includes('123 points'), true)
+  const candidates = candidatesFromExtracted(page.items, 'open the comments of the top story')
+  assert.equal(candidates.find((candidate) => candidate.name === 'Cabin').options?.length, 2)
+  // 导航条那条没有 near，故事那条的 near 必须进描述（判断层靠它区分同名链接）。
+  const story = candidates.find((candidate) => candidate.name === '42 comments')
+  assert.match(story.description, /附近: 123 points/)
+})
+
+test('select 二阶段问题：选项封顶 + 始终带 none 兜底', () => {
+  const options = Array.from({ length: 30 }, (_, index) => ({ label: `Option ${index}`, value: `v${index}` }))
+  const question = selectOptionQuestion('Cabin', 'choose Business', options)
+  assert.equal(question.kind, 'choice')
+  assert.equal(Object.keys(question.options).length, SELECT_OPTION_CAP + 1)
+  assert.equal(question.options.none !== undefined, true)
+  assert.equal(question.options.o1, 'Option 1')
+  assert.match(question.prompt, /Cabin/)
 })

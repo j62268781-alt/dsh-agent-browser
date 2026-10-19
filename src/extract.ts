@@ -82,7 +82,12 @@ const SCRIPT_LINES = [
   "    } else if (tag === 'a' && el.href) {",
   "      try { const u = new URL(el.href); extra = '链接: ' + u.host + u.pathname.slice(0, 40) } catch (e) { extra = '' }",
   "    }",
-  "    out.push([idx, role, name, covered, extra])",
+  "    let options = null",
+  "    if (tag === 'select') { try { options = [...el.options].filter(function (o) { return o.value !== '' && !o.disabled }).slice(0, 30).map(function (o) { return [String(o.text || o.value).trim().slice(0, 60), String(o.value).slice(0, 60)] }) } catch (err) { options = null } }",
+  // 元素**所在行/容器的文本**：判断层靠它区分"导航条的 comments"和"这条 story 的 42 comments"。
+  "    let near = ''",
+  "    try { var parentText = el.parentElement ? String(el.parentElement.innerText || '') : ''; near = parentText.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80) } catch (err) { near = '' }",
+  "    out.push([idx, role, name, covered, extra, options, near])",
   '    idx += 1',
   '    if (out.length >= 300) break',
   '  }',
@@ -118,6 +123,10 @@ export interface ExtractedItem {
   readonly covered: boolean
   /** 当前状态摘要：已勾选/未勾选、当前值、已有内容、链接目标（给判断层的"现状"）。 */
   readonly state?: string
+  /** 原生 select 的选项（label, value），最多 30 个。 */
+  readonly options?: readonly (readonly [string, string])[]
+  /** 元素所在行/容器的文本（区分"导航条同名链接"和"当前条目里的链接"）。 */
+  readonly near?: string
 }
 
 /**
@@ -164,13 +173,15 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra] = entry as [unknown, unknown, unknown, unknown, unknown]
+    const [index, role, name, covered, extra, options, near] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown]
     items.push({
       index: Number(index),
       role: String(role ?? ''),
       name: String(name ?? ''),
       covered: Number(covered) === 1,
       state: String(extra ?? ''),
+      ...(Array.isArray(options) ? { options: options.map((option) => [String((option as unknown[])[0] ?? ''), String((option as unknown[])[1] ?? '')] as const) } : {}),
+      ...(typeof near === 'string' && near !== '' ? { near } : {}),
     })
   }
   return items
