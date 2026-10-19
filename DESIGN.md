@@ -773,39 +773,45 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 
 **首轮结果**（2026-10-19，`decision-model-preview`，复用同一标签）：
 
-| 套件 | 结果 | 说明 |
+| 套件 | 首轮 | P0 之后 |
 |---|---|---|
-| offline（3 条） | **2/3**，0 false-done | jk-login 2 步 4 次判断；jk-select 1 步 11 次；fixture-hotel 5 步 31 次（卡在 submit/checkbox 两步） |
-| live 子集（6 条） | **1/6**，1 false-done | hn-comments 把导航条 "comments" 当成 top story 评论页（goal_done .78 + confirm .62 → likely_done，URL 却是 /newcomments） |
+| offline（3 条起，现 5 条） | 2/3，0 false-done | **4/5**，0 false-done（fixture-lazy 仍卡住，见下） |
+| live 子集（6 条） | 1/6，1 false-done | 网络抖动中：ti-inputs ✓、ti-checkboxes ✓（一次）、其余待复测 |
 
-**跑出来的真 bug（已修）**
+**P0 改动（按 bench 的失败逐条修，全部有单测）**
 
-1. **`stripBoundaries` 在含连字符的 origin 上失效**：`[^-]*` 遇到 `origin=file:///…/dsh-agent-browser/…`
-   就在 "dsh-" 处停住，边界整行去不掉 → `eval` 结果解析失败。改 `[^\n]*`，加单测。
-2. **密码框的值进了判断层状态**：extract 把 `input.value` 写成"已有内容"，密码原文随 state 发出去
-   （jk-login fixture 暴露）。改为 `●●●` + `stateOf().redacted`；状态守卫/待生效/已填记账都按
-   "**填过但值不可见**"处理。
-3. **纯填值目标没有收尾门**：goal_done 在 0.45–0.84 之间徘徊，而独立确认问的是**可见正文**——
-   输入框里的值根本不在正文里，结构性看不见，于是循环继续乱点（点到提交/别的按钮）。
-   新增确定性 `inputsApplied()`：调用方给的值**全部生效**且目标不含后续动作动词 → needs_verification。
-   jk-login 从 9 次判断降到 4 次。
-4. **无 label 的唯一输入框匹配不上 key**：`/inputs` 的 `<input type=number>` 名字为空，
-   "填 42" 也要交回宿主。新增 `soleValueFor()`：**唯一输入框 + 唯一值**确定性绑定。
+1. **`last_change` diff + `done_change`**（ykl 的 `pageDiff`/`task.last_change`）：把"上一步实际改变了什么"
+   （新增/移除控件、状态变化、正文/URL 变化）塞进 state，并在**同一批请求**里加一个 `done_change` noul；
+   有 diff 时 `goal_done = max(goal_done, done_change)`。fixture-hotel 的 submit 步不再卡死
+   （整条任务 31 次判断 → **13 次**）。
+2. **可见正文指纹 `textDigest`**：抽取路径的 `snapshot` 只有"控件名+状态"，像 `"Loading..."`
+   这种短正文进不去 → "点了开始加载"被判成"页面没变"。现在 `stateChanged` 也比正文指纹，
+   短正文（<40 字符）不再被替换成候选列表。
+3. **自适应 wait + 加载门**：`control:wait` 改为轮询到状态变化（加载页最多 6s）；
+   页面显示 `Loading.../加载中` 时**确定性地先等**，不再让判断层重复点同一个按钮。
+4. **抽取上限 80 → 300，且"离屏 ≠ 被遮挡"**：以前第 81 个元素之后根本不进候选；
+   离屏元素又被 hit-test 误标成 covered 全部丢弃（fixture-dense 251 个元素只剩 37 个候选、目标不可见）。
+   现在离屏保留（CLI 点击会自动滚进视图），抽取路径也走同一套 **40 候选预算 + goal 相关性排序**。
+5. **state.snapshot 只用候选池合成**（不再塞整页 250+ 元素）：判断层在 250 个几乎一样的链接里选 10 个，
+   置信 0.16 → ambiguous；改成"候选池就是该看的那部分页面"后，fixture-dense **3 次判断通过**。
+6. **长文本 head+tail 截断**：结果往往出现在页面**末尾**（点开条目后追加的正文），只截开头会让确认问句永远看不到它。
+7. **确认问句区分"结果型目标"与"动作型目标"**：`"直到出现/显示/看到 X"` 必须看到结果；
+   只有"提交/点击这个按钮"这类目标才允许"动作已执行即达成"。（fixture-lazy 的 0.94 假阳性就是这句话修出来的。）
 
 **仍失败（已知缺口，按 ROI 排序）**
 
 | 现象 | 任务 | 根因 | 对应待办 |
 |---|---|---|---|
-| submit 后页面无变化 → no_progress | fixture-hotel 第 2 步 | 判断层不知道"刚才那一下改变了什么" | **`last_change` diff** |
-| native select 无调用方值 → input_required | ti-dropdown | 只有 values→option 一条路，没有"判断层按 label 选 option" | select 二阶段 |
-| 加载页等 800ms 不够 | ti-dynamic-loading | wait 固定时长，不等条件 | wait-for-text |
-| 稠密页 11 次判断后 budget | wiki-link（Wikipedia） | 抽取按 DOM 序取前 80 个元素 | 两阶段选择 |
-| 目标词命中导航条 → 假阳性 | hn-comments | 候选缺"所在上下文"（near） | 候选上下文 |
+| 加载完成后判断层不认结果、继续重按 | fixture-lazy | 极简页面上 goal_done 只有 0.35–0.42 | 阈值/提示词校准（或等更强 judge） |
+| native select 无调用方值 → input_required | ti-dropdown | 只有 values→option 一条路 | **select 二阶段**（ykl/jkudish 都实现了） |
+| 稠密页仍 ambiguous / budget | wiki-link（Wikipedia） | 候选上下文不足 + 真实页面噪声 | 两阶段 group→element |
+| 目标词命中导航条 → 假阳性 | hn-comments | 候选缺"所在上下文"（near） | **候选 near 上下文** |
 | 同一代码两种结果 | ti-checkboxes | 判断层选择不稳定 | 采样/阈值复测 |
 
-> 这张表就是"我们这套体系哪里强、哪里弱"的第一次可复现回答：
-> **强**：多字段表单填值（有 inputs 时一次调用填完、确定性收尾）、复选框状态守卫；
-> **弱**：页面无变化时的完成判定、稠密页候选覆盖、无值 select、加载等待。
+> 这张表就是"我们这套体系哪里强、哪里弱"的可复现回答（P0 前）：
+> **强**：多字段表单填值（有 inputs 时一次调用填完、确定性收尾）、复选框状态守卫、
+> 稠密页（抽到 300 + 排序后 40 候选）、提交型动作；
+> **弱**：极简页/加载页的完成判定、无值 select、真实大页的候选上下文。
 
 ## 5. 决策形态（v2 定稿）
 

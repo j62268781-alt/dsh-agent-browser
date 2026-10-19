@@ -24,7 +24,7 @@ node bench/run.mjs --task-timeout 120000      # 单任务看门狗（默认 180s
 
 | tier | 来源 | 特点 |
 |---|---|---|
-| `offline` | `browser-use/jev-ultrafast` 的酒店 fixture；`jkudish/jev-browser` 的 login/select fixture | 本地 HTML，**不依赖网络**，适合回归 |
+| `offline` | `browser-use/jev-ultrafast` 的酒店 fixture；`jkudish/jev-browser` 的 login/select fixture；自建 `lazy.html`（加载页）/ `dense.html`（251 元素稠密页） | 本地 HTML，**不依赖网络**，适合回归 |
 | `base` | `Ying-Kai-Liao/jev-browser` 的 `bench/tasks.mjs`（25 条） | 真实站点，每条 step 带页面内 JS 断言 |
 | `hard` | 同上（iframe / shadow DOM / react-select / 新标签页 / 滚动 / 拖拽 / 负例） | 已知难点，用来暴露能力边界 |
 | `guard` | 同上 | 不可逆动作暂停：登录/提交不该停、Finish 必须停 |
@@ -56,3 +56,12 @@ node bench/run.mjs --task-timeout 120000      # 单任务看门狗（默认 180s
 - **登录类任务用公开测试站点的公开账号**（tomsmith / standard_user），不含真实凭据。
 - 断言是我们唯一承认的 ground truth；断言写弱了会低估错误（见 `fixture-hotel`
   最初用 `innerText.includes('Casa Flora')`，而卡片列表里本来就有这行字——已收紧成 hash）。
+
+## P0 回归（2026-10-19）
+
+`bench/fixtures/lazy.html` 与 `dense.html` 是为首轮失败模式定制的回归页：
+
+- `fixture-dense`：目标链接在第 251 个元素、且首屏之外 → 验证"抽取 300 + 离屏保留 + 候选预算"；
+- `fixture-lazy`：点 Start 后 3 秒才出结果 → 验证"自适应 wait + 加载门"。
+  **仍失败**：极简页上判断层不认结果（goal_done 0.35），会把 Start 再点一次；这是已知缺口，
+  保留为 failing test，别为了让数字好看而删。
