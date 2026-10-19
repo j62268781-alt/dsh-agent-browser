@@ -813,6 +813,26 @@ agent-browser batch --bail 'open X' 'wait --load load' 'snapshot -i'
 **"目标词命中同名导航"和"判断层稳定性"是模型能力问题，不是循环逻辑问题**——
 换更强的 judge（或给 judge 做 few-shot 校准）比继续加门更划算；先别在逻辑里堆特例。
 
+**全量基线（`baseline-3`，2026-10-19）**
+
+41 条任务（`context-menu`/`upload` 跳过）= **13/39 正确（33%）**，7 false-done，1 missed，
+230 次判断、317k tokens、191s。按类别：widget 2/2、negative 4/5、dynamic 1/3、form 1/4、
+interaction 1/4、large-page 1/4、e2e 0/2、iframe 0/2、shadow-dom 0/1、actions 0/2、spa 0/2。
+
+跑基线前先修了三个**测量卫生**问题（否则数字没意义）：
+1. **JS 对话框会毒化整个会话**：一个 confirm 没处理，后面 30 条任务全部 `open` 失败。
+   现在循环每步先查 `dialog status`，按目标 accept/dismiss（`ti-js-confirm` 因此通过）。
+2. **共用标签偶发"open 成功但还停在上一个任务页"**：runner 加 `openVerified`（open 后核对 URL，不符重试）。
+3. **网络失败与逻辑失败分开计**（`outcome=network`），不让机房网络污染正确率。
+
+同一轮还补了三个逻辑缺口（都是基线暴露的）：
+- **键盘动作**：新增 `control:press_enter` 候选（todomvc 新建、搜索框提交都需要 Enter；
+  之前填完只能干等 → false-done）。
+- **"填完 ≠ 完成"门**：目标带提交/搜索/添加等后续动词、且本轮填过值时，必须看到后续动作生效
+  （跳转/新增元素/正文变化）才允许停。
+- **字段名归一 + 单值绑定**：`first_name` ↔ "First Name"；调用方只给一个值时直接绑判断层选中的字段
+  （ykl 的语义：值由调用方给、字段由判断层按 goal 选）。
+
 **仍失败（已知缺口，按 ROI 排序）**
 
 | 现象 | 任务 | 根因 | 对应待办 |

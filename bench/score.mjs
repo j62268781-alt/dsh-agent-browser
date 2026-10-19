@@ -57,6 +57,7 @@ export function scoreTask(record, plannedSteps, expect = 'pass') {
 export function summarize(records) {
   const evaluated = records.filter((record) => record.outcome === 'evaluated')
   const skipped = records.filter((record) => record.outcome === 'skipped')
+  const network = records.filter((record) => record.outcome === 'network')
   const statuses = {}
   for (const record of evaluated) for (const step of record.steps) statuses[step.status] = (statuses[step.status] ?? 0) + 1
   const categories = {}
@@ -68,6 +69,7 @@ export function summarize(records) {
   return {
     tasks: evaluated.length,
     skipped: skipped.length,
+    network: network.length,
     correct: evaluated.filter((record) => record.correct).length,
     falseDone: evaluated.filter((record) => record.falseDone).length,
     missed: evaluated.filter((record) => record.missed).length,

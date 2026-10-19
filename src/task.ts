@@ -81,6 +81,7 @@ const CONTROL_CANDIDATES: readonly TaskCandidate[] = [
   { id: 'control:scroll_up', description: '向上滚动一屏', kind: 'control' },
   { id: 'control:back', description: '返回上一页（这条路走错了）', kind: 'control' },
   { id: 'control:wait', description: '页面还在加载：等一会儿再观察一次', kind: 'control' },
+  { id: 'control:press_enter', description: '按 Enter 键（提交刚填的输入框 / 确认搜索或新建）', kind: 'control' },
 ]
 
 const CLICKABLE_ROLES = new Set([
@@ -383,13 +384,23 @@ export function soleValueFor(
 /** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
 export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Record<string, string>>): string | undefined {
   if (inputs === undefined) return undefined
-  const name = (candidate.name ?? '').trim().toLowerCase()
+  const name = fieldName(candidate.name ?? '')
   if (name === '') return undefined
   for (const [key, value] of Object.entries(inputs)) {
-    const normalized = key.trim().toLowerCase()
+    const normalized = fieldName(key)
+    if (normalized === '' ) continue
     if (normalized === name || name.includes(normalized) || normalized.includes(name)) return value
   }
   return undefined
+}
+
+/**
+ * 字段名归一：小写 + 下划线/连字符/多余空白都当空格。
+ * 真机 bench：调用方给的 key 是 `first_name`，页面 label 是 "First Name"，
+ * 只做小写比较永远匹配不上 → 明明给了值还要 input_required（saucedemo-fine）。
+ */
+export function fieldName(value: string): string {
+  return value.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
 /** 二阶段选选项：返回要执行的值（value 优先，空 value 用 label）。 */
@@ -737,6 +748,10 @@ export type LastChange = Record<string, boolean | string[]>
 const DIFF_ITEM_CAP = 4
 
 function diffKey(candidate: TaskCandidate): string {
+  // 输入框的"名字"会随填入的值变化（extract 的名字回退到 el.value）→ 用名字当身份会把
+  // "同一个字段被填了"误报成"旧元素消失 + 新元素出现"（真机 bench todomvc：填完 buy milk 后
+  // diff 出现 added/removed，"填完还要提交"的门因此失效）。输入框一律用动作句柄当身份。
+  if (candidate.kind === 'input') return `input\u0000${candidate.ref ?? candidate.role ?? ''}`
   return `${candidate.role ?? ''}\u0000${(candidate.name ?? '').replace(/\s+/g, ' ').trim()}`
 }
 
@@ -854,6 +869,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
   for (let step = 1; step <= deps.maxSteps; step += 1) {
     if (deps.signal.aborted) return finish('budget', 'cancelled', last)
+
+    // 0) **卡住的 JS 对话框**（alert/confirm/prompt）：它会阻塞后续每条命令（真机 bench：
+    //    一个 confirm 没处理，后面 30 条任务全部 open 失败）。先查状态，再按目标决定接受/关闭。
+    const blocking = await dialogBlocker(deps.browser, deps.signal)
+    if (blocking !== undefined) {
+      const accept = /(accept|confirm|ok|yes|确定|确认|同意|接受)/i.test(goal)
+      await deps.browser.run(['dialog', accept ? 'accept' : 'dismiss'], { signal: deps.signal }).catch(() => {})
+      trace.push('第 ' + step + ' 步：页面有 JS 对话框（"' + blocking + '"）→ 已' + (accept ? '接受' : '关闭'))
+      continue
+    }
 
     // 1) 永远用**刚取**的树做决策；另外取一次**可见正文**——
     //    goal_done 只认这个字段（无障碍树里的控件名/历史会被当成"看起来完成了"）。
@@ -1022,6 +1047,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       continue
     }
     // 独立确认带上"上一步实际做了什么"：动作型目标（提交/点击）不能只靠正文判。
+    // **"填完 ≠ 完成"**：目标里带提交/搜索/添加这类后续动作、且本轮确实填过值时，
+    // 必须有"后续动作生效"的证据（跳转 / 新增元素 / 正文变化）才允许停。
+    // 真机 bench：todomvc "Add a todo" 填完就 likely_done、webform "... then submit" 没提交也报完成。
+    const filledThisRun = steps.some((item) => item.reason === 'filled_from_inputs')
+    const followUpNeeded = FOLLOW_UP_VERBS.test(goal) && filledThisRun
+    const followUpEvidence =
+      lastChange !== undefined &&
+      (lastChange.url_changed === true || lastChange.added !== undefined || lastChange.removed !== undefined || lastChange.text_changed === true)
+    const followUpPending = followUpNeeded && !followUpEvidence
+
     const confirmWithContext = (): Promise<{ confirmed: boolean; probability: number }> => {
       const lastExecutedStep = [...steps].reverse().find((item) => item.executed)
       const lastDescription = lastExecutedStep === undefined ? undefined : candidates.find((candidate) => candidate.id === lastExecutedStep.action)?.description
@@ -1223,7 +1258,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:inputs_applied', executed: false, reason: 'inputs_applied', ...(goalDone === undefined ? {} : { goalDone }) })
       return finish('needs_verification', '调用方给的值都已生效', snapshot)
     }
-    if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField === undefined) {
+    if (followUpPending) trace.push(`第 ${step} 步：目标是「填完还要${goal.match(FOLLOW_UP_VERBS)?.[0] ?? '继续'}」→ 还没有后续动作的证据，不按完成收尾`)
+    if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField === undefined && !followUpPending) {
       const confirm = await confirmWithContext()
       if (confirm.confirmed) {
         trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} ≥ ${deps.goalThreshold}，独立确认 p=${confirm.probability.toFixed(2)} → 停，交回宿主校验`)
@@ -1239,6 +1275,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       goalDone >= LIKELY_DONE_FLOOR &&
       goalDone < deps.goalThreshold &&
       pendingField === undefined &&
+      !followUpPending &&
       steps.some((item) => item.executed)
     ) {
       const confirm = await confirmWithContext()
@@ -1289,6 +1326,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           given = deps.inputs?.[key]
           if (given !== undefined) trace.push(`第 ${step} 步：判断层选了调用方的值「${key}」→ 填进 ${chosen.name ?? chosen.id}`)
         }
+      }
+      // 调用方**只给了一个值**、判断层又已经选定了字段 → 直接绑（ykl 的语义：
+      // 值由调用方给、字段由判断层按 goal 选；key 只是标签，不必和页面 label 同名）。
+      // 真机 bench（webform-fine / saucedemo-fine）：每步只给 {text: ...}，按名字匹配永远失败。
+      if (given === undefined) {
+        const entries = Object.entries(deps.inputs ?? {})
+        if (entries.length === 1) given = entries[0][1]
       }
       // 还是没值，但这个字段是原生 select → **二阶段**让判断层在选项里选（ykl/jkudish 的做法）。
       if (given === undefined) {
@@ -1615,6 +1659,19 @@ async function waitForPageChange(browser: AgentBrowser, signal: AbortSignal): Pr
   if (!loading) await browser.run(['wait', '300'], { signal }).catch(() => {})
 }
 
+/** 页面是否有阻塞的 JS 对话框：有就返回它的文案（dialog status 在对话框打开时也能应答）。 */
+async function dialogBlocker(browser: AgentBrowser, signal: AbortSignal): Promise<string | undefined> {
+  try {
+    const status = stripContentBoundaries(await browser.run(['dialog', 'status'], { signal }))
+    if (/No dialog/i.test(status)) return undefined
+    const match = /dialog is open:\s*"([^"]*)"/i.exec(status)
+    return match?.[1] ?? 'unknown'
+  } catch {
+    // 没有对话框/不支持时也可能报错：当作没有，不阻断主流程。
+    return undefined
+  }
+}
+
 async function execute(
   browser: AgentBrowser,
   candidate: TaskCandidate,
@@ -1639,6 +1696,10 @@ async function execute(
     case 'control:scroll_up': await browser.act('scroll', 'body', { direction: 'up' }, { signal }); return
     case 'control:back': await browser.run(['back'], { signal }); return
     case 'control:wait': await waitForPageChange(browser, signal); return
+    case 'control:press_enter':
+      // 焦点在刚填过的输入框上时，Enter 就是"提交/确认"（todomvc 新建、搜索框提交）。
+      await browser.act('press', 'body', { value: 'Enter' }, { signal })
+      return
     default: throw new Error(`候选 ${candidate.id} 没有对应的执行分支`)
   }
 }

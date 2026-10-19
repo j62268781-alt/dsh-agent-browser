@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, candidatesFromExtracted, candidatesOf, diffCandidates, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, stateOf } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, stateOf } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -48,7 +48,7 @@ test('候选枚举：确定性、无名元素保留（真实站点常见）、�
   assert.deepEqual(ids, [
     'click:e1', 'click:e3', 'click:e4',  // 可点角色，按快照顺序（e3 无名也要保留）
     'input:e2',                          // textbox → input（循环里交回宿主）
-    'control:scroll_down', 'control:scroll_up', 'control:back', 'control:wait',
+    'control:scroll_down', 'control:scroll_up', 'control:back', 'control:wait', 'control:press_enter',
   ])
   // 无名元素用"无名称的角色 + ref"兜底描述，不猜语义
   const unnamed = candidates.find((candidate) => candidate.id === 'click:e3')
@@ -306,4 +306,13 @@ test('select 二阶段问题：选项封顶 + 始终带 none 兜底', () => {
   assert.equal(question.options.none !== undefined, true)
   assert.equal(question.options.o1, 'Option 1')
   assert.match(question.prompt, /Cabin/)
+})
+
+test('字段名归一：下划线/连字符/大小写都算同一个字段', () => {
+  assert.equal(fieldName('First_Name'), 'first name')
+  assert.equal(fieldName('first-name'), 'first name')
+  assert.equal(fieldName('  First   Name '), 'first name')
+  const candidate = { id: 'input:1', description: '', kind: 'input', role: 'textbox', name: 'First Name' }
+  assert.equal(matchInputValue(candidate, { first_name: 'Ada' }), 'Ada')
+  assert.equal(matchInputValue(candidate, { postal_code: '10001' }), undefined)
 })

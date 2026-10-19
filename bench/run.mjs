@@ -67,6 +67,26 @@ const judgeOptions = {
 console.log(`judge: ${describe}`)
 console.log(`tasks: ${tasks.length}（tier=${tierNames.join(',')}），maxSteps=${maxStepsCap}\n`)
 
+/**
+ * 打开并**核实**地址：共用同一个标签时，偶发 "open 返回成功但其实还停在上一个任务页"，
+ * 会让后面的任务在错误的页面上跑（baseline-2 里 ti-entry-ad 跑到了 todomvc 页）。
+ */
+async function openVerified(url) {
+  let last = ''
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await browser.open(url)
+    last = stripBoundaries(await browser.run(['get', 'url'])).trim()
+    try {
+      const want = new URL(url)
+      const got = new URL(last)
+      if (got.host === want.host && (want.pathname === '/' || got.pathname.startsWith(want.pathname))) return
+    } catch {
+      /* 解析失败就走重试 */
+    }
+  }
+  throw new Error(`open 后地址不符：想要 ${url}，实际 ${last.slice(0, 120)}`)
+}
+
 /** `agent-browser eval` 的输出外面有内容边界，且结果常是 JSON 字符串。 */
 async function evaluate(expression) {
   const script = `JSON.stringify((${expression})())`
@@ -100,7 +120,7 @@ for (const [index, task] of tasks.entries()) {
   // （一次冷启动 2–4s，25 条任务就是一分多钟的纯浪费）。
   const watchdog = setTimeout(() => abort.abort(new Error('task timeout')), taskTimeoutMs)
   try {
-    await browser.open(task.url)
+    await openVerified(task.url)
     for (const step of task.steps) {
       const stepStarted = Date.now()
       let result
@@ -149,7 +169,14 @@ for (const [index, task] of tasks.entries()) {
       if (truth === false && (result.status === 'needs_verification' || result.status === 'likely_done')) break
     }
   } catch (error) {
-    record.error = error instanceof Error ? error.message.slice(0, 500) : String(error)
+    const message = error instanceof Error ? error.message : String(error)
+    record.error = message.slice(0, 500)
+    // 网络类失败（连不上站点）不能算"逻辑失败"：单独一档，否则基线会被机房网络污染。
+    if (/(ERR_CONNECTION|ERR_TIMED_OUT|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|net::ERR_|Navigation failed)/i.test(message)) record.network = true
+    // 卡住的 JS dialog（confirm/prompt）会让后续每条命令都失败：先尝试关掉/接受它。
+    if (/(dialog|JavaScript dialog|被取消|command was cancelled)/i.test(message)) {
+      await browser.run(['dialog', 'dismiss']).catch(() => {})
+    }
   } finally {
     clearTimeout(watchdog)
   }
@@ -158,7 +185,7 @@ for (const [index, task] of tasks.entries()) {
   record.calls = record.steps.reduce((total, step) => total + (step.calls ?? 0), 0)
   record.tokens = record.steps.reduce((total, step) => total + (step.tokens ?? 0), 0)
   record.askMs = record.steps.reduce((total, step) => total + (step.askMs ?? 0), 0)
-  record.outcome = 'evaluated'
+  record.outcome = record.network === true ? 'network' : 'evaluated'
   Object.assign(record, scoreTask(record, task.steps.length, record.expect))
 
   const last = record.steps.at(-1)

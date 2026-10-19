@@ -57,6 +57,8 @@ function fakePage(elements) {
       element?.onClick?.(state)
     },
     async run(argv) {
+      // 对话框探测是基础设施（每步一次），不算"动作"，也不让断言数组被它污染。
+      if (argv[0] === 'dialog') return '✓ No dialog is currently open'
       state.acts.push(argv.join(' '))
     },
   }

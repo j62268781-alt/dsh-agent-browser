@@ -13,6 +13,9 @@ node bench/run.mjs --session dsh-ab-bench     # 另起/复用一个具名会话
 node bench/run.mjs --cdp 9222                 # 接一个指定 CDP 端口
 node bench/run.mjs --close                    # 跑完关掉（默认不关，下次直接复用）
 node bench/run.mjs --task-timeout 120000      # 单任务看门狗（默认 180s）
+
+# 把结果打成可读的账（总览 / 按类别 / 失败清单）
+node bench/report.mjs bench/results/baseline-3.json
 ```
 
 结果写到 `bench/results/run-*.json`（含每个 step 的状态、断言真值、调用数、tokens、耗时）；

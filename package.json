@@ -58,7 +58,8 @@
     "bench": "node scripts/bench.mjs",
     "bench:vote": "node scripts/bench-vote.mjs",
     "bench:tasks": "node bench/run.mjs",
-    "bench:tasks:offline": "node bench/run.mjs --tier offline"
+    "bench:tasks:offline": "node bench/run.mjs --tier offline",
+    "bench:report": "node bench/report.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.4 <5.0.0",
