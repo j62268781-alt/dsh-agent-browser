@@ -1817,6 +1817,14 @@ async function execute(
       await browser.act(/^(1|true|yes|on|y|是)$/i.test(given.trim()) ? 'check' : 'uncheck', candidate.ref, {}, { signal })
       return
     }
+    // **先滚进视口再点**：元素在折叠线以下时，CDP click 会返回成功但什么都没发生
+    // （真机 wiki-link：Bletchley Park 链接在 y=807，click 返回 ok、页面纹丝不动，
+    //  循环在原地打转直到 budget；scrollintoview 之后同样的 click 就能跳转）。
+    // 只对**页面内抽取**路径（`[data-dsh-idx="N"]`）做这一步：快照路径的元素由 CLI 自己处理可见性，
+    // 而且单测里的假浏览器用 `e1` 这种 ref，不该多一次调用。
+    if (candidate.ref.startsWith('[')) {
+      await browser.act('scrollintoview', candidate.ref, {}, { signal }).catch(() => {})
+    }
     // ref 已经是**完整目标**：`@e12`（快照路径）或 `[data-dsh-idx="7"]`（抽取路径）。
     await browser.act('click', candidate.ref, {}, { signal })
     return
