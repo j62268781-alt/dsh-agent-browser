@@ -127,6 +127,8 @@ export interface ExtractedItem {
   readonly options?: readonly (readonly [string, string])[]
   /** 元素所在行/容器的文本（区分"导航条同名链接"和"当前条目里的链接"）。 */
   readonly near?: string
+  /** 原始标签名（小写）：`a`/`button` 可以直接调用 `el.click()`，其余走真实鼠标事件。 */
+  readonly tag?: string
 }
 
 /**
@@ -173,7 +175,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra, options, near] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown]
+    const [index, role, name, covered, extra, options, near, tag] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?]
     items.push({
       index: Number(index),
       role: String(role ?? ''),
@@ -182,6 +184,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
       state: String(extra ?? ''),
       ...(Array.isArray(options) ? { options: options.map((option) => [String((option as unknown[])[0] ?? ''), String((option as unknown[])[1] ?? '')] as const) } : {}),
       ...(typeof near === 'string' && near !== '' ? { near } : {}),
+      ...(typeof tag === 'string' && tag !== '' ? { tag } : {}),
     })
   }
   return items

@@ -134,6 +134,8 @@ export interface TaskCandidate {
   readonly options?: readonly { readonly label: string; readonly value: string }[]
   /** 元素所在行/容器的文本：区分"导航条同名链接"与"当前条目里的链接"（ykl 的 near）。 */
   readonly near?: string
+  /** 原始标签名（小写）：a/button 可以直接 `el.click()`，不依赖视口坐标。 */
+  readonly tag?: string
 }
 
 export interface TaskStep {
@@ -263,6 +265,7 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
       state: item.state,
       ...(item.options === undefined ? {} : { options: item.options.map(([optionLabel, optionValue]) => ({ label: optionLabel, value: optionValue })) }),
       ...(item.near === undefined || item.near === item.name ? {} : { near: item.near }),
+      ...(item.tag === undefined ? {} : { tag: item.tag }),
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox' || role === 'input' || role === 'textarea' || role === 'select') {
       inputs.push({ ...candidate, id: `input:${item.index}`, description: `在${label}里输入/选择`, kind: 'input' })
@@ -910,6 +913,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   const filledFields = new Map<string, string>()
   /** 上一步是不是"填了文字"：只有刚填过输入框，Enter 才是合理的提交动作（否则会在下拉页上反复按 Enter）。 */
   let lastActionWasText = false
+  /** 上一次用的是 `el.click()`（合成事件）：没效果时回退成"滚进视口 + 真实鼠标点击"。 */
+  let lastJsClick: { id: string; ref: string } | undefined
+  const jsClickRetried = new Set<string>()
   /** 本轮填过**密钥类字段**（密码/验证码/卡号）：它消失 = 多半已经提交并离开了表单页。 */
   let filledSecret = false
 
@@ -1477,6 +1483,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     //    （jkudish/jev-browser 的 repeat-no-op recovery + ronadin2002/jev-cua 的 stalled_action）
     let alternateOf: string | undefined
     if (delivered !== undefined && delivered.id === chosen.id && chosen.id !== 'control:wait' && !stateChanged(delivered.snapshot, snapshot)) {
+      // 上一次若是 `el.click()` 且没效果 → 回退成"滚进视口 + 真实鼠标点击"再试一次
+      // （合成事件对依赖 pointerdown / 自定义命中的组件无效，真实鼠标在这里是兜底）。
+      if (lastJsClick?.id === chosen.id && !jsClickRetried.has(chosen.id) && chosen.ref !== undefined) {
+        jsClickRetried.add(chosen.id)
+        lastJsClick = undefined
+        await deps.browser.act('scrollintoview', chosen.ref, {}, { signal: deps.signal }).catch(() => {})
+        await deps.browser.act('click', chosen.ref, {}, { signal: deps.signal })
+        trace.push(`第 ${step} 步：${chosen.name ?? chosen.id} 的 el.click() 没效果 → 回退成滚动+真实点击`)
+        continue
+      }
       const count = (stalled.get(chosen.id) ?? 0) + 1
       stalled.set(chosen.id, count)
       trace.push(`第 ${step} 步：${chosen.id} 执行过但页面语义状态没变（第 ${count} 次）`)
@@ -1547,7 +1563,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     //    换一个动作继续往往就通了；连续 2 次失败才判定这一轮没法推进。
     try {
       const actStarted = now()
-      await execute(deps.browser, chosen, deps.signal, deps.inputs)
+      const executed = await execute(deps.browser, chosen, deps.signal, deps.inputs)
+      lastJsClick = executed.jsClicked
       timings.actMs += now() - actStarted
       actionFailures = 0
       staleStreak = 0
@@ -1807,7 +1824,7 @@ async function execute(
   candidate: TaskCandidate,
   signal: AbortSignal,
   inputs?: Readonly<Record<string, string>>,
-): Promise<void> {
+): Promise<{ jsClicked?: { id: string; ref: string } }> {
   if (candidate.kind === 'click' && candidate.ref !== undefined) {
     // 勾选框/单选框：调用方给了布尔值时用 check/uncheck（**幂等**），否则退回 click（切换）。
     // 真机踩过：goal "enable X" 在已勾选状态下又被点一次 → 变成未勾选。
@@ -1815,11 +1832,18 @@ async function execute(
     const given = matchInputValue(candidate, inputs)
     if (given !== undefined && (role === 'checkbox' || role === 'radio' || role === 'switch')) {
       await browser.act(/^(1|true|yes|on|y|是)$/i.test(given.trim()) ? 'check' : 'uncheck', candidate.ref, {}, { signal })
-      return
+      return {}
     }
     // **先滚进视口再点**：元素在折叠线以下时，CDP click 会返回成功但什么都没发生
     // （真机 wiki-link：Bletchley Park 链接在 y=807，click 返回 ok、页面纹丝不动，
     //  循环在原地打转直到 budget；scrollintoview 之后同样的 click 就能跳转）。
+    // **a / button 直接调用 `el.click()`**（合成事件，不依赖视口坐标）：
+    // 折叠线下的链接用 CDP 鼠标点会静默无效，而普通链接/按钮对合成点击是接受的。
+    // 失败（页面没变化）时由循环回退成"滚进视口 + 真实鼠标点击"。
+    if ((candidate.tag === 'a' || candidate.tag === 'button') && candidate.ref.startsWith('[')) {
+      await browser.jsClick(candidate.ref, { signal })
+      return { jsClicked: { id: candidate.id, ref: candidate.ref } }
+    }
     // 只对**页面内抽取**路径（`[data-dsh-idx="N"]`）做这一步：快照路径的元素由 CLI 自己处理可见性，
     // 而且单测里的假浏览器用 `e1` 这种 ref，不该多一次调用。
     if (candidate.ref.startsWith('[')) {
@@ -1827,17 +1851,17 @@ async function execute(
     }
     // ref 已经是**完整目标**：`@e12`（快照路径）或 `[data-dsh-idx="7"]`（抽取路径）。
     await browser.act('click', candidate.ref, {}, { signal })
-    return
+    return {}
   }
   switch (candidate.id) {
-    case 'control:scroll_down': await browser.act('scroll', 'body', { direction: 'down' }, { signal }); return
-    case 'control:scroll_up': await browser.act('scroll', 'body', { direction: 'up' }, { signal }); return
-    case 'control:back': await browser.run(['back'], { signal }); return
-    case 'control:wait': await waitForPageChange(browser, signal); return
+    case 'control:scroll_down': await browser.act('scroll', 'body', { direction: 'down' }, { signal }); return {}
+    case 'control:scroll_up': await browser.act('scroll', 'body', { direction: 'up' }, { signal }); return {}
+    case 'control:back': await browser.run(['back'], { signal }); return {}
+    case 'control:wait': await waitForPageChange(browser, signal); return {}
     case 'control:press_enter':
       // 焦点在刚填过的输入框上时，Enter 就是"提交/确认"（todomvc 新建、搜索框提交）。
       await browser.act('press', 'body', { value: 'Enter' }, { signal })
-      return
+      return {}
     default: throw new Error(`候选 ${candidate.id} 没有对应的执行分支`)
   }
 }

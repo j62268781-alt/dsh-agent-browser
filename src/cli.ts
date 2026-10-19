@@ -557,6 +557,20 @@ export class AgentBrowser {
     return JSON.stringify(data ?? null)
   }
 
+  /**
+   * 直接调用元素的 `el.click()`（合成事件）。
+   *
+   * 只对 `<a>` / `<button>` 用：它们不依赖坐标，折叠线下的元素也能生效
+   * （CDP 鼠标点击要求元素在视口内，否则事件落在页面外、静默无效）。
+   * 依赖 pointerdown/hover 的自定义组件仍要走 `act('click')`。
+   */
+  async jsClick(ref: string, run: CliRunOptions = {}): Promise<void> {
+    const selector = JSON.stringify(ref)
+    const script = `document.querySelector(${selector})?.click()`
+    const encoded = Buffer.from(script, 'utf8').toString('base64')
+    await this.run(['eval', '-b', encoded], run)
+  }
+
   async open(url: string, run: CliRunOptions = {}): Promise<void> {
     await this.json(['open', url], run)
     // ⚠️ `open` 成功返回 **不等于导航已经提交**：真机（0.38.2）上紧接着取快照，
