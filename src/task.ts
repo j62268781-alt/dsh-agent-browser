@@ -411,6 +411,29 @@ export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Reco
  * 真机 bench：调用方给的 key 是 `first_name`，页面 label 是 "First Name"，
  * 只做小写比较永远匹配不上 → 明明给了值还要 input_required（saucedemo-fine）。
  */
+/**
+ * 目标是不是**一个**子目标：多子目标（"Log in, add to cart, checkout"）不能用
+ * "表单已提交/已选择"这类确定性收尾——那只证明第一步做完了，不是整个目标完成。
+ */
+export function singleStepGoal(goal: string): boolean {
+  const multiStep = /(,\s*(and|then)\b|\bthen\b|\band then\b|[，、].*[，、]|然后|接着|随后)/i
+  return !multiStep.test(goal)
+}
+
+/**
+ * 下拉选择是否**就是**目标要的那个选项：选中的 label 出现在目标文字里
+ * （"Select Option 2 in the dropdown" ← label "Option 2"）。
+ */
+export function selectionMatchesGoal(goal: string, candidate: TaskCandidate, given: string): string | undefined {
+  const options = candidate.options
+  if (options === undefined || options.length === 0) return undefined
+  const option = options.find((item) => item.value === given || item.label === given)
+  const label = (option?.label ?? given).trim()
+  if (label === '') return undefined
+  const normalize = (value: string): string => value.toLowerCase().replace(/[\s_]+/g, ' ').trim()
+  return normalize(goal).includes(normalize(label)) ? label : undefined
+}
+
 export function fieldName(value: string): string {
   return value.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -885,6 +908,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
    * 因为"填了值"本身也算页面变化，停滞检测抓不到。同值重复填没有任何意义 → 直接跳过。
    */
   const filledFields = new Map<string, string>()
+  /** 上一步是不是"填了文字"：只有刚填过输入框，Enter 才是合理的提交动作（否则会在下拉页上反复按 Enter）。 */
+  let lastActionWasText = false
   /** 本轮填过**密钥类字段**（密码/验证码/卡号）：它消失 = 多半已经提交并离开了表单页。 */
   let filledSecret = false
 
@@ -966,7 +991,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const started = now()
         const page = await deps.browser.extract({ signal: deps.signal })
         timings.snapshotMs += now() - started
-        const candidates = [...candidatesFromExtracted(page.items, goal), ...CONTROL_CANDIDATES]
+        // 只有刚填过输入框时才提供 Enter（真机：下拉选择后判断层反复选 press_enter，2 次就 stalled）。
+        const controls = lastActionWasText
+          ? CONTROL_CANDIDATES
+          : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
+        const candidates = [...candidatesFromExtracted(page.items, goal), ...controls]
         // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
         // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
         // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
@@ -1043,7 +1072,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **登录/表单已翻页的确定性判定**：填过密码类字段、现在页面上一个输入框都没有了
     // → 表单已经提交并跳走，不再让判断层猜"登录成功了吗"（真机：saucedemo 登录后
     // goal_done 只有 0.42，循环接着点了 Logout）。
-    if (filledSecret && !observedPage.candidates.some((candidate) => candidate.kind === 'input')) {
+    if (filledSecret && singleStepGoal(goal) && !observedPage.candidates.some((candidate) => candidate.kind === 'input')) {
       trace.push(`第 ${step} 步：密钥字段已填、页面已无输入框（地址 ${snapshot.origin}）→ 表单已提交，交回宿主校验`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:form_submitted', executed: false, reason: 'form_submitted' })
       return finish('needs_verification', '密钥字段已填且表单已翻页', snapshot)
@@ -1290,7 +1319,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       return finish('needs_verification', '调用方给的值都已生效', snapshot)
     }
     if (followUpPending) trace.push(`第 ${step} 步：目标是「填完还要${goal.match(FOLLOW_UP_VERBS)?.[0] ?? '继续'}」→ 还没有后续动作的证据，不按完成收尾`)
-    if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField === undefined && !followUpPending) {
+    // 多子目标（"登录、加购、结算"）不能用普通阈值收：第一页就报完成是灾难性的假阳性。
+    const effectiveGoalThreshold = singleStepGoal(goal) ? deps.goalThreshold : Math.max(deps.goalThreshold, 0.95)
+    if (goalDone !== undefined && goalDone >= effectiveGoalThreshold && pendingField === undefined && !followUpPending) {
       const confirm = await confirmWithContext()
       if (confirm.confirmed) {
         trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} ≥ ${deps.goalThreshold}，独立确认 p=${confirm.probability.toFixed(2)} → 停，交回宿主校验`)
@@ -1301,7 +1332,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     // **likely_done**（Ying-Kai-Liao/jev-browser）：goal_done 落在中间带 + 独立确认也不低 →
     // 不要"猜着继续"（会乱点），也不要报"完成"（可能假阳性）：交回宿主先验证。
+    // 多子目标不开放 likely_done：中间带对多步目标没有意义，只会制造假阳性。
     if (
+      singleStepGoal(goal) &&
       goalDone !== undefined &&
       goalDone >= LIKELY_DONE_FLOOR &&
       goalDone < deps.goalThreshold &&
@@ -1357,6 +1390,17 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       return finish('judge_error', `判断选了不存在的候选 "${actionAnswer.optionId}"`, snapshot)
     }
 
+    // **确定性填值优先**：调用方给了值、页面上还有没生效的字段 → 先填它，
+    // 不让判断层在"填哪个框 / 先不先点提交"上把流程拖成 ambiguous。
+    // （真机 saucedemo：登录页上判断层置信 0.27，直接 ambiguous 交回宿主，登录框一个都没填。）
+    if (deps.inputs !== undefined && Object.keys(deps.inputs).length > 0 && chosen.kind !== 'input') {
+      const pending = pendingFieldOf(candidates, deps.inputs)
+      if (pending !== undefined) {
+        trace.push(`第 ${step} 步：还有没生效的字段「${pending.name ?? pending.id}」→ 先填它`)
+        chosen = pending
+      }
+    }
+
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
       // 调用方**已经给了值** → 同一次调用内直接填/选/勾（不再交回宿主，省一整轮）。
@@ -1389,8 +1433,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           timings.actMs += now() - started
           actionFailures = 0
           filledFields.set(chosen.id, given)
-          if (SECRET_KEY.test(chosen.name ?? '') || SECRET_KEY.test(chosen.state ?? '')) filledSecret = true
+          // 密码框的 name 常常是空的，但它的 state 一定是脱敏后的 `已有内容: ●●●`（extract 只对 type=password 这样脱敏）。
+          if (
+            SECRET_KEY.test(chosen.name ?? '') ||
+            SECRET_KEY.test(chosen.state ?? '') ||
+            (chosen.state ?? '').includes('●●●')
+          ) filledSecret = true
+          lastActionWasText = chosen.options === undefined
           trace.push(`第 ${step} 步：按调用方的值填 ${chosen.role ?? 'field'}「${chosen.name ?? chosen.id}」= ${given} ✓`)
+          // **下拉选择的确定性收尾**：选中的 label 就在目标里（"Select Option 2"）→ 这就是目标本身，
+          // 不必再让判断层决定"还要不要做什么"（真机 ti-dropdown：选完反复按 Enter 到 stalled）。
+          const selectedLabel = singleStepGoal(goal) ? selectionMatchesGoal(goal, chosen, given) : undefined
+          if (selectedLabel !== undefined) {
+            trace.push(`第 ${step} 步：选中的「${selectedLabel}」就是目标要求的选择 → 停，交回宿主校验`)
+            steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'selection_matched', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
+            return finish('needs_verification', `已选择「${selectedLabel}」`, snapshot)
+          }
           steps.push({
             step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'filled_from_inputs',
             ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }),
@@ -1401,6 +1459,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         } catch (error) {
           actionFailures += 1
           attempted.add(chosen.id)
+    if (chosen.kind !== 'input') lastActionWasText = false
           trace.push(`第 ${step} 步：按调用方的值填「${chosen.name ?? chosen.id}」失败：${message(error)}`)
           if (actionFailures >= 2) return finish('action_error', message(error), snapshot)
           continue
