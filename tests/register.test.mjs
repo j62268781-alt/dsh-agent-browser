@@ -251,14 +251,26 @@ test('决策可用性：ctx.judgment 不在 → 不可用（理由说清要装�
   assert.match(check.reason, /dsh-judgment/)
 })
 
-test('决策可用性：服务在但**用途不可用** → 仍不可用（真机：purposes 为空却显示就绪）', async () => {
+test('决策可用性：用途没配但有一条带凭据的连接 → 走默认连接（不需要用户再指定一次）', async () => {
   const ctx = await boot({}, {
     judgment: true,
-    judgmentStatus: { purposes: [{ purpose: 'browser.action', usable: false }] },
+    judgmentStatus: {
+      purposes: [{ purpose: 'browser.action', usable: false }],
+      connections: [{ connection: 'DashScope', baseUrl: 'https://example.test/v1/systemone', credentialPresent: true }],
+    },
+  })
+  const check = await ctx.get('browser').checkJudgment()
+  assert.equal(check.available, true)
+  assert.match(check.reason, /DashScope/)
+})
+
+test('决策可用性：用途没配、也没有可用连接 → 不可用，理由说要加一条带凭据的连接', async () => {
+  const ctx = await boot({}, {
+    judgment: true,
+    judgmentStatus: { purposes: [{ purpose: 'browser.action', usable: false }], connections: [] },
   })
   const check = await ctx.get('browser').checkJudgment()
   assert.equal(check.available, false)
-  assert.match(check.reason, /browser\.action/)
   assert.match(check.reason, /设置 → 决策/)
 })
 

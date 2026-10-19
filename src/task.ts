@@ -433,7 +433,7 @@ async function pickSelectOption(
     options: shown.map((option) => option.label),
   }
   try {
-    const result = await judge.ask(state, { pick: selectOptionQuestion(field, goal, options) }, { purpose: deps.purpose })
+    const result = await askJudge(judge, state, { pick: selectOptionQuestion(field, goal, options) }, deps.purpose, trace)
     usage.calls += 1
     usage.inputTokens += result.usage.inputTokens ?? 0
     usage.outputTokens += result.usage.outputTokens ?? 0
@@ -1159,7 +1159,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **同样的状态、更少的候选**再问——不是重复同一个请求（同一规模下常常重复失败）。
     const askOnce = async (subset: readonly TaskCandidate[]): Promise<Readonly<Record<string, JudgmentAnswer>>> => {
       const askStarted = now()
-      const result = await judge.ask(state, questionsOf(goal, subset, deps.inputs, { hasLastChange: lastChange !== undefined }), { purpose: deps.purpose })
+      const result = await askJudge(judge, state, questionsOf(goal, subset, deps.inputs, { hasLastChange: lastChange !== undefined }), deps.purpose, trace)
       timings.askMs += now() - askStarted
       usage.calls += 1
       usage.inputTokens += result.usage.inputTokens ?? 0
@@ -1546,6 +1546,29 @@ const NEXT_HINTS: Readonly<Record<TaskStatus, string>> = {
 }
 
 /**
+ * 一次判断：优先按用途问；用途没配置（dsh-judgment 的 `unknown-purpose`）就退回**默认连接**。
+ *
+ * 用户不需要为了"能用"先建一个用途——dsh-judgment 的默认连接 = `defaultConnection`，
+ * 为空则取配置顺序的第一条。退回是**显式**的（trace 里留一行），不是静默换模型。
+ */
+async function askJudge(
+  judge: Judge,
+  state: Parameters<Judge['ask']>[0],
+  questions: Parameters<Judge['ask']>[1],
+  purpose: string,
+  trace?: string[],
+): Promise<Awaited<ReturnType<Judge['ask']>>> {
+  if (purpose === '') return judge.ask(state, questions)
+  try {
+    return await judge.ask(state, questions, { purpose })
+  } catch (error) {
+    if ((error as { code?: string } | undefined)?.code !== 'unknown-purpose') throw error
+    trace?.push(`用途 "${purpose}" 未配置 → 退回默认连接`)
+    return judge.ask(state, questions)
+  }
+}
+
+/**
  * 独立确认：拿**页面可见正文**再问一次"目标要求的最终结果真的看得见吗"。
  * 与动作问题是**分开的两次调用**（先确认、不掺动作），这样它不会变成对动作的自我合理化。
  * 确认失败/报错一律按"未确认"处理（继续推进，绝不因为确认层抖动就停）。
@@ -1574,7 +1597,8 @@ async function confirmGoal(
     ...(context.lastChange === undefined ? {} : { last_change: context.lastChange }),
   }
   try {
-    const result = await judge.ask(
+    const result = await askJudge(
+      judge,
       state,
       {
         ...(context.lastActionDescription === undefined
@@ -1615,7 +1639,8 @@ async function confirmGoal(
           },
         },
       },
-      { purpose: deps.purpose },
+      deps.purpose,
+      trace,
     )
     usage.calls += 1
     usage.inputTokens += result.usage.inputTokens ?? 0

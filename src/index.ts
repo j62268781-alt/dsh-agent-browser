@@ -145,14 +145,23 @@ export class AgentBrowserService extends TypertRemoteService {
     try {
       const status = judge.status()
       const entry = status.purposes.find((item) => item.purpose === purpose)
-      if (entry === undefined || entry.usable !== true) {
+      if (entry !== undefined && entry.usable === true) {
+        return { available: true, reason: `dsh-judgment 已就绪（用途 ${purpose} → ${entry.connection ?? '默认连接'}）` }
+      }
+      // **用途没配也能用**：dsh-judgment 在没给用途时会用 defaultConnection，空则取配置顺序的第一条。
+      // 用户不需要为了"能用"先建一个用途——只要有一条连接带凭据，就按默认连接走。
+      const fallback = (status.connections ?? []).find((connection) => connection.baseUrl !== undefined && connection.credentialPresent === true)
+      if (fallback !== undefined) {
         return {
-          available: false,
-          reason:
-            `用途 "${purpose}" 还没有可用的连接：去「设置 → 决策」给它连一条可用的 Jev 连接，再回来开启「决策」`,
+          available: true,
+          reason: `dsh-judgment 已就绪（用途 ${purpose} 未配置 → 走默认连接 ${fallback.connection}）`,
         }
       }
-      return { available: true, reason: `dsh-judgment 已就绪（用途 ${purpose} → ${entry.connection ?? '默认连接'}）` }
+      return {
+        available: false,
+        reason:
+          `没有任何可用连接：去「设置 → 决策」加一条带凭据的 Jev 连接（用途 "${purpose}" 可以不配，默认取第一条）`,
+      }
     } catch (error) {
       return { available: false, reason: `读取 ctx.judgment 状态失败：${message(error)}` }
     }
