@@ -545,7 +545,9 @@ export class AgentBrowserService extends TypertRemoteService {
       name: 'browser_session',
       description:
         '会话与标签页：open 打开一个 URL、close 关闭浏览器、tabs 列出标签页。' +
-        '本插件固定使用一个**命名会话**（不会劫持别的 agent 或人类开着的窗口）。',
+        '本插件固定使用一个**命名会话**（不会劫持别的 agent 或人类开着的窗口）。' +
+        '**优先复用已打开的窗口**：同一任务只在起点 open 一次，同站换页用 browser_act(goto) 或点链接；' +
+        '任务结束不要 close（会话跨对话持久，下次直接接着用）。只有浏览器卡死、要换 profile/session 或清登录态时才 close。',
       parameters: {
         action: { type: 'string', required: true, description: 'open | close | tabs' },
         url: { type: 'string', description: 'action=open 时的 URL' },
@@ -622,7 +624,8 @@ export class AgentBrowserService extends TypertRemoteService {
           '用一句话目标驱动浏览器：插件内部跑一个有界循环（每步重新快照 → 由 ctx.judgment 在代码枚举的候选里选一个动作 → 执行一个动作）。' +
           '**文字输入与敏感动作不做决策**：需要时会以 input_required 交回你——' +
           '但如果你已经知道要填什么，**用 `inputs` 一次给进来**，插件会在同一次调用里填/选/勾完，省掉每个字段一轮往返。' +
-          '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' + UNTRUSTED,
+          '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' +
+          '**默认在当前页面上继续操作**（复用已打开的窗口/标签）；需要换站点时先 browser_session open，不要每个任务重开浏览器。' + UNTRUSTED,
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
           maxSteps: { type: 'number', description: `最大步数（默认 ${config.limits.maxSteps}）` },

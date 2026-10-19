@@ -72,7 +72,9 @@ const SCRIPT_LINES = [
   "      extra = '当前值: ' + String(el.value || '')",
   "    } else if (tag === 'input' || tag === 'textarea') {",
   "      const v = String(el.value || '')",
-  "      if (v) extra = '已有内容: ' + v.slice(0, 30)",
+  // 密码框的值**不能出页面**：它会变成判断层输入（jk-login fixture 暴露：密码原文进了 state）。
+  // 只汇报"已填写/未填写"，值本身永远是 ●●●。
+  "      if (v) extra = type === 'password' ? '已有内容: ●●●' : '已有内容: ' + v.slice(0, 30)",
   "    } else if (tag === 'a' && el.href) {",
   "      try { const u = new URL(el.href); extra = '链接: ' + u.host + u.pathname.slice(0, 40) } catch (e) { extra = '' }",
   "    }",
@@ -117,8 +119,11 @@ export interface ExtractedItem {
  * `eval` 的输出也会被这个全局参数包住——不剥掉就 JSON.parse 失败（真机踩到）。
  */
 export function stripBoundaries(text: string): string {
+  // 行内到最后一个 `---` 为止用 `[^\n]*`，**不能用 `[^-]*`**：
+  // 边界行里带 `origin=file:///…/dsh-agent-browser/…` 时 URL 含连字符，
+  // `[^-]*` 会在 "dsh-" 处停住，整行去不掉（真机：本地 fixture 的断言因此解析失败）。
   return text
-    .replace(/^\s*---\s*(?:END_)?AGENT_BROWSER_(?:PAGE_)?CONTENT[^-]*---\s*$/gim, '')
+    .replace(/^\s*---\s*(?:END_)?AGENT_BROWSER_(?:PAGE_)?CONTENT[^\n]*---\s*$/gim, '')
     .trim()
 }
 

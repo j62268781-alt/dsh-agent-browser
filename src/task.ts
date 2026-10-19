@@ -239,10 +239,12 @@ const ENABLE_VERBS = /(enable|check|tick|turn on|activate|打开|开启|勾选|�
 const DISABLE_VERBS = /(disable|uncheck|untick|turn off|deactivate|取消勾选|关闭|禁用)/i
 
 /** 从抽取的 `state` 文本里读出"当前状态"。 */
-export function stateOf(candidate: TaskCandidate): { checked?: boolean; value?: string } {
+export function stateOf(candidate: TaskCandidate): { checked?: boolean; value?: string; redacted?: boolean } {
   const state = candidate.state ?? ''
   if (state.includes('已勾选')) return { checked: true }
   if (state.includes('未勾选')) return { checked: false }
+  // 密码框只有"已填写"标记（●●●）：值不出页面，所以只能判"填没填"，不能比值。
+  if (state.includes('●●●')) return { redacted: true }
   const value = /当前值: (.*)$/.exec(state)?.[1] ?? /已有内容: (.*)$/.exec(state)?.[1]
   return value === undefined ? {} : { value: value.trim() }
 }
@@ -261,6 +263,7 @@ export function isAlreadySatisfied(candidate: TaskCandidate, goal: string, input
     if (DISABLE_VERBS.test(goal) && !ENABLE_VERBS.test(goal)) return !state.checked
     return false
   }
+  if (state.redacted === true) return matchInputValue(candidate, inputs) !== undefined
   if (state.value !== undefined) {
     const wanted = matchInputValue(candidate, inputs)
     if (wanted !== undefined) return wanted.trim() === state.value.trim()
@@ -285,6 +288,7 @@ export function pendingFieldOf(
     const wanted = matchInputValue(candidate, inputs)
     if (wanted === undefined) continue
     const state = stateOf(candidate)
+    if (state.redacted === true) continue
     if (state.checked !== undefined) {
       const wantChecked = /^(1|true|yes|on|y|是)$/i.test(wanted.trim())
       if (state.checked !== wantChecked) return candidate
@@ -296,6 +300,57 @@ export function pendingFieldOf(
     if (state.value === undefined) return candidate
   }
   return undefined
+}
+
+/** 目标里出现这些词 = 填完值之后**还要再做一步**（提交/搜索/登录/添加…），不能按"值已生效"收尾。 */
+const FOLLOW_UP_VERBS =
+  /(submit|log ?in|sign ?in|sign ?up|search|find|open|click|press|continue|checkout|order|buy|add|create|save|apply|send|confirm|delete|remove|go to|navigate|提交|登录|注册|搜索|查询|查找|打开|点击|按下|继续|结账|下单|购买|添加|新建|保存|应用|发送|确认|删除|移除|跳转)/i
+
+/**
+ * 调用方给的值是否**全部已经在页面上生效**（纯确定性，不看判断层）。
+ *
+ * 为什么需要：纯填值目标（"把 X 填进 Y"）的 goal_done 在 0.45–0.84 徘徊，
+ * 而独立确认问的是**可见正文**——输入框里的值根本不在正文里，结构性看不见。
+ * 于是循环会继续找事做（点了提交/别的按钮），把"已经完成"的一步拖成 no_progress。
+ * 这里用页面状态直接回答"值生效了吗"：每个 key 都匹配到字段，且字段状态就是该值。
+ */
+export function inputsApplied(
+  candidates: readonly TaskCandidate[],
+  inputs?: Readonly<Record<string, string>>,
+  filled?: ReadonlyMap<string, string>,
+): boolean {
+  if (inputs === undefined) return false
+  const entries = Object.entries(inputs)
+  if (entries.length === 0) return false
+  for (const [key, value] of entries) {
+    const single = { [key]: value }
+    const matched = candidates.filter((candidate) => matchInputValue(candidate, single) !== undefined)
+    if (matched.length === 0) return false
+    const applied = matched.some(
+      (candidate) => filled?.get(candidate.id) === value || isAlreadySatisfied(candidate, key, single),
+    )
+    if (!applied) return false
+  }
+  return true
+}
+
+export { FOLLOW_UP_VERBS }
+
+/**
+ * 页面上**只有一个**输入框、调用方又只给了一个值时的兜底绑定。
+ *
+ * 真机（the-internet 的 `/inputs`）：`<input type="number">` 没有 label/placeholder，
+ * 抽取出来的 name 是空串，按名字永远匹配不上 "number" 这个 key，于是一个再简单不过的
+ * "填 42" 都要交回宿主。唯一字段 + 唯一值没有歧义，可以确定性绑定。
+ */
+export function soleValueFor(
+  candidates: readonly TaskCandidate[],
+  inputs?: Readonly<Record<string, string>>,
+): string | undefined {
+  const entries = Object.entries(inputs ?? {})
+  if (entries.length !== 1) return undefined
+  const fields = candidates.filter((candidate) => candidate.kind === 'input')
+  return fields.length === 1 ? entries[0][1] : undefined
 }
 
 /** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
@@ -742,6 +797,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const pageTitle = observedPage.title
     last = snapshot
     let candidates = observedPage.candidates
+    // 过滤前的全量候选：判断"调用方给的值是否都已生效"要用它（字段被状态守卫剔除后就查不到了）。
+    const allCandidates = candidates
     // **状态守卫**：已处于目标状态的候选不再发给判断层（避免"已勾选又点一下"这种破坏性重复）。
     const satisfied = candidates.filter((candidate) => isAlreadySatisfied(candidate, goal, deps.inputs))
     if (satisfied.length > 0) {
@@ -759,7 +816,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (done === undefined) return false
       const state = stateOf(candidate)
       // 字段当前状态已经是这个值（或勾选态已符合）→ 重复填没有意义。
-      return state.value === done || state.checked === /^(1|true|yes|on|y|是)$/i.test(done)
+      // redacted（密码）只知道"填过"，不知道值，填过就不再填。
+      return state.redacted === true || state.value === done || state.checked === /^(1|true|yes|on|y|是)$/i.test(done)
     })
     if (refilled.length > 0) {
       trace.push(`第 ${step} 步：${refilled.length} 个字段已按调用方的值填过（${refilled.map((candidate) => candidate.name ?? candidate.id).join('、')}）→ 跳过`)
@@ -900,6 +958,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         ?? (selectedValueKeyForGate === undefined ? undefined : deps.inputs?.[selectedValueKeyForGate])
       if (wanted === undefined) return undefined
       const state = stateOf(chosenForGate)
+      if (state.redacted === true) return undefined
       return state.value !== undefined && state.value.trim() === wanted.trim() ? undefined : chosenForGate
     })()
     const pendingField = pendingFieldOf(candidates, deps.inputs) ?? chosenPending
@@ -908,6 +967,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         `第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但「${pendingField.name ?? pendingField.role ?? pendingField.id}」` +
         `还没生效（${pendingField.state ?? '状态未知'}）→ 不结束，继续操作`,
       )
+    }
+    // **填充类目标的确定性收尾**：调用方给的值都已生效、且目标里没有"再去提交/搜索/打开"的动词。
+    // 真机（jk-login / fixture-hotel）：纯填值目标会被判断层拖成 ambiguous/no_progress。
+    if (pendingField === undefined && !FOLLOW_UP_VERBS.test(goal) && inputsApplied(allCandidates, deps.inputs, filledFields)) {
+      trace.push(`第 ${step} 步：调用方给的值都已生效，且目标没有后续动作 → 停，交回宿主校验`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:inputs_applied', executed: false, reason: 'inputs_applied', ...(goalDone === undefined ? {} : { goalDone }) })
+      return finish('needs_verification', '调用方给的值都已生效', snapshot)
     }
     if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField === undefined) {
       const confirm = await confirmGoal(judge, deps, snapshot, goal, usage, trace)
@@ -965,7 +1031,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
       // 调用方**已经给了值** → 同一次调用内直接填/选/勾（不再交回宿主，省一整轮）。
-      let given = matchInputValue(chosen, deps.inputs)
+      let given = matchInputValue(chosen, deps.inputs) ?? soleValueFor(candidates, deps.inputs)
       // 字段名没对上时，用判断层在**同一批次**里选的"该用哪个值"（Ying-Kai-Liao/jev-browser 的做法：
       // 值由调用方给、判断层只选 key，永远不写字）。
       if (given === undefined) {

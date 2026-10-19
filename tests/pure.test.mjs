@@ -5,8 +5,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, questionsOf } from '../lib/task.js'
-import { parseExtracted } from '../lib/extract.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, soleValueFor, stateOf } from '../lib/task.js'
+import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
 
@@ -178,4 +178,69 @@ test('抽取脚本不依赖容易被打字机吃掉的正则转义（真机：�
 test('判断层选项上限是 10（实测：10 最准也最便宜；16/40 会选错或分布不合法）', async () => {
   const { JUDGE_OPTION_CAP } = await import('../lib/task.js')
   assert.equal(JUDGE_OPTION_CAP, 10)
+})
+
+test('内容边界剥离：origin 里带连字符（file:///…/dsh-agent-browser/…）也要剥掉', () => {
+  const wrapped = [
+    '--- AGENT_BROWSER_PAGE_CONTENT nonce=9863c5a143737799674ea380b1af5a2a origin=file:///Users/x/dsh-agent-browser/bench/fixtures/login.html ---',
+    '"{\\"title\\":\\"Login Page\\"}"',
+    '--- END_AGENT_BROWSER_PAGE_CONTENT nonce=9863c5a143737799674ea380b1af5a2a ---',
+  ].join('\n')
+  assert.equal(stripBoundaries(wrapped), '"{\\"title\\":\\"Login Page\\"}"')
+})
+
+test('密码框：值不出页面，只报“已填写”，且不会被当成“没填”反复重填', () => {
+  const page = parseExtracted(JSON.stringify({
+    items: [[0, 'textbox', 'Password', 0, '已有内容: ●●●'], [1, 'textbox', 'Username', 0, '已有内容: tomsmith']],
+    text: '', title: '', url: '',
+  }))
+  const [password, username] = candidatesFromExtracted(page.items, 'log in')
+  assert.deepEqual(stateOf(password), { redacted: true })
+  assert.equal(stateOf(username).value, 'tomsmith')
+  assert.equal(isAlreadySatisfied(password, 'type the password', { password: 's3cret' }), true)
+  assert.equal(pendingFieldOf([password], { password: 's3cret' }), undefined)
+  // 没给值时不能凭空"已满足"（避免把密码框当成无需操作）。
+  assert.equal(isAlreadySatisfied(password, 'type the password'), false)
+})
+
+test('抽取状态里绝不出现密码原文', async () => {
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  assert.match(EXTRACT_SCRIPT, /type === 'password' \? '已有内容: ●●●'/)
+})
+
+test('填充类收尾：调用方给的值都已生效才算完成', () => {
+  const page = parseExtracted(JSON.stringify({
+    items: [[0, 'textbox', 'Destination', 0, '已有内容: Lisbon']], text: '', title: '', url: '',
+  }))
+  const candidates = candidatesFromExtracted(page.items, 'type Lisbon into Destination')
+  assert.equal(inputsApplied(candidates, { Destination: 'Lisbon' }), true)
+  assert.equal(inputsApplied(candidates, { Destination: 'Porto' }), false)
+  assert.equal(inputsApplied(candidates, {}), false)
+  assert.equal(inputsApplied(candidates, undefined), false)
+  // 本轮刚填过、但页面状态还没刷新（filled 记账）也算生效。
+  assert.equal(inputsApplied(candidates, { Destination: 'Porto' }, new Map([[candidates[0].id, 'Porto']])), true)
+})
+
+test('填完值之后还要提交/搜索/添加的目标不走确定性收尾', () => {
+  assert.equal(FOLLOW_UP_VERBS.test('Log in'), true)
+  assert.equal(FOLLOW_UP_VERBS.test('Fill in the fields with the given values, then submit the form'), true)
+  assert.equal(FOLLOW_UP_VERBS.test("Add a new todo item that says 'buy milk'"), true)
+  assert.equal(FOLLOW_UP_VERBS.test('Search for the article and open it'), true)
+  assert.equal(FOLLOW_UP_VERBS.test('type Lisbon into the Destination field'), false)
+  assert.equal(FOLLOW_UP_VERBS.test('choose Business in the Cabin dropdown'), false)
+})
+
+test('唯一输入框 + 唯一值：名字对不上也能确定性绑定', () => {
+  const page = parseExtracted(JSON.stringify({
+    items: [[0, 'textbox', '', 0, ''], [1, 'button', 'Submit', 0, '']], text: '', title: '', url: '',
+  }))
+  const candidates = candidatesFromExtracted(page.items, 'Enter the number 42')
+  assert.equal(soleValueFor(candidates, { number: '42' }), '42')
+  // 页面上有两个输入框时不猜。
+  const two = candidatesFromExtracted(parseExtracted(JSON.stringify({
+    items: [[0, 'textbox', '', 0, ''], [1, 'textbox', 'Password', 0, ''], [2, 'button', 'Submit', 0, '']], text: '', title: '', url: '',
+  })).items, 'log in')
+  assert.equal(soleValueFor(two, { username: 'a' }), undefined)
+  // 两个值也不猜。
+  assert.equal(soleValueFor(candidates, { a: '1', b: '2' }), undefined)
 })
