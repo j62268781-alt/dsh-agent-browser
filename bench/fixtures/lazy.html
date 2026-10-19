@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Lazy result</title></head>
+  <body>
+    <h1>Dynamic loading</h1>
+    <button id="start" type="button">Start</button>
+    <div id="finish"></div>
+    <script>
+      // 复刻 the-internet /dynamic_loading/2：点按钮后先显示 Loading…，3 秒后才出现结果。
+      // 固定 800ms 的 wait 会连续看到 Loading… 从而误判 no_progress（bench 的 ti-dynamic-loading）。
+      document.getElementById('start').addEventListener('click', function () {
+        var box = document.getElementById('finish')
+        box.textContent = 'Loading...'
+        setTimeout(function () { box.textContent = 'Hello World!' }, 3000)
+      })
+    </script>
+  </body>
+</html>

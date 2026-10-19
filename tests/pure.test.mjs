@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, soleValueFor, stateOf } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, candidatesFromExtracted, candidatesOf, diffCandidates, inputsApplied, isAlreadySatisfied, pendingFieldOf, questionsOf, soleValueFor, stateOf } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -243,4 +243,39 @@ test('唯一输入框 + 唯一值：名字对不上也能确定性绑定', () =>
   assert.equal(soleValueFor(two, { username: 'a' }), undefined)
   // 两个值也不猜。
   assert.equal(soleValueFor(candidates, { a: '1', b: '2' }), undefined)
+})
+
+test('last_change：只报语义变化（控件增删 / 状态变化 / 正文 / URL）', () => {
+  const candidate = (name, role, state) => ({ id: name, description: name, kind: 'click', role, name, state })
+  const button = (name) => candidate(name, 'button', '')
+  // 无变化 → 不产生 diff（避免给判断层塞噪声）
+  assert.equal(diffCandidates([button('A')], [button('A')], 't', 't', 'u', 'u'), undefined)
+  // 勾选框状态变化
+  const changed = diffCandidates(
+    [candidate('Free cancellation', 'checkbox', '未勾选')],
+    [candidate('Free cancellation', 'checkbox', '已勾选')],
+    't', 't', 'u', 'u',
+  )
+  assert.equal(changed.changed.length, 1)
+  assert.match(changed.changed[0], /未勾选 → 已勾选/)
+  // 新增 / 移除 / 正文 / URL
+  const mixed = diffCandidates([button('A')], [button('B')], 'old text', 'new text', 'u1', 'u2')
+  assert.deepEqual(mixed.added, ['B'])
+  assert.deepEqual(mixed.removed, ['A'])
+  assert.equal(mixed.text_changed, true)
+  assert.equal(mixed.url_changed, true)
+})
+
+test('done_change 只在有 last_change 时才问（不增加无谓开销）', () => {
+  const candidates = [{ id: 'click:1', description: '点击 A', kind: 'click', role: 'button', name: 'A' }]
+  const withDiff = questionsOf('做点什么', candidates, undefined, { hasLastChange: true })
+  const without = questionsOf('做点什么', candidates)
+  assert.equal(withDiff.done_change?.kind, 'noul')
+  assert.equal(without.done_change, undefined)
+})
+
+test('抽取上限截断会回传 truncated', () => {
+  const page = parseExtracted(JSON.stringify({ items: [[0, 'button', 'A', 0]], text: '', title: '', url: '', truncated: true }))
+  assert.equal(page.truncated, true)
+  assert.equal(parseExtracted(JSON.stringify({ items: [], text: '', title: '', url: '' })).truncated, false)
 })

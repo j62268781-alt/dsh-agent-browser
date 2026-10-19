@@ -27,6 +27,8 @@ const TI = 'https://the-internet.herokuapp.com'
 const FIXTURE = process.env.JEV_BENCH_FIXTURE_URL ?? new URL('./fixtures/fixture.html', import.meta.url).href
 const FIXTURE_LOGIN = new URL('./fixtures/login.html', import.meta.url).href
 const FIXTURE_SELECT = new URL('./fixtures/select.html', import.meta.url).href
+const FIXTURE_LAZY = new URL('./fixtures/lazy.html', import.meta.url).href
+const FIXTURE_DENSE = new URL('./fixtures/dense.html', import.meta.url).href
 
 export const OFFLINE = [
   {
@@ -60,6 +62,30 @@ export const OFFLINE = [
         goal: 'type s3cret into the Password field',
         values: { password: 's3cret' },
         assert: "() => document.querySelector('#login-secret').value === 's3cret'",
+      },
+    ],
+  },
+  {
+    id: 'fixture-lazy',
+    cat: 'offline',
+    url: FIXTURE_LAZY,
+    // 复刻 ti-dynamic-loading：点完后 3 秒才出结果；固定 800ms 的 wait 会连续看到 Loading…
+    steps: [
+      {
+        goal: 'click Start loading and wait until the result appears',
+        assert: "() => document.querySelector('#finish')?.innerText.includes('Hello World')",
+      },
+    ],
+  },
+  {
+    id: 'fixture-dense',
+    cat: 'offline',
+    url: FIXTURE_DENSE,
+    // 复刻 wiki-link：目标链接在第 251 个元素，抽取上限 80 时它根本不进候选。
+    steps: [
+      {
+        goal: 'Open the linked article about Bletchley Park',
+        assert: "() => location.hash === '#bletchley'",
       },
     ],
   },

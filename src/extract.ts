@@ -56,7 +56,11 @@ const SCRIPT_LINES = [
   '    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))',
   '    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))',
   '    const top = document.elementFromPoint(cx, cy)',
-  '    const covered = top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0',
+  // **离屏 ≠ 被遮挡**：中心点在视口外时 elementFromPoint 只能拿到边缘元素，
+  // 会把首屏之外的链接全标成 covered（bench fixture-dense：251 个元素被滤到只剩 37 个候选）。
+  // 离屏元素要保留（CLI 点击会自动滚进视图），只有**视口内**才做遮挡判定。
+  '    const inView = rect.top + rect.height / 2 >= 0 && rect.top + rect.height / 2 <= innerHeight && rect.left + rect.width / 2 >= 0 && rect.left + rect.width / 2 <= innerWidth',
+  '    const covered = inView && top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0',
   "    el.setAttribute('data-dsh-idx', String(idx))",
   "    const tag = el.tagName.toLowerCase()",
   "    const type = String(el.getAttribute('type') || '').toLowerCase()",
@@ -80,7 +84,7 @@ const SCRIPT_LINES = [
   "    }",
   "    out.push([idx, role, name, covered, extra])",
   '    idx += 1',
-  '    if (out.length >= 80) break',
+  '    if (out.length >= 300) break',
   '  }',
   "  const body = document.body ? document.body.innerText : ''",
   '  return JSON.stringify({',
@@ -88,6 +92,7 @@ const SCRIPT_LINES = [
   "    text: String(body || '').slice(0, 4000),",
   "    title: document.title || '',",
   '    url: location.href,',
+  '    truncated: out.length >= 300,',
   '  })',
   '})()',
 ]
@@ -100,6 +105,8 @@ export interface ExtractedPage {
   readonly text: string
   readonly title: string
   readonly url: string
+  /** 元素数达到抽取上限（300）：页面比这更大，目标可能没被抽到。 */
+  readonly truncated?: boolean
 }
 
 /** 抽取到的单个候选。 */
@@ -143,12 +150,13 @@ export function parseExtracted(raw: string): ExtractedPage {
     }
   }
   if (Array.isArray(value)) return { items: parseItems(value), text: '', title: '', url: '' }
-  const record = (value ?? {}) as { items?: unknown; text?: unknown; title?: unknown; url?: unknown }
+  const record = (value ?? {}) as { items?: unknown; text?: unknown; title?: unknown; url?: unknown; truncated?: unknown }
   return {
     items: Array.isArray(record.items) ? parseItems(record.items) : [],
     text: String(record.text ?? ''),
     title: String(record.title ?? ''),
     url: String(record.url ?? ''),
+    truncated: record.truncated === true,
   }
 }
 

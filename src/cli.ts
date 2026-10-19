@@ -39,6 +39,8 @@ export interface ExtractedPage {
   readonly text: string
   readonly title: string
   readonly url: string
+  /** 元素数达到抽取上限（300）：页面比这更大，目标可能没被抽到。 */
+  readonly truncated?: boolean
 }
 
 /** `observe()` 的返回：树 + 可见正文 + 标题（一次进程拿齐）。 */
@@ -104,6 +106,11 @@ export interface Snapshot {
   readonly removedRefs: readonly string[]
   /** `origin + snapshot` 的指纹：执行前比对"页面是否变了"。 */
   readonly digest: string
+  /**
+   * 可见正文的指纹。抽取路径的 `snapshot` 只有"控件名+状态"，短正文（如 "Loading..."）
+   * 根本进不去，于是"点了开始加载"被判成"页面没变"（bench fixture-lazy 暴露）。
+   */
+  readonly textDigest?: string
 }
 
 /** 支持的版本区间（含）。 */
