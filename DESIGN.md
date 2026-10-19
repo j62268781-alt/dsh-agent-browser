@@ -833,6 +833,29 @@ interaction 1/4、large-page 1/4、e2e 0/2、iframe 0/2、shadow-dom 0/1、actio
 - **字段名归一 + 单值绑定**：`first_name` ↔ "First Name"；调用方只给一个值时直接绑判断层选中的字段
   （ykl 的语义：值由调用方给、字段由判断层按 goal 选）。
 
+**能力边界（`92ccfd4`）**
+
+基线里 0/9 的 iframe / shadow-dom / custom-widget / actions / spa / lazy 不是"循环没调好"，
+而是**能力不存在**。现在明确写进 skill 与 `browser_run` 描述：
+
+- 循环只做 click / 填值 / select / 勾选 / 滚动 / 返回 / 等待 / Enter；
+- iframe、shadow DOM、上传下载、右键菜单、画布、多标签流程 → `browser_act` / `browser_raw` / CLI；
+- **有序子目标必须拆**成多次 `browser_run`（ykl 的 42 任务里两条失败就是"一个 goal 多个子目标"）；
+- `browser_act` 补上 `drag`（CLI 早就有 `drag <src> <dst>`，以前没接进工具）。
+
+**judge 校准实验（结论：不值得继续调 prompt）**
+
+拿 7 个 false-done + 8 个 ambiguous 的样本，给 action / goal_done / confirm 三个提示词都加了
+"必须指出与目标具体对象对应的证据，同名导航不算"这类判据，跑同一组 5 条失败任务：
+
+| | 基线（同代码） | 加证据判据 |
+|---|---|---|
+| 5 条失败任务 | 0/5 | **0/5**（ti-entry-ad/ti-sort-table 退化到 1 次判断就停） |
+
+而且**同一份代码重跑**时 `github-pulls` 从 false-done 翻成通过 → **单次基线的 ±1~2 条是噪声**。
+所以：prompt 级校准不动这个 judge 的上限；继续堆"证据要求"只会让它在慢页面上更早放弃。
+真正的杠杆是换更强 judge，或把这类判断下放给宿主复核（我们本来就把结果标成 `needs_verification`）。
+
 **仍失败（已知缺口，按 ROI 排序）**
 
 | 现象 | 任务 | 根因 | 对应待办 |
