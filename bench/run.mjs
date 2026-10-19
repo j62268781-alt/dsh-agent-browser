@@ -45,6 +45,9 @@ const session = arg('session', 'default')
 const connectionName = arg('connection', undefined)
 const connect = arg('connect', undefined)
 const closeAtEnd = flag('close')
+// 每个任务前清 cookie：任务之间共享标签会把上一条任务的登录态带进下一条
+// （基线里 login-wall 因此在已登录状态下被判成完成）。
+const clearCookies = !flag('no-clear')
 const out = resolve(arg('out', resolve(HERE, 'results', `run-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`)))
 const verbose = flag('verbose')
 
@@ -81,7 +84,8 @@ async function openVerified(url) {
     try {
       const want = new URL(url)
       const got = new URL(last)
-      if (got.host === want.host && (want.pathname === '/' || got.pathname.startsWith(want.pathname))) return
+      // 只核对**主机**：登录墙/重定向是任务场景本身（/secure → /login 是正常的）。
+      if (got.host === want.host) return
     } catch {
       /* 解析失败就走重试 */
     }
@@ -122,6 +126,7 @@ for (const [index, task] of tasks.entries()) {
   // （一次冷启动 2–4s，25 条任务就是一分多钟的纯浪费）。
   const watchdog = setTimeout(() => abort.abort(new Error('task timeout')), taskTimeoutMs)
   try {
+    if (clearCookies) await browser.run(['cookies', 'clear']).catch(() => {})
     await openVerified(task.url)
     for (const step of task.steps) {
       const stepStarted = Date.now()

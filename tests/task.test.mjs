@@ -483,7 +483,10 @@ test('P8：优先用页面内抽取（一次 eval 拿候选），判断层收到
   assert.equal(extractCalls, 1, '一次抽取 = 一次进程')
   assert.equal(treeCalls, 0, '抽取成功就不该退回整树')
   assert.equal(result.status, 'needs_verification')
-  const asked = judge.asked[0].questions.action.options
+  // 候选超过上限时会先问"组"（两阶段），所以取**带 action 的那一次**来检查选项数。
+  const actionAsk = judge.asked.find((entry) => entry.questions.action !== undefined)
+  assert.ok(actionAsk !== undefined, '应该有一次带 action 的判断')
+  const asked = actionAsk.questions.action.options
   assert.ok(Object.keys(asked).length <= 10, `判断层选项 ${Object.keys(asked).length} 个，超过上限`)
 })
 

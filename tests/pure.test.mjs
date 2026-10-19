@@ -66,7 +66,7 @@ test('候选封顶在协议的 255 之下（给控制项留位置）', () => {
 test('问题批次：一个 choice + 四个 noul（完成/卡住/不可逆/页面错误），候选键集合就是候选集合', () => {
   const candidates = candidatesOf(snapshot)
   const questions = questionsOf('在 example.com 找到 Alpha', candidates)
-  assert.deepEqual(Object.keys(questions).sort(), ['action', 'goal_done', 'irreversible', 'page_error', 'stuck'])
+  assert.deepEqual(Object.keys(questions).sort(), ['action', 'goal_done', 'irreversible', 'login', 'page_error', 'stuck'])
   assert.equal(questions.action.kind, 'choice')
   for (const key of ['goal_done', 'stuck', 'irreversible', 'page_error']) assert.equal(questions[key].kind, 'noul')
   assert.deepEqual(Object.keys(questions.action.options).sort(), candidates.map((c) => c.id).sort())

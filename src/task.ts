@@ -70,6 +70,8 @@ export const SNAPSHOT_STATE_CAP = 6_000
  * goal_done 达标时，再花**一次**调用、拿**页面可见正文**问一遍"真的看到了吗"。
  */
 export const GOAL_CONFIRM_THRESHOLD = 0.8
+/** 登录墙判定阈值（ykl 用 0.7）。 */
+export const LOGIN_THRESHOLD = 0.75
 /** 「点的控件是不是目标对象」的阈值：低于它就否决确认（同名导航链接）。 */
 export const TARGET_MATCH_THRESHOLD = 0.6
 
@@ -113,6 +115,8 @@ export type TaskStatus =
   | 'likely_done'
   /** 低置信度 + 前几名概率接近：**不给动作**，让调用方从候选里挑。 */
   | 'ambiguous'
+  /** 页面是登录/注册墙，且调用方没有提供凭据：交回用户登录，不要瞎点（ykl 的 needs_login）。 */
+  | 'needs_login'
 
 export interface TaskCandidate {
   readonly id: string
@@ -671,6 +675,13 @@ export function questionsOf(
         '普通导航、切换分类、展开面板、勾选筛选条件都**不是**不可逆。',
       criteria: { true: '执行后无法撤回（花钱/发出去/删掉）', false: '可以返回或撤销' },
     },
+    login: {
+      kind: 'noul',
+      prompt:
+        '当前页面是不是**登录/注册墙**：必须先登录或注册才能继续完成目标' +
+        '（登录表单、SSO 跳转、"请先登录"提示都算）；普通的表单填写不算。',
+      criteria: { true: '页面要求先登录/注册', false: '不需要登录就能继续' },
+    },
     page_error: {
       kind: 'noul',
       prompt: '页面当前是否显示了**错误**（登录失败、表单校验报错、404/500、权限不足、验证码拦截）',
@@ -874,6 +885,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
    * 因为"填了值"本身也算页面变化，停滞检测抓不到。同值重复填没有任何意义 → 直接跳过。
    */
   const filledFields = new Map<string, string>()
+  /** 本轮填过**密钥类字段**（密码/验证码/卡号）：它消失 = 多半已经提交并离开了表单页。 */
+  let filledSecret = false
 
   for (let step = 1; step <= deps.maxSteps; step += 1) {
     if (deps.signal.aborted) return finish('budget', 'cancelled', last)
@@ -1027,6 +1040,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const pageTitle = observedPage.title
     const extractionTruncated = observedPage.truncated === true
     last = snapshot
+    // **登录/表单已翻页的确定性判定**：填过密码类字段、现在页面上一个输入框都没有了
+    // → 表单已经提交并跳走，不再让判断层猜"登录成功了吗"（真机：saucedemo 登录后
+    // goal_done 只有 0.42，循环接着点了 Logout）。
+    if (filledSecret && !observedPage.candidates.some((candidate) => candidate.kind === 'input')) {
+      trace.push(`第 ${step} 步：密钥字段已填、页面已无输入框（地址 ${snapshot.origin}）→ 表单已提交，交回宿主校验`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:form_submitted', executed: false, reason: 'form_submitted' })
+      return finish('needs_verification', '密钥字段已填且表单已翻页', snapshot)
+    }
+
     // **上一步实际改变了什么**：只有上一步真的执行了动作、且之前观察过，才值得算。
     const lastExecuted = steps.length > 0 && steps[steps.length - 1].executed === true
     const lastChange =
@@ -1223,6 +1245,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const stuck = stuckAnswer?.kind === 'noul' ? stuckAnswer.probability : undefined
     const irreversible = answers.irreversible?.kind === 'noul' ? answers.irreversible.probability : undefined
     const pageError = answers.page_error?.kind === 'noul' ? answers.page_error.probability : undefined
+    const loginNeeded = answers.login?.kind === 'noul' ? answers.login.probability : undefined
     // choice 的**完整分布**是协议的证据：既能记进 trace，也能在"重复但无效"时给出次优候选。
     const probabilities = actionAnswer?.kind === 'choice' ? actionAnswer.probabilities : undefined
     const confidence = actionAnswer?.kind === 'choice' ? actionAnswer.confidence : undefined
@@ -1295,6 +1318,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但确认只有 p=${confirm.probability.toFixed(2)} → 继续推进`)
     }
     // 页面报错（登录失败/校验错误/404）：这是"做错了"，不是"没做完"——交回宿主修输入，别盲目重试。
+    // **登录墙**（ykl 的 needs_login）：登录概率高 + 调用方没给凭据 + 本轮也没填过密码
+    // → 交回用户登录，不要在登录页上瞎点（bench guard-checkout/saucedemo 就在这上面烧步数）。
+    if (
+      loginNeeded !== undefined &&
+      loginNeeded >= LOGIN_THRESHOLD &&
+      deps.inputs === undefined &&
+      !filledSecret
+    ) {
+      trace.push(`第 ${step} 步：页面是登录墙（p=${loginNeeded.toFixed(2)}），调用方没给凭据 → 交回用户`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:needs_login', executed: false, reason: 'needs_login' })
+      return finish('needs_login', `需要先登录（p=${loginNeeded.toFixed(2)}）`, snapshot)
+    }
+
     if (pageError !== undefined && pageError >= PAGE_ERROR_THRESHOLD) {
       trace.push(`第 ${step} 步：页面显示错误（p=${pageError.toFixed(2)} ≥ ${PAGE_ERROR_THRESHOLD}）→ 停，交回宿主`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:page_error', executed: false, reason: 'page_error', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
@@ -1353,6 +1389,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           timings.actMs += now() - started
           actionFailures = 0
           filledFields.set(chosen.id, given)
+          if (SECRET_KEY.test(chosen.name ?? '') || SECRET_KEY.test(chosen.state ?? '')) filledSecret = true
           trace.push(`第 ${step} 步：按调用方的值填 ${chosen.role ?? 'field'}「${chosen.name ?? chosen.id}」= ${given} ✓`)
           steps.push({
             step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'filled_from_inputs',
@@ -1540,6 +1577,7 @@ const NEXT_HINTS: Readonly<Record<TaskStatus, string>> = {
   judge_error: '判断层出错：检查「设置 → 决策」里的连接与凭据，必要时关掉决策改用原子工具。',
   action_error: '动作执行失败：看 trace 里的错误信息；必要时用 browser_snapshot 重新观察页面。',
   needs_confirmation: '下一步可能不可逆（下单/支付/发送/删除）：确认用户确实要这么做，再带 allowIrreversible 重新调用。',
+  needs_login: '页面要求先登录/注册：让用户登录（或用 browser_act 填凭据）后，再重新调用 browser_run；不要自己猜账号。',
   page_error: '页面显示了错误：读 page_text 确认原因（例如密码错误、表单校验失败），修正后再继续，不要盲目重试。',
   likely_done: '看起来已经完成但不十分确定：先用 browser_read / browser_snapshot 验证，再决定要不要继续。',
   ambiguous: '判断层在几个候选之间分不清：看 candidates（前 3 名），用 browser_act 直接指定其中一个，或把 goal 写具体一点。',
