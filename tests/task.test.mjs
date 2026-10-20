@@ -370,12 +370,23 @@ test('P2：页面上没有可操作元素 → 不发判断请求就停（no-requ
   assert.equal(judge.asked.filter((entry) => entry.questions.action !== undefined).length, 0, '没有可操作元素时不该问动作')
 })
 
-test('P2：唯一可操作元素是输入框 → 免判断直接交回宿主', async () => {
+test('P2：唯一可操作元素是输入框（且 goal 点名了它）→ 免判断直接交回宿主', async () => {
+  // 免判断只在"这个输入框就是目标"时成立：goal 带打字动词，或框名出现在 goal 里。
+  // 真机 shadow-checkbox 教训：页面上只有一个 textbox 但目标是 "Check the checkbox"，
+  // 旧逻辑直接免判断 → input_required，连判断层都没见过目标。
   const page = fakePage([{ ref: 'e1', role: 'textbox', name: '搜索' }])
   const judge = fakeJudge([])
-  const result = await runTask('目标', deps(page.browser, judge))
+  const result = await runTask('在搜索框里输入关键词', deps(page.browser, judge))
   assert.equal(judge.asked.length, 0, '唯一的输入框不必问判断层')
   assert.equal(result.status, 'input_required')
+})
+
+test('P2b：唯一输入框与目标无关 → 不走免判断（会问判断层）', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'textbox', name: '搜索' }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1 }])
+  const result = await runTask('Check the checkbox', deps(page.browser, judge))
+  assert.ok(judge.asked.length > 0, '目标与输入框无关时应该问判断层')
+  assert.notEqual(result.status, 'input_required')
 })
 
 test('P3：快照失败会自动重试（文档在变时不该直接失败）', async () => {

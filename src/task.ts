@@ -1118,13 +1118,40 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         // 语言一致性守卫：目标用英文、页面是中文时不比相关性（词形对不上，比了只会误判）。
         // 真机踩到：宿主把目标翻成英文（"click the top-left locality"）→ 覆盖检查误触发退回整树。
         const goalIsCjk = /[\u4e00-\u9fa5]/.test(goal)
-        const pageIsCjk = candidates.some((candidate) => /[\u4e00-\u9fa5]/.test(candidate.description))
+        // **只看页面元素本身，不能看控制项**：CONTROL_CANDIDATES 的描述是中文
+        // （"向下滚动一屏"…），混进来会让 pageIsCjk 恒为 true ——
+        // 英文目标在英文页上被判成"不可比"，覆盖检查（抽取零命中→退回整树）**永远不会触发**。
+        // 真机后果：iframe/shadow 页抽取不到目标时，不会退回 a11y 树，直接 no_progress。
+        // **只看元素自身的名字**：候选描述是我们拼的中文模板（"在…里输入/选择"、"点击…"），
+        // 拿描述判语言会让英文页永远被判成中文页 → comparable=false → 覆盖检查失效。
+        const pageIsCjk = candidates.some(
+          (candidate) =>
+            candidate.kind !== 'control' && (candidate.name ?? '') !== '' && /[\u4e00-\u9fa5]/.test(candidate.name ?? ''),
+        )
         const comparable = goalIsCjk === pageIsCjk
         const goalTokens = comparable ? goalTokensOf(goal) : []
-        if (goalTokens.length > 0 && candidates.length > 0) {
-          const bestScore = Math.max(...candidates.map((candidate) => goalTokens.filter((token) => candidate.description.toLowerCase().includes(token)).length))
-          if (bestScore === 0) {
-            trace.push(`第 ${step} 步：抽取结果里没有与目标相关的候选（目标词 ${goalTokens.slice(0, 4).join('/')}）→ 退回整树观察`)
+        // **只在页面候选里比相关性**：控制项的描述是中文固定文案（"向下滚动一屏"…），
+        // 混进来会让 bestScore 恒 > 0，覆盖检查（零命中→退回整树）永远不触发。
+        const pageCandidates = candidates.filter((candidate) => candidate.kind !== 'control')
+        if (goalTokens.length > 0 && pageCandidates.length > 0) {
+          const bestScore = Math.max(...pageCandidates.map((candidate) => goalTokens.filter((token) => candidate.description.toLowerCase().includes(token)).length))
+          // **子串命中 ≠ 目标存在**：goal "Check the checkbox" 的 token "check" 会
+          // 命中 "textbox"（子串），于是 bestScore>0，覆盖检查失效（真机 shadow-checkbox：
+          // 页面上根本没有 checkbox，循环却拿着一个 textbox 一路 budget）。
+          // 这里额外要求：goal 里出现的**控件名词**在候选角色里能找到对应。
+          const roleNouns: Record<string, string[]> = {
+            checkbox: ['checkbox', 'switch'], radio: ['radio'], textbox: ['textbox', 'searchbox'], text: ['textbox', 'searchbox'],
+            button: ['button'], link: ['link'], tab: ['tab'], option: ['option', 'combobox'], dropdown: ['combobox', 'option'],
+            select: ['combobox', 'option'], combobox: ['combobox'], slider: ['slider'], image: ['img'], img: ['img'],
+          }
+          const wantedRoles = Object.entries(roleNouns)
+            .filter(([noun]) => new RegExp(`\\b${noun}`, 'i').test(goal))
+            .flatMap(([, roles]) => roles)
+          const roleMissing =
+            wantedRoles.length > 0 &&
+            !pageCandidates.some((candidate) => wantedRoles.includes((candidate.role ?? '').toLowerCase()))
+          if (bestScore === 0 || roleMissing) {
+            trace.push(`第 ${step} 步：抽取结果里没有与目标相关的候选（目标词 ${goalTokens.slice(0, 4).join('/')}${roleMissing ? `，缺角色 ${wantedRoles.join('/')}` : ''}）→ 退回整树观察`)
             return useTree()
           }
         }
@@ -1364,7 +1391,20 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     let offered: readonly TaskCandidate[] = candidates
     // 只有一个输入框时免判断——**但调用方给了多个值时不能免**：得让判断层选"用哪个值"。
     // （控制项已保证 choices ≥2 个，所以这里不是为契约兜底，纯粹为省一次请求。）
-    const singleInputBypass = actionable.length === 1 && actionable[0].kind === 'input' && (deps.inputs === undefined || Object.keys(deps.inputs).length === 1)
+    // **免判断只在"这一个输入框就是目标"时成立**：goal 里出现"输入/填/type/fill/搜索"等
+    // 打字动词，或者这个框的名字能在 goal 里找到。
+    // 真机 shadow-checkbox：页面只抽出 1 个 textbox（shadow 里的 checkbox 看不见），
+    // 旧逻辑直接免判断 → input_required 交回宿主，连判断层都没见过目标。
+    const typingGoal = /(输入|填写|填|搜索|查询|type|fill|search|enter|query|set)/i.test(goal)
+    const singleInput = actionable[0]
+    const singleInputNamed = singleInput !== undefined &&
+      ((singleInput.name ?? '') !== '') &&
+      goalTokensOf(goal).some((token) => (singleInput.name ?? '').toLowerCase().includes(token))
+    const singleInputBypass =
+      actionable.length === 1 &&
+      singleInput?.kind === 'input' &&
+      (deps.inputs === undefined || Object.keys(deps.inputs).length === 1) &&
+      (typingGoal || singleInputNamed)
     if (singleInputBypass) {
       const only = actionable[0]
       trace.push(`第 ${step} 步：页面上只有一个输入框（${only.id}）→ 免判断，交回宿主填内容`)
