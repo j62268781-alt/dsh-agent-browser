@@ -1545,7 +1545,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     attempted.add(chosen.id)
 
-    // **ambiguous 门**（Ying-Kai-Liao/jev-browser）：置信度低且前几名概率接近 → 不猜，把候选交回宿主。
+    // **ambiguous 门**（Ying-Kai-Liao/jev-browser）：置信度低且前几名概率接近 → 先确认、再缩小候选重问。
+    //
+    // 真机（repeat=3）：ambiguous 出现时置信 0.25–0.41、前两名差 0.02–0.13；其中 3 条任务
+    // **当时断言已经是 true**——页面其实做完了，我们却把"判断层犹豫"直接当失败交回去。
+    // 所以顺序是：① 先用页面可见正文独立确认（已完成就停，别在达成的页面上乱点）；
+    // ② 确认不通过 → 只给 top-5 候选**强制再选一次**（候选少，判断层更容易下决心）；
+    // ③ 仍然低置信才交回宿主（保持"不猜"的纪律）。
     if (chosen.kind === 'click' && confidence !== undefined && confidence < AMBIGUOUS_CONFIDENCE && probabilities !== undefined) {
       const ranked = Object.entries(probabilities).sort((left, right) => right[1] - left[1])
       const gap = (ranked[0]?.[1] ?? 0) - (ranked[1]?.[1] ?? 0)
@@ -1554,9 +1560,48 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           const candidate = byId.get(id)
           return { id, description: candidate?.description ?? id }
         })
-        trace.push(`第 ${step} 步：判断层分不清（置信 ${confidence.toFixed(2)}，前两名差 ${gap.toFixed(2)}）→ ambiguous，交回候选`)
-        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:ambiguous', executed: false, reason: 'ambiguous', ...(goalDone === undefined ? {} : { goalDone }), ...(confidence === undefined ? {} : { confidence }) })
-        return { ...finish('ambiguous', `置信 ${confidence.toFixed(2)}、前两名差 ${gap.toFixed(2)}：请从候选里挑`, snapshot), candidates: top }
+        const ambiguousFinish = () => {
+          trace.push(`第 ${step} 步：判断层分不清（置信 ${confidence.toFixed(2)}，前两名差 ${gap.toFixed(2)}）→ ambiguous，交回候选`)
+          steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:ambiguous', executed: false, reason: 'ambiguous', ...(goalDone === undefined ? {} : { goalDone }), ...(confidence === undefined ? {} : { confidence }) })
+          return { ...finish('ambiguous', `置信 ${confidence.toFixed(2)}、前两名差 ${gap.toFixed(2)}：请从候选里挑`, snapshot), candidates: top }
+        }
+        // ① 独立确认：已完成就别再动
+        const ambiguousConfirm = await confirmWithContext()
+        if (ambiguousConfirm.confirmed) {
+          trace.push(
+            `第 ${step} 步：判断层分不清（置信 ${confidence.toFixed(2)}），但独立确认通过（p=${ambiguousConfirm.probability.toFixed(2)}）→ 停，交回宿主校验`,
+          )
+          steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:ambiguous_confirmed', executed: false, reason: 'ambiguous_confirmed', ...(goalDone === undefined ? {} : { goalDone }), ...(confidence === undefined ? {} : { confidence }), confirm: ambiguousConfirm.probability })
+          return finish('needs_verification', `判断层分不清，但独立确认 p=${ambiguousConfirm.probability.toFixed(2)}：目标已达成`, snapshot)
+        }
+        // ② 缩小候选再问一次（强制在小集合里选）
+        const shortlist = ranked
+          .slice(0, AMBIGUOUS_SHORTLIST)
+          .map(([id]) => byId.get(id))
+          .filter((candidate): candidate is TaskCandidate => candidate !== undefined)
+        if (shortlist.length >= 2) {
+          try {
+            const second = await askOnce(shortlist)
+            const secondAction = second.action
+            const picked = secondAction?.kind === 'choice' ? shortlist.find((candidate) => candidate.id === secondAction.optionId) : undefined
+            const secondConfidence = secondAction?.kind === 'choice' ? secondAction.confidence : undefined
+            if (picked !== undefined && secondConfidence !== undefined && secondConfidence >= AMBIGUOUS_RETRY_FLOOR) {
+              trace.push(
+                `第 ${step} 步：分不清 → 缩到 ${shortlist.length} 个候选再问，选中「${picked.name ?? picked.id}」（置信 ${secondConfidence.toFixed(2)}）`,
+              )
+              attempted.add(picked.id)
+              chosen = picked
+            } else {
+              trace.push(`第 ${step} 步：缩小候选后仍然不够确定（置信 ${secondConfidence === undefined ? '—' : secondConfidence.toFixed(2)}）`)
+              return ambiguousFinish()
+            }
+          } catch (error) {
+            trace.push(`第 ${step} 步：二次询问失败（${message(error)}）`)
+            return ambiguousFinish()
+          }
+        } else {
+          return ambiguousFinish()
+        }
       }
     }
 
@@ -1956,6 +2001,10 @@ const LIKELY_CONFIRM_FLOOR = 0.6
 /** 置信度低于它 + 前两名概率差小于 AMBIGUOUS_GAP → 不给动作，交回候选。 */
 const AMBIGUOUS_CONFIDENCE = 0.45
 const AMBIGUOUS_GAP = 0.15
+/** ambiguous 时二次询问只给这么多个候选（小集合更容易下决心）。 */
+const AMBIGUOUS_SHORTLIST = 5
+/** 二次询问的置信地板：低于它仍然交回宿主，不猜。 */
+const AMBIGUOUS_RETRY_FLOOR = 0.5
 /** 不可逆动作的判定阈值（宁可多问一次：误下单的代价远大于多一轮）。 */
 const IRREVERSIBLE_THRESHOLD = 0.7
 

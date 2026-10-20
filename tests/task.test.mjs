@@ -740,13 +740,41 @@ test('goal_done 落在中间带 + 确认不低 → likely_done（交回宿主验
   assert.ok(result.trace.some((line) => /likely_done/.test(line)))
 })
 
+test('置信度低但独立确认通过 → 不停在 ambiguous，按完成交回宿主校验（真机：已达成却判失败）', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '保存' },
+    { ref: 'e2', role: 'button', name: '提交' },
+    { ref: 'e3', role: 'button', name: '取消' },
+  ])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.3, confidence: 0.3, confirmProbability: 0.9, probabilities: { 'click:e1': 0.35, 'click:e2': 0.30, 'click:e3': 0.2 } }])
+  const result = await runTask('目标', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.deepEqual(page.state.acts, [], '确认已达成时不该再执行动作')
+})
+
+test('置信度低 → 缩到 5 个候选再问一次，二次置信够高就执行', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '保存' },
+    { ref: 'e2', role: 'button', name: '提交', onClick: (state) => { state.text = '已提交' } },
+    { ref: 'e3', role: 'button', name: '取消' },
+  ])
+  const judge = fakeJudge([
+    { action: 'click:e1', goalDone: 0.1, confidence: 0.3, confirmProbability: 0.2, probabilities: { 'click:e1': 0.35, 'click:e2': 0.30, 'click:e3': 0.2 } },
+    { action: 'click:e2', goalDone: 0.1, confidence: 0.9 },
+    { action: 'click:e2', goalDone: 0.99, confidence: 0.95 },
+  ])
+  const result = await runTask('目标', deps(page.browser, judge), { maxSteps: 3 })
+  assert.ok(page.state.acts.includes('click @e2'), '二次询问后应执行它选中的候选')
+  assert.notEqual(result.status, 'ambiguous')
+})
+
 test('置信度低且前两名接近 → ambiguous，并给出前 3 名候选', async () => {
   const page = fakePage([
     { ref: 'e1', role: 'button', name: '保存' },
     { ref: 'e2', role: 'button', name: '提交' },
     { ref: 'e3', role: 'button', name: '取消' },
   ])
-  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confidence: 0.3, probabilities: { 'click:e1': 0.35, 'click:e2': 0.30, 'click:e3': 0.2 } }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confidence: 0.3, confirmProbability: 0.2, probabilities: { 'click:e1': 0.35, 'click:e2': 0.30, 'click:e3': 0.2 } }])
   const result = await runTask('目标', deps(page.browser, judge))
   assert.equal(result.status, 'ambiguous')
   assert.deepEqual(page.state.acts, [], 'ambiguous 时不该执行动作')
