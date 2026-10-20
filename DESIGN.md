@@ -1158,6 +1158,45 @@ HTTP 层不可控时，固定等待两头不讨好：快站点白等、慢站点
   github-issue-search / webform / ti-sort-table）仍 0/5 —— 就绪门**只防"半张页面误判"**，
   不修 ambiguous/budget，不夸大。
 
+**R4 探针结论：能力缺口 7 条的真实归属（`a8a309a`）**
+
+按第二轮方案 R4 做探针（不猜），结果推翻了"上游缺失"的假设：
+
+| 任务 | 树里有？ | 动作可达？ | 归属 |
+|---|---|---|---|
+| **shadow-checkbox** | ✅ `checkbox [checked=false, ref=e190]` | ✅ `click @e190` → shadow 内 checked=true | **插件侧可修（已修）** |
+| iframe-form / iframe-datepicker | ✅ `Iframe [ref=e95]` 下有 textbox/button | ❌ `fill @e98` → **`Unknown ref: e98`** | **上游限制**（跨 frame 动作不可达，记 issue） |
+| react-select | ✅ portal 选项在 DOM 里 | ✅ 但判断层 ambiguous | 判断层问题（P2a 已试无效） |
+
+**修掉的三个连环 bug**（都在候选生成层，不动判断层协议）：
+
+1. **语言守卫被控制项污染**：`pageIsCjk` 拿 `candidates` 判，而 `CONTROL_CANDIDATES` 描述是中文
+   → 英文目标在英文页上被判"不可比" → 覆盖检查（零命中→退回整树）**永远不触发**；
+2. **覆盖检查被自制中文模板污染**：候选描述是 `在…里输入/选择`、`点击…`，同样让 pageIsCjk 恒真
+   → 改为**只看元素自身的 name**；
+3. **子串命中骗过覆盖检查**：goal "Check the checkbox" 的 token "check" 命中 "textbox"
+   → 新增**角色感知**：goal 提到的控件名词（checkbox/radio/textbox/button/link/tab/option…）
+   必须在候选角色里存在，否则退回整树。
+
+**副作用修复**：`singleInputBypass`（页面只有一个输入框就免判断）收窄为
+"goal 含打字动词 **或** 框名命中 goal" —— 否则 shadow 页会把唯一那 1 个 textbox 当目标直接
+`input_required`，判断层连目标都没见过。
+
+**结果**：shadow-checkbox **0/3 → 3/3**（3 次判断/3s）；base 层全量 **13/25 持平**（无回归）；
+合计多数票 **20/39**（基线 17、上一轮 19）。
+
+**DashScope vs TypeSafe 对照（同 8 条 ×3）**：
+
+| 指标 | TypeSafe（jev-1.13） | DashScope（preview） |
+|---|---|---|
+| 多数票 | **6/8** | 4/8 |
+| false-done | **0** | **2** |
+| tokens | 323k | **161k** |
+| 耗时 | 163s | **100s** |
+
+结论：DashScope 便宜一半、快 40%，但**制造假完成**（正是我们花多轮从 7 条压到 2 条的指标）。
+如果要用，只适合"动作选择"或 CI 冒烟；**完成判定必须留在强 judge**。本轮按要求不动用途配置。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
