@@ -1112,6 +1112,34 @@ infinite-scroll），比基线多 2 条——是后续要盯的红线。
 - CLI 超时用 SIGKILL + 断开管道（wrapper 对 SIGTERM 不敏感，真机 60s 超时拖成 928s）；
 - bench `open` 用 20s 超时、重试 2 次（一条卡死不再拖垮整轮）。
 
+**事件驱动等待：替代固定 40ms/250ms（`1bbfc36`）**
+
+用户指出："点击后固定等 40ms 判断跳转，网络慢时数据没回来会误判"——**实测证明完全正确**：
+
+| 站点 | 点击 → URL 变化 |
+|---|---|
+| GitHub Pull requests 标签 | **1027ms** |
+| the-internet 导航 | **858ms** |
+| Wikipedia 链接 | **1153ms** |
+
+也就是说"点击后等 40ms（或补 250ms）就判定没效果"**必然**把正常跳转误判成失败，
+`github-pulls` 就是这样反复 no_progress 的。
+
+**改法（不猜时长，让页面自己说"变了"）**：新增 `AgentBrowser.waitForPageShift()`——
+一次 CLI `wait --fn` 在页面内轮询，任一条件满足即返回：
+`location.href != 旧URL || !body.innerText.includes(旧正文样本) || 目标选择器出现`，超时 4s。
+
+接入两处：
+1. **每步观察后**：40ms 快路径没变化 → 事件驱动等待（最多 4s）→ 再观察；
+2. **判定"动作无效果"之前**：再给一次机会，等到变化就继续，而不是换候选/停。
+
+**结果**：`github-pulls` 1/3 → **3/3**；base 子集 navwait 4/5、0 false-done。
+全量（repeat=3，分 chunk）：base **13/25**（12→13）+ hard/guard **6/14** = **19/39 多数票**，
+false-done 4（webform-fine、todomvc-fine、saucedemo-coarse、infinite-scroll）。
+
+**为什么不用"更大的固定等待"**：固定等待在快站点上纯浪费（每步多 1s），在慢站点上仍然可能不够；
+事件驱动的成本是"变了就立刻返回"，只有真慢才付钱，而且**上限明确**（4s 后按原逻辑处理）。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
