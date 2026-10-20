@@ -85,9 +85,9 @@ async function openVerified(url) {
   let last = ''
   // 网络抖动（herokuapp 尤其明显）会让 open 直接抛错：重试 3 次并退避，
   // 否则整条任务会被记成 network，白白污染对照实验（ambiguous-fix 那次 2/3 轮全是 open 失败）。
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (attempt > 0) await new Promise((done) => setTimeout(done, 1000 * attempt))
-    await browser.open(url)
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await new Promise((done) => setTimeout(done, 800))
+    await browser.open(url, { timeoutMs: 20000 })
     last = stripBoundaries(await browser.run(['get', 'url'])).trim()
     try {
       const want = new URL(url)

@@ -136,6 +136,8 @@ export interface TaskCandidate {
   readonly near?: string
   /** 原始标签名（小写）：a/button 可以直接 `el.click()`，不依赖视口坐标。 */
   readonly tag?: string
+  /** 拖拽的目标元素（`drag:<src>-><dst>` 用）。 */
+  readonly targetRef?: string
 }
 
 export interface TaskStep {
@@ -414,6 +416,60 @@ export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Reco
  * 真机 bench：调用方给的 key 是 `first_name`，页面 label 是 "First Name"，
  * 只做小写比较永远匹配不上 → 明明给了值还要 input_required（saucedemo-fine）。
  */
+/** 目标里点名要按的键（press Escape / 按 Enter / 按 Control+a）。 */
+export function keysWantedByGoal(goal: string): string[] {
+  const wanted: string[] = []
+  const pattern = /(?:press|hit|type)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9+]*(?:\s*\+\s*[A-Za-z0-9]+)?)\s*(?:key|键)?/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(goal)) !== null) {
+    const raw = match[1]?.trim()
+    if (raw === undefined || raw === '') continue
+    const key = normalizeKey(raw)
+    if (key !== undefined) wanted.push(key)
+  }
+  // 中文："按 Escape 键" / "按下回车"
+  const cjk = /(?:按|按下|敲)\s*([A-Za-z][A-Za-z0-9+]*|回车|确认键|退出键|空格)/g
+  while ((match = cjk.exec(goal)) !== null) {
+    const key = normalizeKey(match[1] ?? '')
+    if (key !== undefined) wanted.push(key)
+  }
+  return [...new Set(wanted)]
+}
+
+/** 白名单：只认真实键盘键名；带 Meta 的单键在远端会话容易逃逸焦点，拒绝。 */
+export function normalizeKey(raw: string): string | undefined {
+  const compact = raw.trim().replace(/\s+/g, '')
+  if (compact === '') return undefined
+  const lower = compact.toLowerCase()
+  const aliases: Record<string, string> = {
+    '回车': 'Enter', '确认键': 'Enter', '退出键': 'Escape', '空格': 'Space', '空隔': 'Space',
+    'escape': 'Escape', 'esc': 'Escape', 'enter': 'Enter', 'return': 'Enter', 'tab': 'Tab',
+    'space': 'Space', 'spacebar': 'Space', 'backspace': 'Backspace', 'delete': 'Delete',
+    'arrowup': 'ArrowUp', 'arrowdown': 'ArrowDown', 'arrowleft': 'ArrowLeft', 'arrowright': 'ArrowRight',
+  }
+  if (aliases[lower] !== undefined) return aliases[lower]
+  // 组合键 Control+a / Shift+Tab：逐段归一，首段必须是 Control/Shift
+  if (compact.includes('+')) {
+    const parts = compact.split('+')
+    const head = parts[0]?.toLowerCase()
+    if (head !== 'control' && head !== 'shift') return undefined
+    const rest = parts.slice(1).join('+')
+    if (rest === '') return undefined
+    return `${head === 'control' ? 'Control' : 'Shift'}+${rest}`
+  }
+  return undefined
+}
+
+/** 目标是不是要"悬停/鼠标移上去"。 */
+export function wantsHover(goal: string): boolean {
+  return /(hover|悬停|鼠标移|移到|mouse over)/i.test(goal)
+}
+
+/** 目标是不是要"拖拽"。 */
+export function wantsDrag(goal: string): boolean {
+  return /(drag|拖拽|拖动|拖到|drag and drop)/i.test(goal)
+}
+
 /**
  * 目标是不是**一个**子目标：多子目标（"Log in, add to cart, checkout"）不能用
  * "表单已提交/已选择"这类确定性收尾——那只证明第一步做完了，不是整个目标完成。
@@ -999,13 +1055,57 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (typeof deps.browser.extract !== 'function') return useTree()
       try {
         const started = now()
-        const page = await deps.browser.extract({ signal: deps.signal })
+        const page = await deps.browser.extract({
+          signal: deps.signal,
+          // hover / drag / 图片类目标才抽 figure/img[alt]（默认不抽，避免 dense 页图片挤掉链接）。
+          includeMedia: wantsHover(goal) || wantsDrag(goal) || /(image|picture|photo|图|头像|avatar)/i.test(goal),
+        })
         timings.snapshotMs += now() - started
         // 只有刚填过输入框时才提供 Enter（真机：下拉选择后判断层反复选 press_enter，2 次就 stalled）。
         const controls = lastActionWasText
           ? CONTROL_CANDIDATES
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
         const candidates = [...candidatesFromExtracted(page.items, goal), ...controls]
+        // **动作面**：goal 点名要按的键 / 悬停 / 拖拽 → 注入对应候选。
+        // 上游 CLI 早就有 press/hover/drag（skills/references/commands.md），以前是我们没铺候选。
+        const extraControls: TaskCandidate[] = []
+        for (const key of keysWantedByGoal(goal)) {
+          if (key === 'Enter') continue // control:press_enter 已经覆盖
+          extraControls.push({ id: `control:press_${key}`, description: `按 ${key} 键`, kind: 'control' })
+        }
+        if (wantsHover(goal)) {
+          for (const candidate of candidates.slice(0, 6)) {
+            if (candidate.kind === 'click' && candidate.ref !== undefined) {
+              extraControls.push({
+                id: `hover:${candidate.id}`,
+                description: `把鼠标移到${candidate.description.replace(/^点击/, '')}`,
+                kind: 'control',
+                ref: candidate.ref,
+                name: candidate.name,
+              })
+            }
+          }
+        }
+        if (wantsDrag(goal)) {
+          const draggables = candidates.filter((candidate) => candidate.kind === 'click' && candidate.ref !== undefined).slice(0, 4)
+          for (const source of draggables) {
+            for (const target of draggables) {
+              if (source.id === target.id) continue
+              extraControls.push({
+                id: `drag:${source.id}->${target.id}`,
+                description: `把「${source.name ?? source.id}」拖到「${target.name ?? target.id}」上`,
+                kind: 'control',
+                ref: source.ref,
+                targetRef: target.ref,
+              })
+            }
+          }
+        }
+        if (extraControls.length > 0) {
+          trace.push(`第 ${step} 步：目标要求非点击动作 → 注入 ${extraControls.length} 个候选（${extraControls.slice(0, 3).map((item) => item.id).join('、')}…）`)
+          candidates.push(...extraControls)
+        }
+
         // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
         // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
         // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
@@ -1183,6 +1283,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     const interaction = interactionSignature(snapshot)
 
     // 语义状态变了 = 上一次交付确实推进了页面：清空"无效/已试"记账。
+    // **先留住上一步的动作 id**：下面会清空 delivered，而"拖拽/悬停是否已生效"要用它。
+    const lastDeliveredId = delivered?.id
     if (delivered !== undefined && stateChanged(delivered.snapshot, snapshot)) {
       delivered = undefined
       stalled.clear()
@@ -1327,6 +1429,20 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         `还没生效（${pendingField.state ?? '状态未知'}）→ 不结束，继续操作`,
       )
     }
+    // **拖拽的确定性收尾**：上一步真的拖了、且页面内容/结构发生了变化 → 拖拽已生效，停。
+    // 真机 the-internet/drag_and_drop：拖一次页面就换位，但判断层 goal_done 只有 0.2，
+    // 会再拖一次把状态换回去，来回 ping-pong 到 stuck。
+    if (
+      lastDeliveredId !== undefined &&
+      lastDeliveredId.startsWith('drag:') &&
+      lastChange !== undefined &&
+      (lastChange.text_changed === true || lastChange.added === true || lastChange.removed === true)
+    ) {
+      trace.push(`第 ${step} 步：拖拽后页面发生变化（${Object.entries(lastChange).filter(([, v]) => v === true).map(([k]) => k).join('/')}）→ 停，交回宿主校验`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastDeliveredId, executed: true, reason: 'drag_applied' })
+      return finish('needs_verification', '拖拽后页面发生变化', snapshot)
+    }
+
     // **填充类目标的确定性收尾**：调用方给的值都已生效、且目标里没有"再去提交/搜索/打开"的动词。
     // 真机（jk-login / fixture-hotel）：纯填值目标会被判断层拖成 ambiguous/no_progress。
     if (pendingField === undefined && !FOLLOW_UP_VERBS.test(goal) && inputsApplied(allCandidates, deps.inputs, filledFields)) {
@@ -1872,6 +1988,30 @@ async function execute(
     }
     // ref 已经是**完整目标**：`@e12`（快照路径）或 `[data-dsh-idx="7"]`（抽取路径）。
     await browser.act('click', candidate.ref, {}, { signal })
+    return {}
+  }
+  // 非点击动作（按键 / 悬停 / 拖拽）：都走上游现成命令。
+  if (candidate.id.startsWith('control:press_')) {
+    const key = candidate.id.slice('control:press_'.length)
+    await browser.act('press', 'body', { value: key }, { signal })
+    return {}
+  }
+  if (candidate.id.startsWith('hover:')) {
+    if (candidate.ref !== undefined) await browser.act('hover', candidate.ref, {}, { signal })
+    return {}
+  }
+  if (candidate.id.startsWith('drag:')) {
+    if (candidate.ref !== undefined && candidate.targetRef !== undefined) {
+      // 先试 HTML5 合成拖拽（大多数 DnD 页面只监听 dragstart/drop）；
+      // 失败再退回 CLI 的真实鼠标拖拽（pointer 事件型组件）。
+      try {
+        await browser.jsDrag(candidate.ref, candidate.targetRef, { signal })
+        if (process.env.DSH_DEBUG_DRAG === '1') process.stderr.write(`[drag] jsDrag ok ${candidate.ref} -> ${candidate.targetRef}\n`)
+      } catch (error) {
+        if (process.env.DSH_DEBUG_DRAG === '1') process.stderr.write(`[drag] jsDrag FAILED ${message(error)} → fallback\n`)
+        await browser.act('drag', candidate.ref, { value: candidate.targetRef }, { signal })
+      }
+    }
     return {}
   }
   switch (candidate.id) {

@@ -355,12 +355,20 @@ export class AgentBrowser {
         options.signal?.removeEventListener('abort', abort)
         resolve(value)
       }
+      const killChild = (): void => {
+        // wrapper 是原生二进制，对 SIGTERM 不敏感——必须 SIGKILL，并主动断开管道，
+        // 否则 promise 虽然 resolve 了，子进程/管道仍然挂着（真机：60s 超时后拖到 928s）。
+        try { child.kill('SIGKILL') } catch { /* 已退出 */ }
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        child.stdin?.destroy()
+      }
       const abort = (): void => {
-        child.kill('SIGTERM')
+        killChild()
         finish({ code: null, failed: new CliError('aborted', '浏览器命令被取消') })
       }
       const timer = setTimeout(() => {
-        child.kill('SIGTERM')
+        killChild()
         finish({
           code: null,
           failed: new CliError('timeout', `浏览器命令超过 ${timeoutMs}ms 未返回：agent-browser ${[...this.options.globalArgs, ...args].join(' ').slice(0, 160)}`),
@@ -488,10 +496,16 @@ export class AgentBrowser {
    * 与 `observe()` 的区别：那份是整棵无障碍树（大），这份是脚本预抽的紧凑候选（小）。
    * 给判断层用后者：实测 1,021 字符 ≈ 256 tokens（整树约 4.3k tokens）。
    */
-  async extract(run: CliRunOptions = {}): Promise<ExtractedPage> {
+  async extract(run: CliRunOptions & { includeMedia?: boolean } = {}): Promise<ExtractedPage> {
     // **一次 `eval`**：脚本自己返回候选 + 正文 + 标题 + URL（单进程，7ms 量级）。
     // 不能塞进 batch：batch 按空白切分命令，而 JS 关键字之间必须有空白。
-    const raw = await this.run(['eval', EXTRACT_SCRIPT], run)
+    //
+    // `includeMedia`：只有目标需要 hover / drag / 图片时才额外抽 figure/img[alt]——
+    // 默认不抽，避免 dense 页的图片把链接挤出 300 上限。
+    const script = run.includeMedia === true
+      ? EXTRACT_SCRIPT.replace("const selector = '", "const selector = 'figure,img[alt],[draggable=\"true\"],")
+      : EXTRACT_SCRIPT
+    const raw = await this.run(['eval', script], run)
     return parseExtracted(raw)
   }
 
@@ -555,6 +569,23 @@ export class AgentBrowser {
       }
     }
     return JSON.stringify(data ?? null)
+  }
+
+  /**
+   * **HTML5 拖拽**（dragstart/dragover/drop 合成事件 + DataTransfer）。
+   *
+   * 为什么不用 `act('drag')`：CLI 的 drag 走鼠标事件，HTML5 DnD 页面（真机 the-internet/
+   * drag_and_drop）只监听 dragstart/drop，鼠标拖拽不会触发 → 页面纹丝不动。
+   */
+  async jsDrag(sourceRef: string, targetRef: string, run: CliRunOptions = {}): Promise<void> {
+    const source = JSON.stringify(sourceRef)
+    const target = JSON.stringify(targetRef)
+    const script =
+      `(() => { const src = document.querySelector(${source}); const dst = document.querySelector(${target});` +
+      ' if (!src || !dst) return false; const dt = new DataTransfer();' +
+      " const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));" +
+      " fire(src, 'dragstart'); fire(dst, 'dragenter'); fire(dst, 'dragover'); fire(dst, 'drop'); fire(src, 'dragend'); return true })()"
+    await this.run(['eval', '-b', Buffer.from(script, 'utf8').toString('base64')], run)
   }
 
   /**
