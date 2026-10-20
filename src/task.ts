@@ -916,6 +916,10 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   /** 上一次用的是 `el.click()`（合成事件）：没效果时回退成"滚进视口 + 真实鼠标点击"。 */
   let lastJsClick: { id: string; ref: string } | undefined
   const jsClickRetried = new Set<string>()
+  /** 本轮已证明"执行了但页面没变"的候选：从后续判断的候选池里去掉，逼判断层换路（而不是原地停）。 */
+  const useless = new Set<string>()
+  /** 卡死换路的次数上限：无限换路会把任务拖成 budget，保留一点耐心但必须有界。 */
+  let reroutes = 0
   /** 本轮填过**密钥类字段**（密码/验证码/卡号）：它消失 = 多半已经提交并离开了表单页。 */
   let filledSecret = false
 
@@ -1225,6 +1229,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     let answers: Readonly<Record<string, JudgmentAnswer>>
     let askedCount = Math.min(candidates.length, JUDGE_OPTION_CAP)
+    /** 真正送判断的候选（已剔除本轮证明无效的）；catch 里缩采样也要用同一份。 */
+    let offered: readonly TaskCandidate[] = candidates
     // 只有一个输入框时免判断——**但调用方给了多个值时不能免**：得让判断层选"用哪个值"。
     // （控制项已保证 choices ≥2 个，所以这里不是为契约兜底，纯粹为省一次请求。）
     const singleInputBypass = actionable.length === 1 && actionable[0].kind === 'input' && (deps.inputs === undefined || Object.keys(deps.inputs).length === 1)
@@ -1234,7 +1240,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       answers = { action: { kind: 'choice', optionId: only.id, probabilities: { [only.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
     } else
     try {
-      answers = await askOnce(candidates.slice(0, JUDGE_OPTION_CAP))
+      // **卡死换路**：把本轮已证明无效的候选从判断池里剔除（至少留 2 个，否则不过滤）。
+      offered = candidates.filter((candidate) => !useless.has(candidate.id))
+      if (offered.length < 2) offered = candidates
+      if (offered.length !== candidates.length) trace.push(`第 ${step} 步：剔除 ${candidates.length - offered.length} 个已证明无效的候选（换路）`)
+      answers = await askOnce(offered.slice(0, JUDGE_OPTION_CAP))
     } catch (error) {
       if (isInvalidResponse(error)) {
         let last = error
@@ -1247,7 +1257,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             : `（候选 ${numbers.optionCount}${numbers.sum === undefined ? '' : `，Σp ${numbers.sum.toFixed(2)}`}${numbers.tolerance === undefined ? '' : `，容差 ${numbers.tolerance}`}）`
           trace.push(`第 ${step} 步：${askedCount} 个候选时分布不合法${facts} → 缩到 ${size} 个再采一次`)
           try {
-            recovered = await askOnce(candidates.slice(0, size))
+            recovered = await askOnce(offered.slice(0, size))
             askedCount = size
             break
           } catch (again) {
@@ -1495,8 +1505,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
       const count = (stalled.get(chosen.id) ?? 0) + 1
       stalled.set(chosen.id, count)
-      trace.push(`第 ${step} 步：${chosen.id} 执行过但页面语义状态没变（第 ${count} 次）`)
+      useless.add(chosen.id)
+      trace.push(`第 ${step} 步：${chosen.id} 执行过但页面语义状态没变（第 ${count} 次）→ 本轮不再提供它`)
       if (count >= 2) {
+        // 还有别的可操作候选 → 让下一轮判断在剔除它之后重新选（换路），不要直接判 no_progress。
+        const remaining = candidates.filter((candidate) =>
+          candidate.kind !== 'input' &&
+          candidate.id !== 'control:wait' &&
+          !useless.has(candidate.id))
+        if (remaining.length > 0 && reroutes < 2) {
+          reroutes += 1
+          trace.push(`第 ${step} 步：还有 ${remaining.length} 个候选可试 → 换路，继续（第 ${reroutes} 次）`)
+          continue
+        }
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: false, reason: 'stalled_action', stateChanged: false, ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }) })
         const confirmed = await confirmWithContext()
         if (confirmed.confirmed) {

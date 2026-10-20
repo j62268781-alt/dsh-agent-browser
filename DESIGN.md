@@ -1021,6 +1021,42 @@ login-wall、neg-missing-option、guard-login。
 > 口径说明：**能力边界之外的任务（iframe/shadow/上传/拖拽/右键）不计入"该修"的范围**，
 > 它们由 skill 引导宿主改用原子工具；循环只对"该做的能做好"负责。
 
+**测量纪律：`--repeat` + 多数票（2026-10-20）**
+
+同一份代码单次跑出过 13/15/16/16 —— 单次基线**不足以**判断改动。现在：
+- `bench/run.mjs --repeat N`：每任务跑 N 次，每条 record 带 `run`；
+- 跑完额外输出**多数票**（tie 不算通过）和"跑不稳的任务"清单；
+- 每任务前额外 `dialog dismiss`（上一条任务的 confirm/prompt 会毒化整个会话）；
+- 修了两个**断言自身**的崩溃（`ti-hover`/`ti-entry-ad` 的元素不存在时 `getComputedStyle` 抛错）。
+
+**可信基线（repeat=3，jev-1.13 · cap24）**
+
+| 轮次 | 正确 | false-done | 判断次数 |
+|---|---|---|---|
+| run1 | 16/39 | 3 | 270 |
+| run2 | **17/39** | 2 | 267 |
+| run3 | 16/39 | 3 | 268 |
+| **多数票** | **17/39** | **2** | — |
+
+- 稳定通过 15 条、跑不稳只有 2 条（`ti-add-remove` 2/3、`wiki-search` 2/3）；
+- 成本：**6.9 次判断/任务、16.8k tokens、8.3s/任务**；
+- 稳定失败 22 条 = **7 条能力缺口 + 15 条逻辑/判断**。
+
+**稳定失败的 15 条（按桶）**
+
+| 桶 | 数量 | 任务 |
+|---|---|---|
+| ambiguous（分不清） | 4 | ti-checkboxes、ti-dynamic-controls、ti-js-confirm、saucedemo-fine |
+| budget（10 步打转） | 5 | webform、todomvc-coarse、ti-sort-table、saucedemo-coarse、ti-dynamic-loading |
+| 完成判定误判 | 3 | todomvc-fine（likely_done）、github-issue-search（likely_done）、webform-fine（needs_verification） |
+| no_progress（无效动作后停） | 2 | ti-entry-ad、guard-webform |
+| page_error | 1 | guard-checkout（saucedemo 登录失败被正确识别，但任务本身要登录） |
+
+**卡死换路（本轮实现）**：一次"执行了但页面没变"就把该候选记进 `useless`，
+从后续判断的候选池里剔除（至少留 2 个），逼判断层换路；换路上限 2 次，避免拖成 budget。
+效果是"不再原地重复同一个无效动作"，但上面 5 条 budget 任务的根因不在重复动作
+（是有序子目标/缺动作），所以分数没变——**这轮的真实产出是"可信基线"和"测量工具"**。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）

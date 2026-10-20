@@ -150,11 +150,11 @@ export const BASE = [
 
   // ---------------------------------------------------------------- interaction types
   { id: 'ti-hover', cat: 'interaction', url: `${TI}/hovers`,
-    steps: [{ goal: 'Reveal the name of the second user by hovering over their picture', assert: "() => getComputedStyle(document.querySelectorAll('.figcaption')[1]).display !== 'none'" }] },
+    steps: [{ goal: 'Reveal the name of the second user by hovering over their picture', assert: "() => { const c = document.querySelectorAll('.figcaption')[1]; return c !== undefined && getComputedStyle(c).display !== 'none' }" }] },
   { id: 'ti-js-confirm', cat: 'interaction', url: `${TI}/javascript_alerts`,
     steps: [{ goal: 'Trigger the JS Confirm dialog and accept it', assert: "() => document.querySelector('#result').innerText === 'You clicked: Ok'" }] },
   { id: 'ti-entry-ad', cat: 'interaction', url: `${TI}/entry_ad`,
-    steps: [{ goal: 'Close the advertisement modal', assert: "() => getComputedStyle(document.querySelector('#modal')).display === 'none'" }] },
+    steps: [{ goal: 'Close the advertisement modal', assert: "() => { const m = document.querySelector('#modal'); return m !== null && getComputedStyle(m).display === 'none' }" }] },
   { id: 'ti-sort-table', cat: 'interaction', url: `${TI}/tables`,
     steps: [{ goal: 'Sort the first table by Last Name', assert: "() => document.querySelector('#table1 tbody tr td').innerText === 'Bach'" }] },
 

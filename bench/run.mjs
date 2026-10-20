@@ -50,6 +50,9 @@ const closeAtEnd = flag('close')
 const clearCookies = !flag('no-clear')
 const out = resolve(arg('out', resolve(HERE, 'results', `run-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`)))
 const verbose = flag('verbose')
+// **每任务重复跑 N 次**：同一份代码的正确数在 13–16/39 之间波动，单次基线不足以判断改动。
+// repeat>1 时每条 record 带 run 字段，最后额外打印"多数票"结果（tie 不算通过）。
+const repeat = Math.max(1, Number(arg('repeat', '1')) || 1)
 
 const tasks = tierNames.flatMap((name) => TIERS[name]).filter((task) => only === undefined || only.includes(task.id))
 if (tasks.length === 0) throw new Error('没有匹配的任务')
@@ -108,17 +111,19 @@ async function evaluate(expression) {
 }
 
 const records = []
+for (let run = 1; run <= repeat; run += 1) {
+if (repeat > 1) console.log(`\n===== 轮次 ${run}/${repeat} =====`)
 for (const [index, task] of tasks.entries()) {
   const label = `[${index + 1}/${tasks.length}] ${task.id}`
   if (task.skip !== undefined) {
-    records.push({ id: task.id, cat: task.cat, tier: tierNames.find((name) => TIERS[name].includes(task)), outcome: 'skipped', reason: task.skip })
+    records.push({ id: task.id, cat: task.cat, run, tier: tierNames.find((name) => TIERS[name].includes(task)), outcome: 'skipped', reason: task.skip })
     console.log(`${label} — 跳过（${task.skip}）`)
     continue
   }
 
   const started = Date.now()
   const record = {
-    id: task.id, cat: task.cat, expect: task.expect ?? 'pass', guard: task.guard === true,
+    id: task.id, cat: task.cat, run, expect: task.expect ?? 'pass', guard: task.guard === true,
     tier: tierNames.find((name) => TIERS[name].includes(task)), url: task.url, steps: [],
   }
   const abort = new AbortController()
@@ -127,6 +132,8 @@ for (const [index, task] of tasks.entries()) {
   const watchdog = setTimeout(() => abort.abort(new Error('task timeout')), taskTimeoutMs)
   try {
     if (clearCookies) await browser.run(['cookies', 'clear']).catch(() => {})
+    // 上一条任务可能留下未处理的 confirm/prompt（会让后续所有命令报 "dialog is blocking"）。
+    await browser.run(['dialog', 'dismiss']).catch(() => {})
     await openVerified(task.url)
     for (const step of task.steps) {
       const stepStarted = Date.now()
@@ -204,6 +211,7 @@ for (const [index, task] of tasks.entries()) {
   )
   records.push(record)
 }
+}
 
 // 默认**不关**浏览器：下次跑直接复用同一扇窗口（冷启动 2–4s，还容易触发风控）。
 if (closeAtEnd) await browser.close().catch(() => {})
@@ -217,3 +225,26 @@ if (summary.skipped > 0) console.log(`skipped: ${summary.skipped}`)
 console.log(`status: ${Object.entries(summary.statuses).map(([name, count]) => `${name}=${count}`).join(' ')}`)
 console.log(`→ ${out}`)
 if (summary.falseDone > 0) process.exitCode = 1
+
+// repeat>1：按任务做多数票（tie 不算通过），避免被单次抖动带偏结论。
+if (repeat > 1) {
+  const groups = new Map()
+  for (const record of records) {
+    if (record.outcome === 'skipped') continue
+    const list = groups.get(record.id) ?? []
+    list.push(record)
+    groups.set(record.id, list)
+  }
+  let ok = 0
+  let falseDone = 0
+  const unstable = []
+  for (const [id, list] of groups) {
+    const votes = list.filter((record) => record.correct === true).length
+    const falseVotes = list.filter((record) => record.falseDone === true).length
+    if (votes * 2 > list.length) ok += 1
+    if (falseVotes * 2 >= list.length) falseDone += 1
+    if (votes > 0 && votes < list.length) unstable.push(`${id}(${votes}/${list.length})`)
+  }
+  console.log(`\n多数票（repeat=${repeat}）：${ok}/${groups.size} 正确 · ${falseDone} 条 false-done`)
+  if (unstable.length > 0) console.log(`跑不稳的任务：${unstable.join(' ')}`)
+}
