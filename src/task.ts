@@ -1155,8 +1155,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             return useTree()
           }
         }
-        if (candidates.length === 0) {
-          trace.push(`第 ${step} 步：页面内抽取没有可用候选（${page.items.length} 个元素）→ 退回整树观察`)
+        // **抽取一个页面元素都没拿到 → 退回整树**。
+        // 注意：这里必须数**页面元素**，不能数 candidates —— 控制项（scroll/wait/back…）
+        // 永远在 candidates 里，`candidates.length === 0` 永不成立，
+        // 于是这条回退路径从未生效（真机 iframe-form：抽取 0 个元素，却一路走到
+        // "页面上没有可操作的元素"直接 no_progress，a11y 树里那 93 个 ref 从没被用过）。
+        const extractable = candidates.filter((candidate) => candidate.kind !== 'control')
+        if (extractable.length === 0) {
+          trace.push(`第 ${step} 步：页面内抽取没有可用元素（${page.items.length} 个元素）→ 退回整树观察`)
           return useTree()
         }
         // 合成一份"紧凑快照"：下游的 stateChanged / 停滞判定 / 状态载荷都基于它。
@@ -1314,6 +1320,9 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       const state = stateOf(candidate)
       // 字段当前状态已经是这个值（或勾选态已符合）→ 重复填没有意义。
       // redacted（密码）只知道"填过"，不知道值，填过就不再填。
+      // **不要"填过就永久跳过"**（试过，破防负例）：neg-disabled 的目标是"往禁用输入框输入"，
+      // 唯一的输入框被填过一次就从候选里消失 → 页面无可操作元素 → 确认通过 → 假完成 3/3。
+      // 树路径的重复填由 stalled/attempted 记账兜住（同一 ref 第二次无效会被换掉）。
       return state.redacted === true || state.value === done || state.checked === /^(1|true|yes|on|y|是)$/i.test(done)
     })
     if (refilled.length > 0) {
