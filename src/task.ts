@@ -1586,22 +1586,6 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }),
             ...(confidence === undefined ? {} : { confidence }),
           })
-          // **填完下拉/搜索框后先等弹层**（jev-ultrafast：等可见选项出现再预测）：
-          // react-select 等组件的菜单是 portal + 动画，40ms 探测时还没挂载，
-          // 判断层看到的是旧状态 → ambiguous。最多等 2×300ms，只对"选择类"目标生效。
-          const wantsOptions = chosen.role === 'combobox' || /(select|choose|pick|dropdown|combobox|下拉|选择)/i.test(goal)
-          if (wantsOptions) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-              await sleep(300)
-              try {
-                const probed = await observePage()
-                if (probed.candidates.length > candidates.length + 1) {
-                  trace.push(`第 ${step} 步：填完后弹层出现（候选 ${candidates.length} → ${probed.candidates.length}）→ 用新状态继续`)
-                  break
-                }
-              } catch { break }
-            }
-          }
           delivered = { id: chosen.id, snapshot }
           continue
         } catch (error) {
@@ -2110,8 +2094,9 @@ const LIKELY_DONE_FLOOR = 0.6
 /** 中间带里独立确认到这个概率才算 likely_done。 */
 const LIKELY_CONFIRM_FLOOR = 0.6
 /** 置信度低于它 + 前两名概率差小于 AMBIGUOUS_GAP → 不给动作，交回候选。 */
-/** 一次 task 里最多等几轮（每轮最多 6s）。3 太短：点 Start 后 5s 才出结果的页面会被迫改选别的动作。 */
-const WAIT_BUDGET = 6
+/** 一次 task 里最多等几轮（每轮最多 6s）。试过 3→6：ti-dynamic-loading 仍然 budget，
+ *  属于判断层不认结果，不是等待不够——回退到 3，别让失败页多烧 18s。 */
+const WAIT_BUDGET = 3
 const AMBIGUOUS_CONFIDENCE = 0.45
 const AMBIGUOUS_GAP = 0.15
 /** 不可逆动作的判定阈值（宁可多问一次：误下单的代价远大于多一轮）。 */

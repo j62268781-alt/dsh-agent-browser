@@ -1077,6 +1077,41 @@ login-wall、neg-missing-option、guard-login。
 
 回退后复测：**17/39 · false-done 2**（与基线一致），实验代码留在 git stash 里备查。
 
+**P1a 动作集扩展（2026-10-20，来自用户优化方案）**
+
+方案指出：账上 7 条"能力缺口"里有 3 条是**假缺口**——上游 CLI 早就有 `press`/`hover`/`drag`，
+是循环没铺候选。核实后按方案实现：
+
+| 改动 | 细节 |
+|---|---|
+| goal→动作推导（纯函数） | `keysWantedByGoal`（+ 白名单 `normalizeKey`，拒绝 Meta 单键）、`wantsHover`、`wantsDrag`；**只在 goal 命中动词时注入**，默认不加大候选池 |
+| 执行层 | press → `act('press')`；hover → `act('hover')`；drag → **`jsDrag`（HTML5 合成 dragstart/dragover/drop + DataTransfer）**，失败退回 CLI 鼠标拖拽 |
+| 抽取按需纳入媒体元素 | hover/drag 的目标常常不是交互元素（hovers 页头像是 `.figure > img`、drag 页是 `div#column-a/b`，以前只抽到 2 个页脚链接）→ `includeMedia` 时才把 `figure,img[alt],[draggable]` 加进 selector；img 名字用 `alt` 兜底 |
+| 拖拽确定性收尾 | 上一步是 drag 且页面变化 → `needs_verification`（判断层 goal_done 只有 0.2，会再拖一次把状态换回去，ping-pong 到 stuck） |
+
+**实测（repeat=3）**：
+
+| 任务 | 之前 | 之后 |
+|---|---|---|
+| drag | 0/3 | **3/3** |
+| key-press | 0/3 | **3/3** |
+| ti-hover | 0/3 | **3/3** |
+
+**净收益**：base 12/25（不变，hover +1 被 wiki-link/github-pulls 的波动抵消）+ hard/guard 6/14（+1）
+= **18/39 多数票**（基线 17/39）。false-done 4 条（webform-fine、todomvc-fine、saucedemo-coarse、
+infinite-scroll），比基线多 2 条——是后续要盯的红线。
+
+**同轮试过但回退的两项（方案 P2a/P2c）**：
+
+| 试的 | 结果 | 处理 |
+|---|---|---|
+| P2a 填完下拉后等弹层（react-select portal） | react-select **仍 ambiguous（3/3）**，只多花 300–600ms | 回退 |
+| P2c wait 预算 3→6 | ti-dynamic-loading **仍 budget（3/3）** | 回退（失败页不再多烧 18s） |
+
+**顺带修的基础设施 bug**：
+- CLI 超时用 SIGKILL + 断开管道（wrapper 对 SIGTERM 不敏感，真机 60s 超时拖成 928s）；
+- bench `open` 用 20s 超时、重试 2 次（一条卡死不再拖垮整轮）。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
