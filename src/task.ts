@@ -1205,7 +1205,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **加载中就先等**：页面明确显示 Loading… 时继续点同一个按钮只会把加载重新开始
     // （bench fixture-lazy：每步都点 Start，结果永远出不来）。这里确定性地等它变化，再重新观察。
     if (
-      waits < 3 &&
+      waits < WAIT_BUDGET &&
       // 只认**加载指示**（Loading.../加载中/请稍候），不认页面标题里的 "loading"（bench lazy 页 h1 就是 Dynamic loading）。
       /(loading\.{2,}|loading…|加载中|请稍候|处理中|please wait|searching\.{2,})/i.test(observedPage.prose) &&
       steps.some((item) => item.executed)
@@ -1237,7 +1237,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     let candidates = observedPage.candidates
     // 等过 3 次还没动静 → 不再提供 control:wait（否则判断层会一直"再等等"）。
-    if (waits >= 3) candidates = candidates.filter((candidate) => candidate.id !== 'control:wait')
+    if (waits >= WAIT_BUDGET) candidates = candidates.filter((candidate) => candidate.id !== 'control:wait')
     // 过滤前的全量候选：判断"调用方给的值是否都已生效"要用它（字段被状态守卫剔除后就查不到了）。
     const allCandidates = candidates
     // **状态守卫**：已处于目标状态的候选不再发给判断层（避免"已勾选又点一下"这种破坏性重复）。
@@ -1586,6 +1586,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }),
             ...(confidence === undefined ? {} : { confidence }),
           })
+          // **填完下拉/搜索框后先等弹层**（jev-ultrafast：等可见选项出现再预测）：
+          // react-select 等组件的菜单是 portal + 动画，40ms 探测时还没挂载，
+          // 判断层看到的是旧状态 → ambiguous。最多等 2×300ms，只对"选择类"目标生效。
+          const wantsOptions = chosen.role === 'combobox' || /(select|choose|pick|dropdown|combobox|下拉|选择)/i.test(goal)
+          if (wantsOptions) {
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              await sleep(300)
+              try {
+                const probed = await observePage()
+                if (probed.candidates.length > candidates.length + 1) {
+                  trace.push(`第 ${step} 步：填完后弹层出现（候选 ${candidates.length} → ${probed.candidates.length}）→ 用新状态继续`)
+                  break
+                }
+              } catch { break }
+            }
+          }
           delivered = { id: chosen.id, snapshot }
           continue
         } catch (error) {
@@ -2094,6 +2110,8 @@ const LIKELY_DONE_FLOOR = 0.6
 /** 中间带里独立确认到这个概率才算 likely_done。 */
 const LIKELY_CONFIRM_FLOOR = 0.6
 /** 置信度低于它 + 前两名概率差小于 AMBIGUOUS_GAP → 不给动作，交回候选。 */
+/** 一次 task 里最多等几轮（每轮最多 6s）。3 太短：点 Start 后 5s 才出结果的页面会被迫改选别的动作。 */
+const WAIT_BUDGET = 6
 const AMBIGUOUS_CONFIDENCE = 0.45
 const AMBIGUOUS_GAP = 0.15
 /** 不可逆动作的判定阈值（宁可多问一次：误下单的代价远大于多一轮）。 */

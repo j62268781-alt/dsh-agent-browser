@@ -43,7 +43,7 @@ const SCRIPT_LINES = [
   "    if (el.labels && el.labels.length > 0) labelText = String(el.labels[0].innerText || '')",
   "    if (!labelText && el.id) { const byFor = document.querySelector('label[for=\"' + el.id + '\"]'); if (byFor) labelText = String(byFor.innerText || '') }",
   "    if (!labelText) { const wrap = el.closest ? el.closest('label') : null; if (wrap) labelText = String(wrap.innerText || '') }",
-  "    const raw = el.getAttribute('aria-label') || el.getAttribute('title') || labelText || el.innerText || el.value || el.placeholder || ''",
+  "    const raw = el.getAttribute('aria-label') || el.getAttribute('title') || labelText || el.innerText || el.getAttribute('alt') || el.value || el.placeholder || ''",
   '    let name = String(raw)',
   "    name = name.split(String.fromCharCode(10)).join(' ')",
   "    name = name.split(String.fromCharCode(9)).join(' ')",
