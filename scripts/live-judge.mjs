@@ -11,11 +11,24 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import JudgmentService from '../../dsh-judgment/lib/index.js'
-import { readConnection, readCredential } from '../../dsh-judgment/scripts/read-profile.mjs'
+import { profileFile, readCredentialRef } from './profile-config.mjs'
+
+/**
+ * 凭据解析：**优先**用 dsh-judgment 源码 checkout 里的 `scripts/read-profile.mjs`；
+ * 只装了 npm 包（没有 scripts/）时退回本机凭据存储的 `refs:` 段。
+ * 动态 import：文件不存在不能让整个模块加载失败。
+ */
+async function resolveCredential(ref) {
+  try {
+    const dev = await import('../../dsh-judgment/scripts/read-profile.mjs')
+    if (typeof dev.readCredential === 'function') return dev.readCredential(ref)
+  } catch {
+    /* 只装了 npm 包：走本地读取 */
+  }
+  return readCredentialRef(ref)
+}
 
 /**
  * 从 profile 的 `cordis.patch.yml` 里读出**所有** judgment 连接。
@@ -24,7 +37,7 @@ import { readConnection, readCredential } from '../../dsh-judgment/scripts/read-
  * 不引入 YAML 依赖——它是开发脚本，不是产品代码。
  */
 export function readConnections(profile = process.env.DSH_PROFILE ?? 'desktop') {
-  const patchFile = join(homedir(), '.dsh', 'profiles', profile, 'cordis.patch.yml')
+  const patchFile = profileFile(profile)
   const patch = readFileSync(patchFile, 'utf8')
   const lines = patch.split('\n')
   const start = lines.findIndex((line) => /^- id: judgment\/provider/.test(line))
@@ -74,7 +87,7 @@ export async function createLiveJudge(purpose = 'browser.action', connectionName
   if (connection.baseUrl === undefined || connection.model === undefined) {
     throw new Error(`连接 "${chosenName}" 缺少 baseUrl / model`)
   }
-  const credential = readCredential(connection.credentialRef)
+  const credential = await resolveCredential(connection.credentialRef)
 
   class Credentials extends Service {
     constructor(ctx) {
@@ -115,5 +128,3 @@ export async function createLiveJudge(purpose = 'browser.action', connectionName
     describe: `${chosenName}：${connection.baseUrl} · 模型 ${connection.model} · 凭据 ${credential.length} 字符（不回显）`,
   }
 }
-
-export { readConnection }

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, stateOf } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -201,6 +201,58 @@ test('密码框：值不出页面，只报“已填写”，且不会被当成�
   assert.equal(pendingFieldOf([password], { password: 's3cret' }), undefined)
   // 没给值时不能凭空"已满足"（避免把密码框当成无需操作）。
   assert.equal(isAlreadySatisfied(password, 'type the password'), false)
+})
+
+test('通用值 key 不得把"已有别的值"的字段判成 pending（否则反复覆写）', () => {
+  const page = parseExtracted(JSON.stringify({
+    items: [
+      [0, 'textbox', 'Text input', 0, '已有内容: pw123'],
+      [1, 'textbox', 'Textarea', 0, '已有内容: hello world'],
+      [2, 'textbox', 'Date picker', 0, '已有内容: 09/16/2026'],
+    ],
+    text: '', title: '', url: '',
+  }))
+  const candidates = candidatesFromExtracted(page.items, 'type the date into the date picker field')
+  // `{text: …}` 会宽松命中 Text input / Textarea —— 但它们已有别的值，不构成"还没生效"。
+  // 真机 bench（webform-fine）：这条不成立时会一路覆写 + 烧到 budget，最后提交错数据。
+  assert.equal(pendingFieldOf(candidates, { text: '09/16/2026' }), undefined)
+  // 具体的字段名仍然允许覆盖旧值。
+  assert.equal(pendingFieldOf(candidates, { 'Text input': 'Jev' })?.name, 'Text input')
+  // 空字段 + 目标点名了它 → 仍然算 pending（"先填上"的路径不变）。
+  const empty = candidatesFromExtracted(parseExtracted(JSON.stringify({
+    items: [[0, 'textbox', 'Text input', 0, '']], text: '', title: '', url: '',
+  })).items, 'fill the text input')
+  assert.equal(pendingFieldOf(empty, { text: 'Jev' }, 'fill the text input')?.name, 'Text input')
+  // 没给 goal 时通用 key 不再把空字段当 pending（宁可少拦，也不要反复填）。
+  assert.equal(pendingFieldOf(empty, { text: 'Jev' }), undefined)
+})
+
+test('导航完成证据：只认地址新增段里命中的目标词', () => {
+  // 起始页本来就有的词不算（wikipedia 的 /wiki/ 是起始页的一部分）。
+  assert.equal(
+    urlChangeMatchesGoal('open the linked article about Bletchley Park', 'https://en.wikipedia.org/wiki/Alan_Turing', 'https://en.wikipedia.org/wiki/Alan_Turing'),
+    undefined,
+  )
+  assert.equal(
+    urlChangeMatchesGoal('open the linked article about Bletchley Park', 'https://en.wikipedia.org/wiki/Alan_Turing', 'https://en.wikipedia.org/wiki/Bletchley_Park'),
+    'bletchley',
+  )
+  // hash-only 导航（本地 fixture）：新增段的 `#casa-flora` 命中目标词。
+  assert.equal(
+    urlChangeMatchesGoal('open the Casa Flora stay', 'file:///x/fixture.html', 'file:///x/fixture.html#casa-flora'),
+    'casa',
+  )
+  // 新增段里没有目标词 → 不给证据（不能因为"地址变了"就宣告完成）。
+  assert.equal(urlChangeMatchesGoal('open the secure area', 'https://ti.example/login', 'https://ti.example/random'), undefined)
+})
+
+test('字段名与目标词：通用 key 宽松匹配、词边界区分 Textarea / Text input', () => {
+  assert.equal(specificallyNamed({ id: 'input:0', description: 'x', kind: 'input', name: 'Text input' }, { text: 'Jev' }), false)
+  assert.equal(specificallyNamed({ id: 'input:0', description: 'x', kind: 'input', name: 'Destination' }, { Destination: 'Lisbon' }), true)
+  // `text` 是 Text input 的词，但不是 Textarea 的词。
+  assert.equal(goalMentions('Text input', 'type into the text input'), true)
+  assert.equal(goalMentions('Textarea', 'type into the text input'), false)
+  assert.equal(goalMentions('Textarea', 'type into the textarea'), true)
 })
 
 test('抽取状态里绝不出现密码原文', async () => {

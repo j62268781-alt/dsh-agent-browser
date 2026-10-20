@@ -1232,6 +1232,107 @@ base 层 13 → 14 是本轮净变化（shadow +1 与波动相抵）。
    todomvc-fine 的 likely_done、infinite-scroll 的计数）；
 3. 有序子目标（browser_run subgoals）：budget 5 条的正解，等 P1b 落地后单独立项。
 
+### 4.5.5 第三轮优化路线图（方案稿，2026-10-20，**未实施**）
+
+> 基线：**19/39 多数票**（base 14/25 + hard/guard 5/14，false-done 3，repeat=3 分 chunk）。
+> 本节是方案，不是实验记录——每项动手前先按 §末尾的验收纪律跑定向子集，做完把数字写回来。
+
+**测量基建先行（一次性，10 分钟）**
+
+全量一轮 repeat=3 很贵，之后的每一条都必须能"只跑受影响的几条"：
+
+```bash
+node bench/run.mjs --only ti-checkboxes --repeat 3 --trace   # 单任务 + 复盘
+node bench/run.mjs --tier offline                            # 本地 fixture 5 条：冒烟/回归快车道
+node bench/run.mjs --tier offline,base,hard --only <改动任务>,neg-bad-password,neg-missing-page,neg-disabled,neg-missing-option --repeat 3
+```
+
+`--only` 只会筛选 `--tier` 已选中的任务；`neg-missing-option` 在 `hard`，改 guard 逻辑时还要显式选 `guard` tier。负例按本次改动触及的门控选择，涉及通用停止/完成判定时至少覆盖上述四条。
+
+**R-A：false-done 收尾收紧（先复核基线归因，安全红线）**
+
+| # | 任务 | 已归因根因 | 修法 |
+|---|---|---|---|
+| A1 | webform-fine | "页面空了"被当成完成（跳转后正文抽取为空/极短，confirm 只问"没报错"） | 空正文只能视为**证据不足**，不能直接当作成功或失败：confirm state 暴露 `page_text_empty` 供 trace/judge 使用；停止需另有目标相关证据（如 URL/标题/结果内容）。不要用通用的"正文短于 40 字就硬拦"，因为合法完成页也可能很短，空页面目标也可能合法 |
+| A2 | todomvc-fine | 第一步 budget 后第二步误判 likely_done | **先归因再动手**：`--only todomvc-fine --repeat 3 --trace` 存 trace；定位究竟是哪一步、truth/status/confirm 概率为何不一致，再只收紧那条分支。不能先假设 `LIKELY_CONFIRM_FLOOR=0.6` 是根因 |
+| A3 | saucedemo-coarse | 多子目标任务提前声称完成（登录/加购/结账没有全部完成） | 先区分 false-done 发生在哪个子目标；完成确认必须覆盖最后要求的订单结果，不能只因当前页面看似合理就停。与 R-C 子目标方案联动，但先用 trace 证实 |
+
+`infinite-scroll` 曾出现在上一轮 false-done 清单，但不属于当前 19/39 基线的三条归因；应作为独立诊断任务，不计入本轮 R-A 的已确认问题。若重新跑出的 trace/结果显示它再次 false-done，再另立修复项。
+
+**R-B：候选上下文与排序（命中率本体，收益待测；先验证候选覆盖，再改策略）**
+
+| # | 改动 | 说明 | 主要收益任务 |
+|---|---|---|---|
+| B1 | 目标语义化定位信息 | 优先使用 label/aria-label/placeholder、父容器文本与可访问树关系；只有 goal 明确说“第 N 个/checkbox 1”且页面能稳定映射时才附加序号。DOM 顺序不是天然的用户编号，序号只能作上下文，不能单独决定动作 | ti-checkboxes（先 trace 证实是否选错对象）；ti-dynamic-controls 要另查禁用字段行为，不是 checkbox 序号问题 |
+| B2 | **P1b：tree fallback 上下文** | extract 路径的候选 description 已带 `near`，且 `rankByGoal` 已对 description 做词面排序；这里不是全局缺 near。探索点仅是 tree fallback：先记录 snapshot 层级、候选 top-N 和缺失属性，确认能否可靠关联上下文；不要假定顶层 DOM eval 能读到 iframe 子树 | iframe-form（45 个树候选、无名 textbox）、hn-comments 类，需 trace 证实 |
+| B3 | 无名字段诊断 | extract 能从当前 document 读取 labels/placeholder，但 tree fallback 只有 accessibility refs，不能直接复用 DOM label 链。先用探针确认字段是否有语义名、DOM 属性、ref 映射和可达性；只有能可靠关联时再增加映射 | iframe-form / 无名字段类 |
+
+明确不做（都有实测否决）：ambiguous 二次询问（上轮 15/39 倒退）；候选上限收紧（干扰项实验 cap40 反而 9/9）；“开关到位即完成”类确定性收尾（负例红线 ×2）。
+
+**R-C：有序子目标（budget 任务候选方向，收益待测，改动面最大，放最后）**
+
+根因假设：webform、todomvc-coarse、saucedemo-coarse 等把多个行为压在一个 goal 里。先分别检查 trace：字段填写顺序、后续按钮/导航和多步完成门是不同问题，不能假设一个 inputs cursor 能解决全部。
+
+| 方案 | 内容 | 取舍 |
+|---|---|---|
+| **C-A（推荐先做小实验）** | 对纯表单先定义可验证的字段队列：每个字段写入后读回状态；字段满足后再允许提交动作。字段队列是填表策略，不代表完整任务 plan | 不从 `Object.keys(inputs)` 推导用户流程（对象键顺序不是 API 契约）；按页面字段与目标显式匹配。先用离线 fixture 原型并覆盖 disabled/负例；当前 `pendingFieldOf` 已优先填未生效字段，实验必须证明它修复了什么具体失败 |
+| C-B | 为 browser_run 增加显式、有序 `subgoals` 输入 | 更通用，但需变更工具契约/调用方；每个子目标独立保留状态、校验与失败 handoff。单独与旧单 goal 模式做 A/B，不改既有 benchmark 口径 |
+| C-C | 让判断层先生成自由文本 plan 再执行 | 不推荐：多一次不可控开放问题，偏离“判断只做排序”不变式；除非先把计划限定为可校验的结构化子目标 |
+
+inputs 队列不能表达 webform 的第二 radio 和 submit；todomvc-coarse 的 `first`/`second` 是同一输入框的两次不同操作；saucedemo-coarse 的 checkout 字段要到登录、加购、进入结账后才存在。它们需要显式子目标/阶段状态，不能要求所有 inputs 先应用。**R-D：单点诊断（先看 trace，不预设根因或收益）**
+
+| 任务 | 已有机制/待查点 | 第一步 |
+|---|---|---|
+| ti-js-confirm | 已有 dialog blocker 和按 goal 词接受对话框逻辑；查触发按钮是否点击、dialog 是否出现、下一轮是否 accept | `--only ti-js-confirm --repeat 3 --trace --verbose` |
+| ti-dynamic-loading | 有最多约 6s 的页面变化轮询；已记录增加 wait 预算仍失败；先区分等待、正文抽取、goal_done/confirm 哪一环 | 同上 |
+| react-select | portal 候选已有可达探针，但判断层曾 ambiguous；确认抽取候选、焦点和选项动作，再决定是否需要键盘策略 | 同上 |
+| ti-entry-ad / guard-webform | 看停滞/换路后的候选和 trace；确定阻断阶段再改 | 同上 |
+| infinite-scroll | 当前 goal 没写数量阈值（“Scroll down to load more paragraphs”）；检查任务定义与断言是否对齐，不把隐藏的 `>=3` oracle 注入通用判断 prompt | `--tier hard --only infinite-scroll --repeat 3 --trace --verbose` |
+
+**验收纪律（每条改动必须全过，缺一不合并）**
+
+1. **先定向**：受影响任务 repeat=3，保留 trace；安全相关改动按 tier 明确纳入负例（涉及 guard 时加 `--tier guard`）；
+2. **再全量**：分 chunk repeat=3 多数票；不引入新的 false-done，负例零假完成；分数与稳定性都不达目标则回退，不叠加下一项；
+3. **存档**：结果 JSON 落 `bench/results/`，记录 commit、tier、model/connection、task IDs 和 trace 摘要，避免网络失败混进逻辑失败；
+4. **不预报固定加分**：先建立逐任务原因矩阵；只报告实际重复验证的正确数、false-done、missed、network 和波动任务。context-menu/upload 等明确跳过项不计为可修失败。
+
+**方案复核结论（2026-10-20）**
+
+§4.5.5 方向可作为待验证假设，不能按原排序直接实施，也没有数据支持“R-A +2~3、R-B +2~3、R-C +2~3”的加分承诺。实施前先跑：
+
+```bash
+node bench/run.mjs --tier base --only webform-fine,todomvc-fine,saucedemo-coarse,ti-checkboxes,ti-dynamic-controls,ti-js-confirm,ti-dynamic-loading,neg-bad-password,neg-missing-page,neg-disabled --repeat 3 --trace --verbose
+node bench/run.mjs --tier hard --only infinite-scroll,react-select,iframe-form,neg-missing-option --repeat 3 --trace --verbose
+node bench/run.mjs --tier guard --only guard-checkout,guard-webform,guard-login --repeat 3 --trace --verbose
+```
+
+第一组复核当前 false-done 归因和 base 失败环节，第二组诊断 hard 任务，第三组单独审查 irreversible guard；定向结果用于选一个可复现机制做 A/B，随后才跑全量分 chunk。
+
+还需分开衡量三个指标：①**任务完成率**（断言通过且所有 planned steps 符合，现有 `correct/tasks`）；②**false-done / missed**（安全与召回）；③**动作命中率**（目标动作是否进入候选、judge top choice 是否正确、动作后是否产生目标相关变化）。当前 bench 的终态断言不能单独推出第③项；需先在可控 fixture 为关键动作标注 acceptable-action 集或加诊断 oracle（只评分，不传给 agent），再统计候选 recall@K、top-choice accuracy 与 action success。不要把候选覆盖失败、judge 选择错误、动作执行无效、完成门误判混成一个“完成率”问题。
+
+### 4.5.6 第三轮第一批：确定性收尾（已实施，2026-10-20）
+
+按 §4.5.5 的"先 trace、再改一个可复现机制"执行，**共 5 处**（都有单测；未提交）：
+
+| 改动 | 规则 | 证据（真机 trace） |
+|---|---|---|
+| 通用 key 的 pending 判定（`specificallyNamed`/`goalMentions`） | 值 key 是 `text` 这类通用词时，"已有别的值"的字段不算 pending；空字段只有**目标点名**且本轮没填过才算 | webform-fine：`pw123` 被覆写成 `hello world`、`pendingFieldOf` 永远"没生效" → 30 次判断/35s；修复后 18 次/20s，**假完成消失** |
+| 通用 key 的字段改选（`bestEmptyInputForGoal`） | 单值 + key 不对应字段名 + 判断层选的字段与目标无关 → 改选**目标点名的空文本字段**（不碰下拉框） | 同一 trace：`pw123` 被填进 Textarea、`hello world` 被填进 Text input |
+| 导航证据（`urlChangeMatchesGoal`） | 目标词出现在**当前地址相对起始地址新增段**里 → 收尾（不绑 goal_done，避免判断层抖动） | fixture-hotel：`#casa-flora` 命中但确认只给 p=0.24；fixture-dense：预算 11 次 → **1 次判断/2s** |
+| 命名提交控件（`submitControlOf`/`namedSubmitGoal`） | 控件名在目标里 + 动词是提交类 + 点击后页面**净变化** → 收尾；登录类/数量型目标禁止 | fixture-hotel step 2：`Find stays` 被反复点击 10 步 → 1 次点击收尾 |
+| 加载完成（`loading_finished`） | 进入加载等待时的正文 → 加载标记消失 + 正文出现新内容 + 无错误词 → 收尾；`waitForPageChange` 改为"等到加载标记消失"而不是"签名一变就返回" | fixture-lazy：14 次判断/30s budget → **1 次/5s 通过** |
+
+**安全护栏（这轮新加）**：
+- `looksLikeErrorPage()`：浏览器错误页不收尾；URL 证据还要求**页面有实质内容**（≥ `MIN_PAGE_TEXT`）——webform-fine 的"提交成功页只有 27 字、日期被日期插件清空"因此不再被当成完成；
+- **"没有可操作元素"不再单独作为完成证据**（这条老规则本身就制造假完成）——只记 trace，状态如实报 `no_progress`；
+- 独立确认遇到"正文很短"时**保留真实正文**并与控件树拼接（fixture-lazy 的 `Hello World!` 之前被短正文回退丢掉）。
+
+**实测（本机，repeat=2）**：offline tier **5/5 全绿**（10/10 次运行、0 false-done、0 missed，总计 42s；本轮开始时是 2/5、missed+false-done）；
+webform-fine 仍是**失败**但不再是假完成（真实根因：页面日期插件在失焦后清空输入，URL 里 `my-date` 为空——站点行为，非循环问题）；
+`todomvc-fine` 从"假完成"变为"truth=true 但 budget"（missed），待下一轮处理。
+
+**未解决 / 下一轮**：`todomvc-fine`（同一输入框跨步骤重填后的提交路径仍烧步数）、`infinite-scroll`（goal 未给数量阈值，属任务/断言口径问题）、`ti-js-confirm`、`react-select`；另：`which()`/`nativeSiblingPath` 在 Windows 上的 PATH 解析仍是产品级缺陷（本机靠 profile 里 `browser.executablePath` 绕开）。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）

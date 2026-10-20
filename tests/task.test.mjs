@@ -15,6 +15,9 @@ import { test } from 'node:test'
 import {
   MAX_CLICK_CANDIDATES,
   candidatesOf,
+  looksLikeErrorPage,
+  namedSubmitGoal,
+  submitControlOf,
   SNAPSHOT_STATE_CAP,
   pickAlternate,
   runTask,
@@ -24,7 +27,7 @@ import {
 /* ─────────────────────────── 替身 ─────────────────────────── */
 
 /** 一个极小的页面模型：refs + 文本；`act` 按元素决定是否改变页面。 */
-function fakePage(elements) {
+function fakePage(elements, { withExtract = false } = {}) {
   const state = {
     origin: 'https://example.test/',
     title: 'Example',
@@ -52,7 +55,9 @@ function fakePage(elements) {
     get: async (what) => (what === 'title' ? 'E2E 单元测试页' : ''),
     async act(action, target) {
       state.acts.push(`${action} ${target}`)
-      const ref = String(target).replace(/^@/, '')
+      const raw = String(target)
+      const byIndex = /^\[data-dsh-idx="(\d+)"\]$/.exec(raw)
+      const ref = byIndex === null ? raw.replace(/^@/, '') : state.elements[Number(byIndex[1])]?.ref
       const element = state.elements.find((candidate) => candidate.ref === ref)
       element?.onClick?.(state)
     },
@@ -61,6 +66,17 @@ function fakePage(elements) {
       if (argv[0] === 'dialog') return '✓ No dialog is currently open'
       state.acts.push(argv.join(' '))
     },
+    ...(withExtract
+      ? {
+          // 走页面内抽取路径（mode='extract'）——「命名提交控件」收尾只在这条路径上生效。
+          extract: async () => ({
+            items: state.elements.map((element, index) => ({ index, role: element.role, name: element.name, covered: false })),
+            text: state.text,
+            title: state.title,
+            url: state.origin,
+          }),
+        }
+      : {}),
   }
   return { state, browser }
 }
@@ -264,6 +280,44 @@ test('页面真的变了就重置"无效"记账（不会误判为卡住）', asy
   const result = await runTask('目标', deps(page.browser, judge))
   assert.equal(result.status, 'needs_verification')
   assert.equal(result.steps.filter((step) => step.executed).length, 2)
+})
+
+test('目标点名的提交控件点一次并且页面变了 → 收尾（不再反复点同一个按钮）', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: 'Find stays', onClick: (state) => { state.text = 'filtered results' } },
+  ], { withExtract: true })
+  // 判断层会一直选同一个按钮（真实 bench 里就是这样烧到 budget 的）。
+  const judge = fakeJudge([
+    { action: 'click:0' },
+    { action: 'click:0' },
+    { action: 'click:0', goalDone: 0.99 },
+  ])
+  const result = await runTask('submit the search with the Find stays button', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(result.steps.filter((step) => step.executed).length, 1)
+})
+
+test('提交控件收尾的两条红线：登录类、数量型目标都不许用', () => {
+  assert.equal(namedSubmitGoal('Log in'), false)
+  assert.equal(namedSubmitGoal('Add elements until there are exactly 3 Delete buttons'), false)
+  assert.equal(namedSubmitGoal('submit the search with the Find stays button'), true)
+  assert.equal(submitControlOf('Find stays'), 'find')
+  assert.equal(submitControlOf('Checkbox 1'), undefined)
+})
+
+test('导航失败的错误页不算"提交成功"（不能制造 false-done）', async () => {
+  assert.equal(looksLikeErrorPage("This site can't be reached", 'ERR_CONNECTION_CLOSED'), true)
+  assert.equal(looksLikeErrorPage('Form submitted. Received!'), false)
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: 'Submit', onClick: (state) => { state.text = "This site can't be reached ERR_CONNECTION_CLOSED" } },
+  ], { withExtract: true })
+  const judge = fakeJudge([
+    { action: 'click:0' },
+    { action: 'click:0', goalDone: 0.2 },
+    { action: 'click:0', goalDone: 0.2 },
+  ])
+  const result = await runTask('Submit the form', deps(page.browser, judge, { maxSteps: 3 }))
+  assert.equal(result.steps.some((step) => step.reason === 'named_submit_applied'), false)
 })
 
 /* ─────────────────────────── 状态载荷 ─────────────────────────── */

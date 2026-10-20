@@ -83,9 +83,42 @@ export function parseAgentBrowserBlock(yamlText) {
   return config
 }
 
+/** DSH home：app 用独立 home（`DSH_HOME`）时优先它；否则退回 `~/.dsh`。 */
+export function dshHome() {
+  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+}
+
+/** 某个 profile 的 `cordis.patch.yml` 绝对路径。 */
+export function profileFile(profile = process.env.DSH_PROFILE ?? 'desktop') {
+  return join(dshHome(), 'profiles', profile, 'cordis.patch.yml')
+}
+
+/**
+ * 从本机凭据存储的 `refs:` 段读一个引用值（只给 `scripts/` 用，**永不回显**）。
+ *
+ * 为什么需要：开发脚本原本靠 dsh-judgment 源码 checkout 里的 `scripts/read-profile.mjs`；
+ * 但只装了 **npm 包**的环境（app 的实际形态）没有那个文件。凭据文件格式是稳定的
+ * （`refs: { NAME: value }`），读它即可，不复制 dsh-judgment 的私有实现。
+ */
+export function readCredentialRef(ref) {
+  const file = join(dshHome(), '.credentials.yaml')
+  const lines = readFileSync(file, 'utf8').split('\n')
+  const start = lines.findIndex((line) => /^refs:\s*$/.test(line))
+  if (start < 0) throw new Error(`${file} 里没有 refs 段`)
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line.trim() === '' || line.trim().startsWith('#')) continue
+    if (!/^\s+/.test(line)) break
+    const match = /^\s+([A-Za-z0-9_.-]+):\s*(\S+)\s*$/.exec(line)
+    if (match === null || match[1] !== ref) continue
+    return match[2].replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')
+  }
+  throw new Error(`凭据存储 ${file} 里没有 ${ref}`)
+}
+
 /** 读 profile 里的 `agent-browser` 配置（缺项用默认值补齐）。 */
 export function readAgentBrowserConfig(profile = process.env.DSH_PROFILE ?? 'desktop') {
-  const file = join(homedir(), '.dsh', 'profiles', profile, 'cordis.patch.yml')
+  const file = profileFile(profile)
   let parsed
   try {
     parsed = parseAgentBrowserBlock(readFileSync(file, 'utf8'))

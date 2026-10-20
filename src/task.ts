@@ -316,6 +316,79 @@ export function isAlreadySatisfied(candidate: TaskCandidate, goal: string, input
 }
 
 /**
+ * 调用方给的 key 是不是**就是这个字段的名字**（归一后完全相等）。
+ *
+ * 为什么要区分：`text` 这类通用 key 会通过宽松包含匹配命中 `Text input` / `Textarea`
+ * 等多个字段。对**空字段**这是有用的（"先把它填上"）；但对**已有值**的字段，
+ * 通用 key 不构成"这个值该覆盖它"的证据。真机 bench（webform-fine）就是在这里翻车：
+ * 第 3 步把 pw123 覆写成 hello world，第 5 步起 `pendingFieldOf` 永远返回
+ * "Text input 还没生效" → 反复填、烧到 budget，最后提交的是错数据（false-done）。
+ */
+export function specificallyNamed(
+  candidate: TaskCandidate,
+  inputs?: Readonly<Record<string, string>>,
+): boolean {
+  if (inputs === undefined) return false
+  const name = fieldName(candidate.name ?? '')
+  if (name === '') return false
+  return Object.keys(inputs).some((key) => fieldName(key) === name)
+}
+
+/**
+ * 通用值 key（`text`/`value` 这类，不对应任何具体字段名）在**空文本字段**里挑哪个：
+ * 只按目标词面相关性确定性排序，不猜。
+ *
+ * 为什么需要：判断层会在"Type into the password field"这类目标上选错相似字段
+ * （bench webform-fine 实测：把 pw123 填进 Textarea、把 hello world 写进 Text input），
+ * 单值绑定照单全收就把表单数据写坏了。**空字段 + 目标词命中**是最小、可解释的确定性修正；
+ * 下拉框/select 不走这条（它们的二阶段选值另有逻辑）。
+ */
+export function bestEmptyInputForGoal(
+  candidates: readonly TaskCandidate[],
+  goal: string,
+  filled?: ReadonlyMap<string, string>,
+): TaskCandidate | undefined {
+  const textRoles = TEXT_ENTRY_ROLES
+  const empty = candidates.filter((candidate) => {
+    if (candidate.kind !== 'input') return false
+    if (!textRoles.has((candidate.role ?? '').toLowerCase())) return false
+    if (filled?.has(candidate.id) === true) return false
+    const state = stateOf(candidate)
+    return state.value === undefined && state.redacted !== true
+  })
+  if (empty.length === 0) return undefined
+  if (goalTokensOf(goal).length === 0) return undefined
+  const ranked = empty
+    .map((candidate, index) => ({ candidate, index, matched: goalMentions(candidate.name ?? '', goal) }))
+    .sort((left, right) => Number(right.matched) - Number(left.matched) || left.index - right.index)
+  return ranked[0]?.matched === true ? ranked[0]?.candidate : undefined
+}
+
+const TEXT_ENTRY_ROLES = new Set(['textbox', 'searchbox', 'input', 'textarea'])
+
+/** 这个候选是不是"文本输入字段"（不是下拉/勾选）。 */
+function isTextEntry(candidate: TaskCandidate): boolean {
+  return TEXT_ENTRY_ROLES.has((candidate.role ?? '').toLowerCase())
+}
+
+/**
+ * goal 是否**点名**了这个字段名：ASCII 词按**词边界**匹配（`text` 不命中 `Textarea`），
+ * 中文按子串（没有词边界概念）。
+ *
+ * 为什么不能用裸 substring：`text` 会命中 `Textarea`/`Text input`，于是"填 text input"
+ * 的步骤会把**别的**空字段也算成"目标要填的字段"，反复填到 budget（bench webform-fine）。
+ */
+export function goalMentions(name: string, goal: string): boolean {
+  const lower = name.toLowerCase()
+  if (lower === '') return false
+  return goalTokensOf(goal).some((token) => {
+    if (/[\u4e00-\u9fa5]/.test(token)) return lower.includes(token)
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`).test(lower)
+  })
+}
+
+/**
  * 调用方给了值、但页面状态**还没生效**的字段。
  *
  * 为什么需要它：判断层对"设置筛选器"这类目标有系统性假阳性——目标词出现在页面正文里
@@ -325,6 +398,8 @@ export function isAlreadySatisfied(candidate: TaskCandidate, goal: string, input
 export function pendingFieldOf(
   candidates: readonly TaskCandidate[],
   inputs?: Readonly<Record<string, string>>,
+  goal?: string,
+  filled?: ReadonlyMap<string, string>,
 ): TaskCandidate | undefined {
   if (inputs === undefined) return undefined
   for (const candidate of candidates) {
@@ -338,17 +413,100 @@ export function pendingFieldOf(
       if (state.checked !== wantChecked) return candidate
       continue
     }
-    if (state.value !== undefined && state.value.trim() !== wanted.trim()) return candidate
-    // 完全没有状态信息（空的输入框不会带 `已有内容`）→ 只要调用方给了值，就认为"还没填"。
-    // 已填过的字段会从候选里被剔除，所以这里不会误判成"永远 pending"。
-    if (state.value === undefined) return candidate
+    // **已有别的值 = 只允许"名字对得上"的 key 去覆盖**（见 specificallyNamed 的注释）。
+    // 通用 key 命中别的已填字段时不当 pending —— 否则永远"还没生效"，反复覆写。
+    if (state.value !== undefined && state.value.trim() !== wanted.trim()) {
+      if (!specificallyNamed(candidate, inputs)) continue
+      return candidate
+    }
+    // 空字段：具体 key 一定 pending；**通用 key 只有"目标点名了这个字段"且本轮还没填过**才算。
+    // 否则 `text` 会把所有空文本字段（含 Textarea/Disabled input）都算成没填，反复填到 budget。
+    if (state.value === undefined) {
+      if (specificallyNamed(candidate, inputs)) return candidate
+      if (filled?.has(candidate.id) === true) continue
+      if (goal !== undefined && goalMentions(candidate.name ?? '', goal)) return candidate
+    }
   }
   return undefined
+}
+
+/**
+ * 导航类目标的**确定性证据**：目标里的特征词出现在"当前地址相对起始地址**新增的那一段**"里。
+ *
+ * 为什么需要它：真机 bench（fixture-hotel）点开 "Casa Flora" 后地址变成 `#casa-flora`，
+ * 断言为真，但独立确认只给 p=0.24（详情页正文很短），循环于是继续动 → ambiguous → **missed**。
+ * "地址新增段命中目标词"是页面自己给的证据，比再问一次判断层更便宜也更稳。
+ *
+ * 只比**新增段**：起始页地址里本来就有的词（wikipedia 的 `/wiki/`、fixture 的 `fixture.html`）
+ * 不算命中，否则任何"在 wikipedia 上打开某条目"的目标都会在起始页就被判完成。
+ *
+ * @returns 命中的目标词（null 表示没有证据）
+ */
+export function urlChangeMatchesGoal(goal: string, startUrl: string, currentUrl: string): string | undefined {
+  if (startUrl === '' || currentUrl === '' || startUrl === currentUrl) return undefined
+  const lower = currentUrl.toLowerCase()
+  let delta = lower
+  try {
+    const start = new URL(startUrl)
+    const current = new URL(currentUrl)
+    if (start.origin === current.origin) {
+      const startTail = `${start.pathname}${start.search}${start.hash}`.toLowerCase()
+      const currentTail = `${current.pathname}${current.search}${current.hash}`.toLowerCase()
+      if (currentTail === startTail) return undefined
+      // 只保留**新增**的部分：前缀相同就去掉公共前缀（hash-only 导航时公共前缀是整条路径）。
+      let shared = 0
+      while (shared < startTail.length && shared < currentTail.length && startTail[shared] === currentTail[shared]) shared += 1
+      delta = currentTail.slice(shared)
+      if (delta === '') return undefined
+    }
+  } catch {
+    delta = lower
+  }
+  // 只认有辨识度的词（≥4 个字符）：`the`/`open`/`page` 这类词在地址里命中没有证据价值。
+  const tokens = goalTokensOf(goal).filter((token) => /[a-z0-9]/.test(token) && token.length >= 4)
+  return tokens.find((token) => delta.includes(token))
 }
 
 /** 目标里出现这些词 = 填完值之后**还要再做一步**（提交/搜索/登录/添加…），不能按"值已生效"收尾。 */
 const FOLLOW_UP_VERBS =
   /(submit|log ?in|sign ?in|sign ?up|search|find|open|click|press|continue|checkout|order|buy|add|create|save|apply|send|confirm|delete|remove|go to|navigate|提交|登录|注册|搜索|查询|查找|打开|点击|按下|继续|结账|下单|购买|添加|新建|保存|应用|发送|确认|删除|移除|跳转)/i
+
+/**
+ * 「点一下就等于提交/搜索/继续/完成」的控件动词。
+ *
+ * 用途：判断层在"提交类"目标上会**反复选同一个按钮**（真机 bench fixture-hotel：
+ * 点 "Find stays" 后结果区刷新、按钮还在，于是 10 步全耗在同一个按钮上）。
+ * 这里用确定性证据收尾：控件名出现在目标里 + 动词是提交类 + 点击后页面确实变了。
+ */
+const SUBMIT_CONTROL_VERBS =
+  /(submit|search|find|apply|log ?in|sign ?in|continue|next|save|confirm|send|finish|checkout|order|pay|提交|搜索|查找|登录|确认|发送|保存|继续|下一步|结算|下单|支付|完成)/i
+
+/** 控件名里的提交类动词（没有就是 undefined）。 */
+export function submitControlOf(name: string): string | undefined {
+  return SUBMIT_CONTROL_VERBS.exec(name.toLowerCase())?.[0]
+}
+
+/**
+ * 明显的浏览器错误页（导航失败）——正文"变了"但目标没达成。
+ *
+ * 真机（webform-fine）：点 Submit 后目标地址连不上，浏览器落到错误页，
+ * 若把"页面变了"当成提交成功，就会制造 false-done（负例红线同源问题）。
+ */
+export function looksLikeErrorPage(text: string, title = ''): boolean {
+  const sample = `${title}\n${text}`.slice(0, 4000)
+  return /(ERR_[A-Z_]{3,}|net::ERR_|This site can.t be reached|网页无法正常运作|无法访问此网站|该网页无法正常运作|DNS_PROBE)/i.test(sample)
+}
+
+/**
+ * 这一类目标**不允许**用"提交类控件已点击 + 页面变了"收尾：
+ * - 登录/注册：错误密码也会让页面变化（负例红线，`neg-bad-password`）；
+ * - 数量型（until / exactly / 至少…）：点一次不等于达标（`ti-add-remove` 要 3 次）。
+ */
+export function namedSubmitGoal(goal: string): boolean {
+  if (/(log ?in|sign ?in|sign ?up|登录|注册)/i.test(goal)) return false
+  if (/(until|at least|exactly|至少|恰好|直到|正好)/i.test(goal)) return false
+  return true
+}
 
 /**
  * 调用方给的值是否**全部已经在页面上生效**（纯确定性，不看判断层）。
@@ -942,6 +1100,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   const judge = deps.judge
 
   let last: Snapshot | undefined
+  /** 本轮第一次观察到的地址：`urlChangeMatchesGoal` 只比它之后**新增**的那一段。 */
+  let initialOrigin: string | undefined
   /** 上一次真正执行的动作 + 执行前的**语义**签名：用来判断"交付了但页面没变"。 */
   // **就绪门**：调用方可能刚好在导航中调用 browser_run —— 先有界地等文档就绪
   // （就绪立刻走，最多 2.5s；网络慢时不至于基于"半张页面"做决策）。
@@ -975,6 +1135,10 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   const filledFields = new Map<string, string>()
   /** 上一步是不是"填了文字"：只有刚填过输入框，Enter 才是合理的提交动作（否则会在下拉页上反复按 Enter）。 */
   let lastActionWasText = false
+  /** 上一步点的是不是"目标点名的提交类控件"：下一步若页面变了，这一步的意图已达成（见 named_submit_applied）。 */
+  let lastSubmitAction: { id: string; name: string } | undefined
+  /** 进入"页面在加载"等待前的正文：加载结束后正文出现新内容 = 结果已出现（见 loading_finished）。 */
+  let awaitedLoading: { text: string } | undefined
   /** 上一次用的是 `el.click()`（合成事件）：没效果时回退成"滚进视口 + 真实鼠标点击"。 */
   let lastJsClick: { id: string; ref: string } | undefined
   const jsClickRetried = new Set<string>()
@@ -1206,6 +1370,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
     }
     let observedPage = await observePage()
+    // 起始地址：导航类目标的"新增段"证据要和它比（第一次观察时记一次）。
+    initialOrigin ??= observedPage.snapshot.origin
     // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
     //
     // **事件驱动，不猜固定时长**（真机实测：点击到 URL 变化 GitHub 1027ms、
@@ -1273,10 +1439,64 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       steps.some((item) => item.executed)
     ) {
       trace.push(`第 ${step} 步：页面在加载 → 先等它变化（不重复点击）`)
+      awaitedLoading = { text: observedPage.prose }
       await waitForPageChange(deps.browser, deps.signal)
       waits += 1
       continue
     }
+    // **加载完成就是结果出现的确定性证据**：真机（bench fixture-lazy）"点击 → Loading… →
+    // 3 秒后 Hello World!"，判断层的独立确认只给 p=0.54（它不知道"结果"具体长什么样），
+    // 循环于是又点 Start 重启加载直到预算耗尽。这里由代码判：加载标记消失 + 正文出现了
+    // **新内容** + 没有错误词 → 这一步的目标（等待结果出现）已经达成。
+    if (awaitedLoading !== undefined) {
+      const changedAfterLoading = observedPage.prose !== awaitedLoading.text
+      const errorAfterLoading = /(error|failed|错误|失败|invalid|异常)/i.test(observedPage.prose)
+      if (changedAfterLoading && !errorAfterLoading) {
+        trace.push(`第 ${step} 步：加载结束且正文出现新内容（${observedPage.prose.replace(/\s+/g, ' ').trim().slice(0, 80)}）→ 停，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:loading_finished', executed: false, reason: 'loading_finished' })
+        return finish('needs_verification', '加载完成且页面出现了新内容', snapshot)
+      }
+      if (errorAfterLoading) trace.push(`第 ${step} 步：加载结束但出现了错误/失败提示 → 不按完成收尾`)
+      awaitedLoading = undefined
+    }
+    // **导航类目标的确定性证据**：当前地址**新增的那一段**命中目标特征词 → 页面已经停在
+    // 目标对象上。不依赖判断层的 goal_done（真机 fixture-hotel：同一份代码两次跑，goal_done
+    // 一次 0.85、一次 0.44，绑着它就会时好时坏）。只对**单步目标**开：多子目标中途导航到
+    // 某个词同样容易出现假阳性。错误页不开（导航失败的地址里可能刚好带着目标词）。
+    // 另外要求页面有**实质内容**（≥ MIN_PAGE_TEXT）：真机 webform-fine 提交后落到
+    // "Form submitted" 目标页，URL 命中 `submit`，但提交的数据并不完整（日期被日期插件清空）——
+    // 27 字的空壳页不构成"达成"，不能替调用方宣布完成。
+    if (singleStepGoal(goal) && pageText.length >= MIN_PAGE_TEXT && !looksLikeErrorPage(pageText, pageTitle)) {
+      const urlHit = urlChangeMatchesGoal(goal, initialOrigin ?? snapshot.origin, snapshot.origin)
+      if (urlHit !== undefined) {
+        trace.push(`第 ${step} 步：地址新增段命中目标词「${urlHit}」（${snapshot.origin.slice(0, 240)} · mode=${observedPage.mode} · 正文 ${pageText.length} 字）→ 停，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:url_matched', executed: false, reason: 'url_matched' })
+        return finish('needs_verification', `地址已命中目标「${urlHit}」`, snapshot)
+      }
+    }
+    // **目标点名的提交类控件已经点过、且页面确实变了** → 这一步的意图达成，收尾。
+    // 真机 bench（fixture-hotel step 2）：点 "Find stays" 后结果区刷新（页面变了），但表单还在、
+    // 按钮还在，判断层下一步继续选同一个按钮 → 10 步上限。这里用确定性证据停：
+    // 控件名在目标里 + 动词是提交类 + 点击后页面有变化（三件事都由代码判定）。
+    if (lastSubmitAction !== undefined && lastChange !== undefined) {
+      const applied =
+        lastChange.url_changed === true ||
+        lastChange.text_changed === true ||
+        lastChange.added !== undefined ||
+        lastChange.removed !== undefined ||
+        lastChange.changed !== undefined
+      // 只在**页面内抽取成功**时收尾：抽取 0 元素 → 退回整树，说明页面极简/异常
+      // （真机 webform-fine：提交后导航失败落到错误页，整树只有 4 个元素，正文退化成
+      // 无障碍树文本 → 错误页守卫看不到错误文案）。这种页面交给判断层与 page_error 门，
+      // 不能因为"正文变了"就宣称提交成功。
+      if (applied && observedPage.mode === 'extract' && !looksLikeErrorPage(pageText, pageTitle)) {
+        trace.push(`第 ${step} 步：「${lastSubmitAction.name}」是目标点名的提交控件且页面已变化 → 停，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastSubmitAction.id, executed: false, reason: 'named_submit_applied' })
+        return finish('needs_verification', `已执行目标点名的提交控件「${lastSubmitAction.name}」且页面已变化`, snapshot)
+      }
+    }
+    lastSubmitAction = undefined
+
     // 独立确认带上"上一步实际做了什么"：动作型目标（提交/点击）不能只靠正文判。
     // **"填完 ≠ 完成"**：目标里带提交/搜索/添加这类后续动作、且本轮确实填过值时，
     // 必须有"后续动作生效"的证据（跳转 / 新增元素 / 正文变化）才允许停。
@@ -1334,14 +1554,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 只有一个且是输入框 → 无论如何都要交回宿主拿文字，也不必问判断层。
     const actionable = candidates.filter((candidate) => candidate.kind !== 'control')
     if (actionable.length === 0) {
-      // 没有可操作元素：可能是"字段都按调用方的值填完了"。先独立确认一次，
-      // 确认通过就交回宿主校验，而不是让调用方看到一个 no_progress 去重跑。
-      const confirmed = await confirmWithContext()
-      if (confirmed.confirmed) {
-        trace.push(`第 ${step} 步：没有剩余可操作元素，且独立确认通过（p=${confirmed.probability.toFixed(2)}）→ 交回宿主校验`)
-        return finish('needs_verification', `没有剩余可操作元素；确认 p=${confirmed.probability.toFixed(2)}`, snapshot)
+      // **"没有按钮"不能单独当完成证据**：导航失败落到的错误页/空白页同样没有可操作元素。
+      // 真机（webform-fine）：提交后目标地址连不上 → 页面空了 → 旧逻辑"确认通过就收尾"
+      // 制造 false-done。注意**不能用正文证据**：错误页会回显 URL（`submitted-form.html`），
+      // 正文里于是出现 "submit" —— 那不是达成证据。地址证据已在上面独立判定过。
+      if (looksLikeErrorPage(pageText, pageTitle)) {
+        trace.push(`第 ${step} 步：页面是浏览器错误页（导航失败）→ 停，交回宿主`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:error_page', executed: false, reason: 'error_page' })
+        return finish('page_error', '页面是浏览器错误页（导航失败）', snapshot)
       }
-      trace.push(`第 ${step} 步：页面上没有可操作的元素 → 停（不发判断请求）`)
+      // 没有可操作元素：可能是"字段都按调用方的值填完了"。确认结果只记进 trace 供排查，
+      // **不作为完成依据**（没有可操作元素本身不构成目标达成的证据）。
+      const confirmed = await confirmWithContext()
+      trace.push(`第 ${step} 步：页面上没有可操作的元素（独立确认 p=${confirmed.probability.toFixed(2)}，不作为完成依据）→ 停`)
       return finish('no_progress', '页面上没有可操作的元素', snapshot)
     }
     const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]))
@@ -1498,9 +1723,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (wanted === undefined) return undefined
       const state = stateOf(chosenForGate)
       if (state.redacted === true) return undefined
-      return state.value !== undefined && state.value.trim() === wanted.trim() ? undefined : chosenForGate
+      // 空字段 = 还没填 → pending（"先填"路径不变）。
+      if (state.value === undefined) return chosenForGate
+      // 值已经对上了 → 不 pending。
+      if (state.value.trim() === wanted.trim()) return undefined
+      // 已有别的值：通用 key（text…）不构成"该覆盖它"的证据（同 pendingFieldOf 的教训）。
+      if (!specificallyNamed(chosenForGate, deps.inputs)) return undefined
+      return chosenForGate
     })()
-    const pendingField = pendingFieldOf(candidates, deps.inputs) ?? chosenPending
+    const pendingField = pendingFieldOf(candidates, deps.inputs, goal, filledFields) ?? chosenPending
     if (goalDone !== undefined && goalDone >= deps.goalThreshold && pendingField !== undefined) {
       trace.push(
         `第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但「${pendingField.name ?? pendingField.role ?? pendingField.id}」` +
@@ -1538,6 +1769,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:goal_done', executed: false, reason: 'goal_reached', ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }), confirm: confirm.probability })
         return finish('needs_verification', `goal_done=${goalDone.toFixed(2)}，确认 p=${confirm.probability.toFixed(2)}`, snapshot)
       }
+      // 地址证据已在循环开头独立判定过（不绑定 goal_done），这里只记录确认失败。
       trace.push(`第 ${step} 步：goal_done=${goalDone.toFixed(2)} 但独立确认没通过（p=${confirm.probability.toFixed(2)}）→ 不结束，继续推进`)
     }
     // **likely_done**（Ying-Kai-Liao/jev-browser）：goal_done 落在中间带 + 独立确认也不低 →
@@ -1604,7 +1836,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 不让判断层在"填哪个框 / 先不先点提交"上把流程拖成 ambiguous。
     // （真机 saucedemo：登录页上判断层置信 0.27，直接 ambiguous 交回宿主，登录框一个都没填。）
     if (deps.inputs !== undefined && Object.keys(deps.inputs).length > 0 && chosen.kind !== 'input') {
-      const pending = pendingFieldOf(candidates, deps.inputs)
+      const pending = pendingFieldOf(candidates, deps.inputs, goal, filledFields)
       if (pending !== undefined) {
         trace.push(`第 ${step} 步：还有没生效的字段「${pending.name ?? pending.id}」→ 先填它`)
         chosen = pending
@@ -1613,6 +1845,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 5) 需要文字/密钥 → 交回宿主，绝不猜。
     if (chosen.kind === 'input') {
+      // **通用 key 的字段改选**：单值 + key 不对应任何字段名 + 判断层选的字段与目标无关时，
+      // 字段按目标改选。真机 webform-fine：判断层把 pw123 选进 Textarea、把 hello world
+      // 写进 Text input，单值绑定照单全收就把表单写坏了。只改选**空文本字段**、不碰下拉框。
+      if (
+        deps.inputs !== undefined &&
+        Object.keys(deps.inputs).length === 1 &&
+        isTextEntry(chosen) &&
+        !specificallyNamed(chosen, deps.inputs) &&
+        !goalMentions(chosen.name ?? '', goal)
+      ) {
+        const better = bestEmptyInputForGoal(allCandidates, goal, filledFields)
+        if (better !== undefined && better.id !== chosen.id) {
+          trace.push(`第 ${step} 步：值是通用 key，字段按目标改选「${better.name ?? better.id}」（判断层选了「${chosen.name ?? chosen.id}」）`)
+          chosen = better
+        }
+      }
       // 调用方**已经给了值** → 同一次调用内直接填/选/勾（不再交回宿主，省一整轮）。
       let given = matchInputValue(chosen, deps.inputs) ?? soleValueFor(candidates, deps.inputs)
       // 字段名没对上时，用判断层在**同一批次**里选的"该用哪个值"（Ying-Kai-Liao/jev-browser 的做法：
@@ -1637,6 +1885,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         given = await pickSelectOption(judge, deps, goal, chosen, snapshot, step, usage, trace)
       }
       if (given !== undefined) {
+        // **有别的值且 key 不对应字段名**：优先改选"目标点名的空字段"（前面已做）；
+        // 没有更合适的空字段时**允许覆盖**，因为同一个字段跨步骤重填是合法流程
+        // （真机 todomvc-fine：同一个 todo 输入框先填 buy milk、再填 walk the dog）。
+        // 这里只留一条 trace，不阻断——硬拦会把正常任务误判成 input_required。
+        const beforeFill = stateOf(chosen)
+        if (
+          isTextEntry(chosen) &&
+          beforeFill.value !== undefined &&
+          beforeFill.value.trim() !== given.trim() &&
+          !specificallyNamed(chosen, deps.inputs)
+        ) {
+          trace.push(`第 ${step} 步：「${chosen.name ?? chosen.id}」已有别的值（${beforeFill.value}）→ 覆盖为调用方给的新值（没有更合适的空字段）`)
+        }
         const started = now()
         try {
           await fillFromInputs(deps.browser, chosen, given, deps.signal)
@@ -1807,6 +2068,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       const actStarted = now()
       const executed = await execute(deps.browser, chosen, deps.signal, deps.inputs)
       lastJsClick = executed.jsClicked
+      // 记下"这次点的是不是目标点名的提交类控件"：下一步用**页面变化**作为达成证据
+      // （单步目标 + 非登录/数量型 + 控件名在目标里 + 动词是提交类，四个条件全由代码判）。
+      lastSubmitAction =
+        chosen.kind === 'click' &&
+        singleStepGoal(goal) &&
+        namedSubmitGoal(goal) &&
+        submitControlOf(chosen.name ?? '') !== undefined &&
+        goalMentions(chosen.name ?? '', goal)
+          ? { id: chosen.id, name: chosen.name ?? '' }
+          : undefined
       timings.actMs += now() - actStarted
       actionFailures = 0
       staleStreak = 0
@@ -2038,17 +2309,22 @@ async function waitForPageChange(browser: AgentBrowser, signal: AbortSignal): Pr
       return undefined
     }
   }
+  const LOADING_MARK = /(loading\.{2,}|loading…|加载中|请稍候|please wait|searching\.{2,}|fetching|submitting|处理中)/i
   const before = await signature()
   if (before === undefined) {
     await browser.run(['wait', '800'], { signal }).catch(() => {})
     return
   }
-  const loading = /(loading|加载中|请稍候|please wait|searching|fetching|submitting|处理中)/i.test(before)
+  const loading = LOADING_MARK.test(before)
   const attempts = loading ? 20 : 4
   for (let index = 0; index < attempts; index += 1) {
     await sleep(300)
     const now = await signature()
-    if (now !== undefined && now !== before) return
+    if (now === undefined) continue
+    // **加载态要等到加载标记消失**，不能"签名一变就走"：真机 fixture-lazy 的 "Loading…"
+    // 点号动画/微调每帧都在变，按"变了就返回"会在 300ms 内就返回，循环于是又去点 Start
+    // 把加载重新开始 → 10 步预算耗尽（bench fixture-lazy 的根因）。
+    if (loading ? !LOADING_MARK.test(now) : now !== before) return
   }
   if (!loading) await browser.run(['wait', '300'], { signal }).catch(() => {})
 }
@@ -2167,8 +2443,12 @@ async function visibleText(deps: TaskDeps, snapshot: Snapshot, trace: string[], 
       const text = stripContentBoundaries(await deps.browser.read(undefined, { signal: deps.signal }))
       if (text.length >= MIN_PAGE_TEXT) return text
       if (text.length > 0) {
-        trace.push(`${where}：read 只拿到 ${text.length} 个字符（页面可能还在渲染），退回无障碍树文本`)
-        break
+        // **短但真实**：不能因为短就丢掉它（真机 fixture-lazy：页面只有 "Dynamic loading /
+        // Start / Hello World!" 约 30 字，退回控件树后确认看不到 "Hello World!" → p=0.54，
+        // 循环于是又点 Start 重启加载，直到预算耗尽）。两者都给：真实正文在前，控件树在后。
+        const controlText = stripContentBoundaries(snapshot.snapshot)
+        trace.push(`${where}：read 只拿到 ${text.length} 个字符（页面可能还在渲染）→ 正文 + 无障碍树一起用于确认`)
+        return controlText === '' ? text : `${text}\n${controlText}`
       }
       break
     } catch (error) {
@@ -2261,3 +2541,4 @@ function clipHeadTail(text: string, cap: number): string {
   const head = Math.max(0, cap - tail - 40)
   return `${text.slice(0, head)}\n…（中略 ${text.length - head - tail} 字）…\n${text.slice(-tail)}`
 }
+
