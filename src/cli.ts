@@ -572,6 +572,27 @@ export class AgentBrowser {
   }
 
   /**
+   * **等文档就绪**（`document.readyState === 'complete'`），有界。
+   *
+   * 网络不可控时，"open 成功"不等于"页面可用"：慢站点在 readyState=loading 时
+   * 抽取只能拿到半张页面 —— 基于半张页面判断会同时造成误判和假完成。
+   * 这里在页面内轮询就绪状态，就绪即返回，超时也返回（**不阻塞**后续流程）。
+   */
+  async waitForReady(run: CliRunOptions & { timeoutMs?: number } = {}): Promise<boolean> {
+    const timeout = run.timeoutMs ?? 3000
+    const script =
+      `new Promise((resolve) => { const deadline = Date.now() + ${timeout};` +
+      " const tick = () => { if (document.readyState === 'complete') return resolve(true);" +
+      ' if (Date.now() > deadline) return resolve(false); setTimeout(tick, 50) }; tick() })'
+    try {
+      const raw = await this.run(['eval', '-b', Buffer.from(script, 'utf8').toString('base64')], { ...run, timeoutMs: timeout + 2000 })
+      return raw.includes('true')
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * **事件驱动地等待"点击后页面真的动了"**（不猜固定时长）。
    *
    * 实测（真机）：gitHub 标签页 1027ms、herokuapp 导航 858ms、Wikipedia 链接 1153ms

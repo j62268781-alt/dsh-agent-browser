@@ -94,9 +94,13 @@ async function openVerified(url) {
       const got = new URL(last)
       // 只核对**主机**：登录墙/重定向是任务场景本身（/secure → /login 是正常的）。
       if (got.host === want.host) {
-        // 刚导航完就抽取，慢页面（the-internet/herokuapp）可能只看到半张页面：
-        // 候选里少了开关，判断层就会去选 scroll/link（ti-checkboxes 因此在 bench 里 ambiguous）。
-        await new Promise((done) => setTimeout(done, 250))
+        // 刚导航完就抽取，慢页面可能只看到半张页面（候选里少了目标 → ambiguous/误判）。
+        // 用**有界就绪等待**替代固定 250ms：就绪立刻走，最多等 3s，网络不可控也不拖死。
+        if (typeof browser.waitForReady === 'function') {
+          await browser.waitForReady({ timeoutMs: 3000 }).catch(() => false)
+        } else {
+          await new Promise((done) => setTimeout(done, 250))
+        }
         return
       }
     } catch {

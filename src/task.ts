@@ -943,6 +943,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
   let last: Snapshot | undefined
   /** 上一次真正执行的动作 + 执行前的**语义**签名：用来判断"交付了但页面没变"。 */
+  // **就绪门**：调用方可能刚好在导航中调用 browser_run —— 先有界地等文档就绪
+  // （就绪立刻走，最多 2.5s；网络慢时不至于基于"半张页面"做决策）。
+  if (typeof deps.browser.waitForReady === 'function') {
+    await deps.browser.waitForReady({ signal: deps.signal, timeoutMs: 2500 }).catch(() => false)
+  }
+
   let delivered: { id: string; snapshot: Snapshot; textSample?: string; selector?: string } | undefined
   /** 同一个无效动作出现了几次；≥2 就停（ronadin2002/jev-cua 的 `stalled_action` 纪律）。 */
   const stalled = new Map<string, number>()
