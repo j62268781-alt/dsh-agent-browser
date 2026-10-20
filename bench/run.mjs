@@ -50,6 +50,8 @@ const closeAtEnd = flag('close')
 const clearCookies = !flag('no-clear')
 const out = resolve(arg('out', resolve(HERE, 'results', `run-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`)))
 const verbose = flag('verbose')
+// 把决策 trace 存进结果（定位"为什么在 bench 里失败、单独跑却通过"这类上下文差异）。
+const keepTrace = flag('trace')
 // **每任务重复跑 N 次**：同一份代码的正确数在 13–16/39 之间波动，单次基线不足以判断改动。
 // repeat>1 时每条 record 带 run 字段，最后额外打印"多数票"结果（tie 不算通过）。
 const repeat = Math.max(1, Number(arg('repeat', '1')) || 1)
@@ -91,7 +93,12 @@ async function openVerified(url) {
       const want = new URL(url)
       const got = new URL(last)
       // 只核对**主机**：登录墙/重定向是任务场景本身（/secure → /login 是正常的）。
-      if (got.host === want.host) return
+      if (got.host === want.host) {
+        // 刚导航完就抽取，慢页面（the-internet/herokuapp）可能只看到半张页面：
+        // 候选里少了开关，判断层就会去选 scroll/link（ti-checkboxes 因此在 bench 里 ambiguous）。
+        await new Promise((done) => setTimeout(done, 250))
+        return
+      }
     } catch {
       /* 解析失败就走重试 */
     }
@@ -179,6 +186,7 @@ for (const [index, task] of tasks.entries()) {
         askMs: Math.round(result.timings.askMs),
         ms: Date.now() - stepStarted,
         rounds: result.steps.length,
+        ...(keepTrace ? { trace: result.trace } : {}),
       })
       const mark = truth === true ? '✓' : truth === false ? '✗' : '·'
       if (verbose) console.log(`    ${mark} ${result.status} · ${result.reason}`)
