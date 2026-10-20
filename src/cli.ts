@@ -572,6 +572,39 @@ export class AgentBrowser {
   }
 
   /**
+   * **事件驱动地等待"点击后页面真的动了"**（不猜固定时长）。
+   *
+   * 实测（真机）：gitHub 标签页 1027ms、herokuapp 导航 858ms、Wikipedia 链接 1153ms
+   * 才发生跳转 —— 之前固定等 40ms/250ms 会把"正在跳转"误判成"点击没效果"，
+   * 于是换候选/判 no_progress（github-pulls 就是这么挂的）。
+   *
+   * 这里用**一次** CLI `wait --fn`（页面内部轮询），由浏览器自己告诉你"变了"，
+   * 三种信号任一满足即返回：URL 变化 / 正文变化 / 指定选择器出现。
+   */
+  async waitForPageShift(
+    previous: { url: string; textSample: string; selector?: string },
+    run: CliRunOptions & { timeoutMs?: number } = {},
+  ): Promise<boolean> {
+    const timeout = run.timeoutMs ?? 4000
+    const conditions = [`location.href !== ${JSON.stringify(previous.url)}`]
+    if (previous.textSample !== '') {
+      conditions.push(`!document.body.innerText.includes(${JSON.stringify(previous.textSample)})`)
+    }
+    if (previous.selector !== undefined && previous.selector !== '') {
+      conditions.push(`document.querySelector(${JSON.stringify(previous.selector)}) !== null`)
+    }
+    const expression = conditions.map((condition) => `(${condition})`).join(' || ')
+    const script = `new Promise((resolve) => { const deadline = Date.now() + ${timeout}; const tick = () => { try { if (${expression}) return resolve(true) } catch (e) {} if (Date.now() > deadline) return resolve(false); setTimeout(tick, 50) }; tick() })`
+    try {
+      const raw = await this.run(['eval', '-b', Buffer.from(script, 'utf8').toString('base64')], { ...run, timeoutMs: timeout + 3000 })
+      const inner = raw.includes('true')
+      return inner
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * **HTML5 拖拽**（dragstart/dragover/drop 合成事件 + DataTransfer）。
    *
    * 为什么不用 `act('drag')`：CLI 的 drag 走鼠标事件，HTML5 DnD 页面（真机 the-internet/

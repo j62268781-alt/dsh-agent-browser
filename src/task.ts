@@ -943,7 +943,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
   let last: Snapshot | undefined
   /** 上一次真正执行的动作 + 执行前的**语义**签名：用来判断"交付了但页面没变"。 */
-  let delivered: { id: string; snapshot: Snapshot } | undefined
+  let delivered: { id: string; snapshot: Snapshot; textSample?: string; selector?: string } | undefined
   /** 同一个无效动作出现了几次；≥2 就停（ronadin2002/jev-cua 的 `stalled_action` 纪律）。 */
   const stalled = new Map<string, number>()
   /** 当前语义状态下已经试过的动作：作为"次优候选"的排除集，避免来回打转。 */
@@ -1168,11 +1168,34 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     let observedPage = await observePage()
     // P5：上一步真的执行过动作时，页面可能还在变（弹层/自动完成/导航）。
-    // 探一次（40ms）——结构变了就用新的观察结果，避免"弹层还没出来就让 Jev 选"。
+    //
+    // **事件驱动，不猜固定时长**（真机实测：点击到 URL 变化 GitHub 1027ms、
+    // herokuapp 858ms、Wikipedia 1153ms —— 固定 40ms 会把"正在跳转"误判成"没效果"）。
+    // 先探 40ms（快路径：弹层/局部刷新这种立即变化的），没变就用页面内 `wait --fn`
+    // 阻塞到"URL 变了 / 正文变了 / 目标选择器出现"，最多再等 4s。
     if (delivered !== undefined) {
       await sleep(40)
       const settledAgain = await observePage()
-      if (stateChanged(observedPage.snapshot, settledAgain.snapshot)) observedPage = settledAgain
+      if (stateChanged(observedPage.snapshot, settledAgain.snapshot)) {
+        observedPage = settledAgain
+      } else {
+        const shifted = typeof deps.browser.waitForPageShift === 'function'
+          ? await deps.browser
+          .waitForPageShift(
+            {
+              url: observedPage.snapshot.origin,
+              textSample: delivered.textSample ?? '',
+              ...(delivered.selector === undefined ? {} : { selector: delivered.selector }),
+            },
+            { signal: deps.signal, timeoutMs: 4000 },
+          )
+          .catch(() => false)
+          : false
+        if (shifted) {
+          if (delivered !== undefined) trace.push(`第 ${step} 步：点击后页面在跳转 → 事件驱动等待到变化再观察`)
+          observedPage = await observePage()
+        }
+      }
     }
     const snapshot: Snapshot = observedPage.snapshot
     const pageText = observedPage.text
@@ -1586,7 +1609,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             ...(goalDone === undefined ? {} : { goalDone }), ...(stuck === undefined ? {} : { stuck }),
             ...(confidence === undefined ? {} : { confidence }),
           })
-          delivered = { id: chosen.id, snapshot }
+          delivered = {
+            id: chosen.id,
+            snapshot,
+            textSample: pageText.replace(/\s+/g, ' ').trim().slice(0, 80),
+            ...(chosen.ref === undefined ? {} : { selector: chosen.ref }),
+          }
           continue
         } catch (error) {
           actionFailures += 1
@@ -1618,6 +1646,28 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         await deps.browser.act('click', chosen.ref, {}, { signal: deps.signal })
         trace.push(`第 ${step} 步：${chosen.name ?? chosen.id} 的 el.click() 没效果 → 回退成滚动+真实点击`)
         continue
+      }
+      // **先确认"真的没效果"再判**：跳转可能是慢的（实测 850–1150ms）。
+      // 这里再给一次事件驱动的机会：URL/正文/目标出现任一变化就当作"有效果"，
+      // 用新观察继续，而不是立刻换候选或判 no_progress（github-pulls 就是这么挂的）。
+      if (delivered.textSample !== undefined || delivered.selector !== undefined) {
+        const shiftedLate = typeof deps.browser.waitForPageShift === 'function'
+          ? await deps.browser
+              .waitForPageShift(
+                {
+                  url: snapshot.origin,
+                  textSample: delivered.textSample ?? '',
+                  ...(delivered.selector === undefined ? {} : { selector: delivered.selector }),
+                },
+                { signal: deps.signal, timeoutMs: 4000 },
+              )
+              .catch(() => false)
+          : false
+        if (shiftedLate) {
+          trace.push(`第 ${step} 步：${chosen.name ?? chosen.id} 的跳转是延迟的 → 等到了页面变化，继续观察`)
+          delivered = undefined
+          continue
+        }
       }
       const count = (stalled.get(chosen.id) ?? 0) + 1
       stalled.set(chosen.id, count)
@@ -1706,7 +1756,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       actionFailures = 0
       staleStreak = 0
       if (chosen.id === 'control:wait') waits += 1
-      delivered = { id: chosen.id, snapshot } // 执行前的树：下一步用 stateChanged(它, 新树) 判"有没有推进"
+      delivered = {
+        id: chosen.id,
+        snapshot, // 执行前的树：下一步用 stateChanged(它, 新树) 判"有没有推进"
+        textSample: pageText.replace(/\s+/g, ' ').trim().slice(0, 80),
+        ...(chosen.ref === undefined ? {} : { selector: chosen.ref }),
+      }
       trace.push(`第 ${step} 步：${chosen.description} ✓`)
       steps.push({
         step,
