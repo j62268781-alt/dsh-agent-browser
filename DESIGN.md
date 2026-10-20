@@ -1140,6 +1140,24 @@ false-done 4（webform-fine、todomvc-fine、saucedemo-coarse、infinite-scroll�
 **为什么不用"更大的固定等待"**：固定等待在快站点上纯浪费（每步多 1s），在慢站点上仍然可能不够；
 事件驱动的成本是"变了就立刻返回"，只有真慢才付钱，而且**上限明确**（4s 后按原逻辑处理）。
 
+**网络不可控 → 用"信号"换"时长"（`5247141`）**
+
+HTTP 层不可控时，固定等待两头不讨好：快站点白等、慢站点不够。我们统一改成**有界的事件驱动**：
+
+| 门 | 信号 | 上限 | 位置 |
+|---|---|---|---|
+| 就绪门 `waitForReady` | `document.readyState === 'complete'` | 3s（插件内 2.5s） | `open` 之后 / `runTask` 开头 |
+| 跳转门 `waitForPageShift` | URL 变 / 正文样本消失 / 目标选择器出现 | 4s | 每步观察后 + 判定"无效果"之前 |
+
+实测证据：点击到 URL 变化 GitHub 1027ms、herokuapp 858ms、Wikipedia 1153ms——
+**固定 40ms/250ms 必然误判**，而事件驱动在快路径上几乎零成本。
+
+**验收（repeat=3）**：
+- 原通过的 6 条 ×3 = **18/18**、0 false-done（无回归）；
+- 卡在判断/多子目标的一组（ti-checkboxes / ti-dynamic-controls / ti-js-confirm /
+  github-issue-search / webform / ti-sort-table）仍 0/5 —— 就绪门**只防"半张页面误判"**，
+  不修 ambiguous/budget，不夸大。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）
