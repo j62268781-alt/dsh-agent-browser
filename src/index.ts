@@ -23,7 +23,7 @@ import { AgentBrowser, CliError, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, isSuppo
 import { Config, type AgentBrowserConfig, type ResolvedConfig } from './config.js'
 import { chromeCandidates, chromeFromDoctor, chromePathNames, installPlan, runCommand, whichOnPath } from './env.js'
 import { loadBundledSkill, pluginNote } from './skill.js'
-import { runTask } from './task.js'
+import { runSubgoals, runTask, type TaskSubgoal } from './task.js'
 
 /** loader 诊断用的插件名。 */
 export const name = 'agent-browser'
@@ -637,7 +637,7 @@ export class AgentBrowserService extends TypertRemoteService {
           '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' +
           '**默认在当前页面上继续操作**（复用已打开的窗口/标签）；需要换站点时先 browser_session open，不要每个任务重开浏览器。' +
           '**能力边界**：这个循环只做 click/填值/select/勾选/滚动/返回/等待/Enter；iframe、shadow DOM、上传/下载、右键菜单、画布、多标签流程请用 browser_act / browser_raw 直接做；' +
-          '「先 A 再 B」这类有序子目标请拆成多次 browser_run（每次一个结果）。' + UNTRUSTED,
+          '**已知顺序时用 `subgoals` 一次给全**（插件按顺序推进，每个子目标都要独立通过验证才走下一个）；不确定顺序时仍建议拆成多次 browser_run。' + UNTRUSTED,
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
           maxSteps: { type: 'number', description: `最大步数（默认 ${config.limits.maxSteps}）` },
@@ -653,6 +653,13 @@ export class AgentBrowserService extends TypertRemoteService {
               '按字段名匹配（不区分大小写，支持包含匹配）：输入框→fill、下拉→select、勾选框→check/uncheck。' +
               '值由你提供，插件绝不猜文字；已处于目标状态的字段会被跳过。',
           },
+          subgoals: {
+            type: 'string',
+            description:
+              '可选：已知顺序的子目标，JSON 数组字符串，例如 [{"goal":"Log in","inputs":{"username":"standard_user","password":"secret_sauce"}},{"goal":"Add the backpack to the cart"}]。' +
+              '只在上一阶段返回 needs_verification 后推进；ambiguous / likely_done / budget / needs_confirmation 等状态会原样停下交回你。' +
+              '整个序列共享 maxSteps。给了 subgoals 时顶层的 goal 只作为总目标写进 trace。',
+          },
         },
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
         async execute(args, exec) {
@@ -665,7 +672,9 @@ export class AgentBrowserService extends TypertRemoteService {
               '装上 dsh-judgment 并重启 DSH，或在「设置 → 浏览器」里关掉决策。',
             )
           }
-          const result = await runTask(args.goal, {
+          const parsedInputs = parseInputs(args.inputs)
+          const parsedSubgoals = parseSubgoals(args.subgoals)
+          const deps = {
             browser,
             judge,
             purpose: config.judgment.purpose,
@@ -673,7 +682,12 @@ export class AgentBrowserService extends TypertRemoteService {
             goalThreshold: config.limits.goalThreshold,
             stuckThreshold: config.limits.stuckThreshold,
             signal: exec.signal,
-          })
+            ...(parsedInputs === undefined ? {} : { inputs: parsedInputs }),
+            ...(args.allowIrreversible === true ? { allowIrreversible: true } : {}),
+          }
+          const result = parsedSubgoals === undefined
+            ? await runTask(args.goal, deps)
+            : await runSubgoals(args.goal, parsedSubgoals, deps)
           return JSON.stringify(result, null, 2)
         },
       })))
@@ -712,6 +726,53 @@ function readJudge(ctx: Context, log: { warn: (message: string) => void }): Judg
     log.warn(`读取 ctx.judgment 失败：${message(error)}`)
     return undefined
   }
+}
+
+/**
+ * `inputs`/`subgoals` 是 JSON 字符串（工具参数 schema 只支持扁平类型）。
+ * 解析失败必须**显式报错**：静默忽略会让调用方以为值已经填进去了。
+ */
+function parseJsonArg(raw: string | undefined, name: string): unknown {
+  if (raw === undefined || raw.trim() === '') return undefined
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    throw new CliError('bad-arguments', `browser_run 的 ${name} 不是合法 JSON：${message(error)}`)
+  }
+}
+
+/** 字段值表：值可以是字符串/数字/布尔（下拉与勾选常写成 `"true"`），统一转成字符串。 */
+export function parseInputs(raw: string | undefined): Readonly<Record<string, string>> | undefined {
+  const value = parseJsonArg(raw, 'inputs')
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new CliError('bad-arguments', 'browser_run 的 inputs 必须是 JSON 对象，例如 {"Destination":"Lisbon"}')
+  }
+  const entries = Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+    if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') return [key, String(item)] as const
+    throw new CliError('bad-arguments', `browser_run 的 inputs["${key}"] 必须是字符串/数字/布尔（不接受嵌套对象）`)
+  })
+  return Object.fromEntries(entries)
+}
+
+/** 有序子目标：每项 `{ goal, inputs? }`。顺序就是执行顺序，插件不做重排。 */
+export function parseSubgoals(raw: string | undefined): readonly TaskSubgoal[] | undefined {
+  const value = parseJsonArg(raw, 'subgoals')
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new CliError('bad-arguments', 'browser_run 的 subgoals 必须是非空 JSON 数组')
+  }
+  return value.map((item, index) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new CliError('bad-arguments', `browser_run 的 subgoals[${index}] 必须是对象，例如 {"goal":"Log in"}`)
+    }
+    const subgoal = item as { goal?: unknown, inputs?: unknown }
+    if (typeof subgoal.goal !== 'string' || subgoal.goal.trim() === '') {
+      throw new CliError('bad-arguments', `browser_run 的 subgoals[${index}].goal 必须是非空字符串`)
+    }
+    const inputs = subgoal.inputs === undefined ? undefined : parseInputs(JSON.stringify(subgoal.inputs))
+    return { goal: subgoal.goal, ...(inputs === undefined ? {} : { inputs }) }
+  })
 }
 
 /** 快照里的 ref：接受 `e12` 或 `@e12`，统一成 CLI 认的 `@e12`。 */

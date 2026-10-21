@@ -75,9 +75,13 @@ agent-browser goto https://example.com/next  # 同站换页用 goto/点链接，
 | 画布/canvas、复杂键盘宏 | 原子工具逐步做 |
 | 多标签流程 | `browser_session` / `tab` 管理，循环只认当前标签 |
 
-**有序子目标必须拆**：`browser_run` 的 goal 是"一个结果"。
-"先登录、再加购、再结算" 要拆成 3 次调用（每次一个结果），不要写成一个 goal——
-这条来自 ykl 42 任务集的实测结论（他们那三条失败里两条就是"一个 goal 里有顺序子目标"）。
+**有序子目标要显式拆**：`browser_run` 的 goal 是"一个结果"。
+"先登录、再加购、再结算" 不要再压成一个 goal（ykl 42 任务集里两条失败就是这种写法）；
+已知顺序时用插件工具 `browser_run(subgoals=[{goal,inputs?},…])` 一次给全，**顺序由你给、插件不重排**：
+每个子目标独立验证，只有上一阶段以 `needs_verification` 收尾才推进；`ambiguous` / `likely_done` /
+`budget` / `needs_confirmation` 会停在那个阶段交回给你。顺序不确定时仍然逐次调用。
+
+> CLI 本身没有 `subgoals` 参数，这是本插件工具层的编排；直接用 bash 调 CLI 时必须自己拆。
 
 ## 两个最容易做错的点
 

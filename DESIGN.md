@@ -1333,6 +1333,58 @@ webform-fine 仍是**失败**但不再是假完成（真实根因：页面日期
 
 **未解决 / 下一轮**：`todomvc-fine`（同一输入框跨步骤重填后的提交路径仍烧步数）、`infinite-scroll`（goal 未给数量阈值，属任务/断言口径问题）、`ti-js-confirm`、`react-select`；另：`which()`/`nativeSiblingPath` 在 Windows 上的 PATH 解析仍是产品级缺陷（本机靠 profile 里 `browser.executablePath` 绕开）。
 
+### 4.5.7 有序子目标落地（已实施，2026-10-21，未提交）
+
+按 §4.5.5 的 C-B 做了**最小**版本：调用方显式给顺序，插件只负责编排与状态门。
+
+| 项 | 实现 | 证据 |
+|---|---|---|
+| `runSubgoals(goal, subgoals, deps)` | 逐阶段调用现有 `runTask`，**只有** `needs_verification` 才推进；其余状态（`ambiguous` / `likely_done` / `budget` / `needs_confirmation` / `page_error`…）原样停在当前阶段 | `tests/task.test.mjs` 5 条：顺序推进+阶段号、likely_done 停下、needs_confirmation 不越门、总步数共享、空列表报错 |
+| 总步数预算 | `maxSteps` 在整个序列内共享（`remaining = maxSteps - 已用步数`），不会因为分阶段翻倍 | 同上（`maxSteps:1` → budget，只执行 1 步） |
+| 结果合并 | 每步标 `phase`、总步号连续；usage/timings 相加；`trace` 带 `子目标 i/n` 前缀 | 同上 |
+| 工具契约 | `browser_run(subgoals)` JSON 字符串（扁平 schema）；每阶段可带自己的 `inputs` | `tests/register.test.mjs` 2 条（解析顺序、非法输入显式报错） |
+| **同时修掉的旧缺陷** | `browser_run` 的 `inputs` / `allowIrreversible` 参数**之前根本没传给 `runTask`**（描述里有、执行时丢），现已接线并加解析测试 | `parseInputs` 测试；`parseSubgoals` 测试 |
+
+### 4.5.8 单 goal 循环的可复现失败修复（已实施，2026-10-21，未提交）
+
+全部改动都有单测（`pnpm test` 150 条全绿）。逐条都是**先有 trace、再改一处**：
+
+| # | 问题（真机 trace） | 改法 | 定向实测 |
+|---|---|---|---|
+| 1 | `browser_run` 的 `inputs` / `allowIrreversible` 只写在描述里，**执行时没传给 `runTask`** | 解析 JSON 参数并接线；非法输入显式报错 | 新增解析单测 2 条 |
+| 2 | guard-checkout / saucedemo-fine 第 4 步：购物车页上点 Checkout 跳转就宣布"填完了"，三个字段没填 → 下一步 input_required | 目标要求填值时必须**先有一次填值 + 填后动作**，才允许用"页面变了/点了提交"收尾 | saucedemo-fine 定向 3/3（基线 0/3，且多次假完成） |
+| 3 | 登录后商品页的"排序"下拉被当成"表单还在"→ 登录成功判成 ambiguous | 只把**文本类**输入框算"表单未翻页"；且只对**纯登录**目标生效 | guard-checkout 从 0/3 变成能走到 `needs_confirmation`；saucedemo-coarse 假完成消失 |
+| 4 | 加购后按钮变 Remove 才是确定性证据，判断层却转头点 View details | 点过 Add to cart 后出现 Remove/移除 → 收尾 | 单元测试（真机被站点 page_error 干扰，见下） |
+| 5 | iframe-form：整树候选没有 name/state，`inputsApplied` 永远 false → 填 10 次到 budget（truth 早为真） | 整树路径 fill 后 **`get value` 读回**；一致才记"已生效"，连续两次不一致 → `no_progress` | iframe-form 定向 3/3、全量 3/3（基线 0/3） |
+| 6 | `FOLLOW_UP_VERBS` 的 `add` 命中 `address` → iframe-form 永远"填完还要 add" | 英文动词加词边界 | 单测 + 上一条的收尾链路 |
+| 7 | `singleStepGoal` 只看 ", and"，把"登录、加购、结账"当单步 → 登录完宣布整单完成 | 逗号/and 连接出**两个以上带宾语的行动子句**算多步 | saucedemo-coarse 不再假完成 |
+| 8 | guard-webform 提交成功（断言为真）却 `no_progress`：提交后页面退回整树，收尾逻辑只认抽取路径 | "填一下再提交"（`fillThenSubmitGoal`）算单步；整树路径**这一步填过值**时允许提交收尾 | guard-webform 仍不稳（预算/站点），但不再因"模式不对"必然失败 |
+
+**三份全量 repeat=3（同一 Jev 连接、同一任务集）**
+
+| 轮次 | base | hard/guard | 多数票 | false-done 任务 |
+|---|---|---|---|---|
+| 基线（final-base2 + final-hard-r3） | 14/25 | 5/14 | **19/39** | todomvc-fine、webform-fine、saucedemo-coarse、infinite-scroll |
+| r7 全量①（r7-full-r3） | — | — | **20/39** | todomvc-fine、wiki-search、infinite-scroll、github-issue-search |
+| r7 全量②（r7-full2-r3） | — | — | **19/39** | todomvc-fine、wiki-search、infinite-scroll |
+
+**结论（不粉饰）**：净分数在 **19–20/39** 之间，**没有到 25/39**；false-done 从 4 条任务降到 3 条。
+逐任务可复现的改善是：`iframe-form` 0/3 → 3/3、`key-press` 0/3 → 3/3、`ti-js-confirm` 0/3 → 3/3、
+`saucedemo-fine` 定向 3/3（全量受 saucedemo 站点 page_error 影响）；
+`drag`、`wiki-search`、`ti-hover` 在轮次间 3/3 ↔ 0/3 摇摆（judge 选择 + 站点漂移），
+**不能算作回归或收益**，也说明单轮 ±2 条不可当作结论。
+
+**还差什么（按可修复性排序）**：①中间步骤 ambiguous（ti-checkboxes、guard-checkout 第 2 步、
+react-select、ti-entry-ad、ti-dynamic-controls）——需要"商品级定位/序号语义"这类**可验证**的上下文，
+不能用位置猜；②budget（webform 的日期插件回填、todomvc、ti-sort-table、iframe-datepicker）；
+③假完成三条（todomvc-fine、wiki-search、infinite-scroll）先按安全红线修，不计入加分。
+
+**没有做的（有意）**：不让插件自己拆解 goal（C-C 的自由文本 plan），也不改 bench 任务定义。
+`bench/run.mjs` 是**逐步**调用 `runTask(step.goal, …)`，`saucedemo-coarse` 这类粗粒度任务故意只给一个 goal；
+把它的 parts 作为 `subgoals` 传进去等于换了一道题，分数不可与 ykl 对照。
+所以：**本轮不声称 bench 分数变化**——`subgoals` 是产品能力（真实调用方是主模型，它可以自己给出顺序），
+不是 19/39 → 25/39 的杠杆。要动分数，仍然只能在**单 goal 循环**里修可复现的失败环节。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）

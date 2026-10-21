@@ -142,6 +142,8 @@ export interface TaskCandidate {
 
 export interface TaskStep {
   readonly step: number
+  /** 有序子目标的阶段序号（仅 runSubgoals 结果存在）。 */
+  readonly phase?: number
   readonly origin: string
   readonly digest: string
   readonly action: string
@@ -226,6 +228,11 @@ export interface TaskDeps {
    * （Ying-Kai-Liao/jev-browser 的 `allow_irreversible`）。
    */
   readonly allowIrreversible?: boolean
+}
+
+export interface TaskSubgoal {
+  readonly goal: string
+  readonly inputs?: Readonly<Record<string, string>>
 }
 
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
@@ -469,7 +476,7 @@ export function urlChangeMatchesGoal(goal: string, startUrl: string, currentUrl:
 
 /** 目标里出现这些词 = 填完值之后**还要再做一步**（提交/搜索/登录/添加…），不能按"值已生效"收尾。 */
 const FOLLOW_UP_VERBS =
-  /(submit|log ?in|sign ?in|sign ?up|search|find|open|click|press|continue|checkout|order|buy|add|create|save|apply|send|confirm|delete|remove|go to|navigate|提交|登录|注册|搜索|查询|查找|打开|点击|按下|继续|结账|下单|购买|添加|新建|保存|应用|发送|确认|删除|移除|跳转)/i
+  /\b(submit|log ?in|sign ?in|sign ?up|search|find|open|click|press|continue|checkout|order|buy|add|create|save|apply|send|confirm|delete|remove|go to|navigate)\b|提交|登录|注册|搜索|查询|查找|打开|点击|按下|继续|结账|下单|购买|添加|新建|保存|应用|发送|确认|删除|移除|跳转/i
 
 /**
  * 「点一下就等于提交/搜索/继续/完成」的控件动词。
@@ -521,11 +528,18 @@ export function inputsApplied(
   inputs?: Readonly<Record<string, string>>,
   filled?: ReadonlyMap<string, string>,
   goal = '',
+  /**
+   * 已经**读回验证**过的 key（`get value` 等于调用方给的值）。
+   * 整树/iframe 路径上候选没有 `name`/`state`，光看候选永远"没生效"——
+   * 真机 iframe-form 因此填了 10 次、每次都判成没生效，最后 budget（truth 早已为真）。
+   */
+  verified?: ReadonlySet<string>,
 ): boolean {
   if (inputs === undefined) return false
   const entries = Object.entries(inputs)
   if (entries.length === 0) return false
   for (const [key, value] of entries) {
+    if (verified?.has(key) === true) continue
     const single = { [key]: value }
     const matched = candidates.filter((candidate) => matchInputValue(candidate, single) !== undefined)
     if (matched.length === 0) return false
@@ -632,9 +646,31 @@ export function wantsDrag(goal: string): boolean {
  * 目标是不是**一个**子目标：多子目标（"Log in, add to cart, checkout"）不能用
  * "表单已提交/已选择"这类确定性收尾——那只证明第一步做完了，不是整个目标完成。
  */
+/**
+ * "填一下、然后提交"这类**两动作单目标**（Type into X, then submit）：
+ * 它比普通多步目标窄，提交控件名在目标里时，页面变化就足以作为收尾证据。
+ * 真机 guard-webform 提交成功（断言为真）却因为 singleStepGoal=false 一直 no_progress。
+ */
+export function fillThenSubmitGoal(goal: string): boolean {
+  const dataEntry = /\b(fill|type|enter)\b/i.test(goal)
+  const submit = /\b(submit|send|save|continue|next|search|log ?in)\b/i.test(goal)
+  const extras = /\b(check|uncheck|select|choose|click|open|go to|add|remove|delete|buy|checkout)\b/i.test(goal)
+  return dataEntry && submit && !extras
+}
+
 export function singleStepGoal(goal: string): boolean {
   const multiStep = /(,\s*(and|then)\b|\bthen\b|\band then\b|[，、].*[，、]|然后|接着|随后)/i
-  return !multiStep.test(goal)
+  if (multiStep.test(goal)) return false
+  // 逗号/and 连接出**两个以上带宾语的行动子句**也算多步：
+  // "Log in, buy the Sauce Labs Backpack and complete the checkout" 不是单步目标，
+  // 旧判定只看 ", and" 会把它当成单步 → 登录完就宣布整单完成（saucedemo-coarse 的假完成）。
+  // 单独一个 "continue"/"submit" 不算独立子句（"Fill in the information and continue" 仍算单步）。
+  const clauses = goal.split(/[,，;；]|\band\b/i).map((clause) => clause.trim()).filter((clause) => clause !== '')
+  const actions = clauses.filter((clause) => {
+    const words = clause.split(/\s+/).filter((word) => word !== '')
+    return words.length >= 2 && /^(?:please\s+)?(?:log ?in|sign ?in|buy|purchase|add|open|go to|navigate|complete|checkout|fill|type|enter|submit|search|click|select|choose|pay|order|remove|delete)\b/i.test(clause)
+  })
+  return actions.length < 2
 }
 
 /**
@@ -723,6 +759,38 @@ export function goalTokensOf(goal: string): string[] {
     return grams
   })
   return [...new Set([...(goal.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []), ...cjk])]
+}
+
+
+/**
+ * 目标明确"把「某商品」加入购物车"、且页面上**恰好一个** add-to-cart 控件的
+ * 名字/上下文对得上目标 → 返回它（确定性动作，不猜）。
+ *
+ * 真机 saucedemo：商品卡上的 "View details for Sauce Labs Backpack" 词面命中更多，
+ * 判断层两次都选它而不是 "Add to cart"，整步 ambiguous；但目标是祈使句 "Add … to the cart"，
+ * 页面也只有一个加购按钮对得上这个商品 —— 这种情况没有歧义，按代码执行比再问一次更稳。
+ */
+export function addToCartTarget(goal: string, candidates: readonly TaskCandidate[]): TaskCandidate | undefined {
+  if (!/\badd\b[^.]{0,60}\bcart\b|加入购物车|添加到购物车/i.test(goal)) return undefined
+  const controls = candidates.filter(
+    (candidate) => candidate.kind === 'click' && /add\s*(?:it\s*)?(?:to\s*(?:the\s*)?cart)|加入购物车|添加到购物车/i.test(candidate.name ?? ''),
+  )
+  if (controls.length === 0) return undefined
+  const stop = new Set(['add', 'the', 'cart', 'to', 'buy', 'item', 'items', 'this'])
+  const tokens = goalTokensOf(goal).filter((token) => !stop.has(token))
+  // 多个商品都可能命中同一批词（"Sauce Labs …"）：取**命中最多**的那个；
+  // 并列第一就放弃（有歧义时交回判断层，不猜）。
+  const scored = controls
+    .map((candidate) => {
+      const haystack = `${candidate.name ?? ''} ${candidate.near ?? ''}`.toLowerCase()
+      return { candidate, hits: tokens.filter((token) => haystack.includes(token)).length }
+    })
+    .sort((left, right) => right.hits - left.hits)
+  const best = scored[0]
+  // 一个目标词都没命中就不改选：宁可按判断层/后续步骤来，也不点"可能是别的商品"的按钮。
+  if (best === undefined || best.hits === 0) return undefined
+  const tied = scored.filter((row) => row.hits === best.hits)
+  return tied.length === 1 ? best.candidate : undefined
 }
 
 /** 按 goal 相关性排序（确定性，不做判断）：命中的排前面，其余保持原顺序。 */
@@ -1141,10 +1209,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
    * 因为"填了值"本身也算页面变化，停滞检测抓不到。同值重复填没有任何意义 → 直接跳过。
    */
   const filledFields = new Map<string, string>()
+  /**
+   * 读回验证过的 key（整树路径）：`get value` 等于调用方给的值。
+   * 整树候选没有 name/state，`inputsApplied` 永远判不生效 —— iframe-form 就是因此反复填到 budget。
+   */
+  const verifiedFills = new Set<string>()
+  /** 读回值连续与调用方给的不一致（页面清空/没接受输入）：2 次就停，不无限重填。 */
+  let fillMismatches = 0
   /** 上一步是不是"填了文字"：只有刚填过输入框，Enter 才是合理的提交动作（否则会在下拉页上反复按 Enter）。 */
   let lastActionWasText = false
   /** 上一步点的是不是"目标点名的提交类控件"：下一步若页面变了，这一步的意图已达成（见 named_submit_applied）。 */
   let lastSubmitAction: { id: string; name: string } | undefined
+  /** 上一步点的是不是"加入购物车"：下一步出现 Remove/移除 控件 = 商品已进车（电商通用模式）。 */
+  let lastAddToCart: { id: string; name: string } | undefined
   /** 进入"页面在加载"等待前的正文：加载结束后正文出现新内容 = 结果已出现（见 loading_finished）。 */
   let awaitedLoading: { text: string } | undefined
   /** 上一次用的是 `el.click()`（合成事件）：没效果时回退成"滚进视口 + 真实鼠标点击"。 */
@@ -1438,7 +1515,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **登录/表单已翻页的确定性判定**：填过密码类字段、现在页面上一个输入框都没有了
     // → 表单已经提交并跳走，不再让判断层猜"登录成功了吗"（真机：saucedemo 登录后
     // goal_done 只有 0.42，循环接着点了 Logout）。
-    if (filledSecret && singleStepGoal(goal) && !observedPage.candidates.some((candidate) => candidate.kind === 'input')) {
+    // 只看**文本类**输入框：登录后的商品页常带一个"排序"下拉（combobox），
+    // 旧的 "有任何 input 就算表单还在" 会把登录成功判成 ambiguous（真机 guard-checkout step 1）。
+    const textFieldStillOpen = observedPage.candidates.some((candidate) =>
+      candidate.kind === 'input' && ['textbox', 'searchbox', 'textarea', 'input'].includes((candidate.role ?? '').toLowerCase()))
+    // 只在"目标就是登录"时用它收尾：goal 里还有买/结账/提交等别的动作时，
+    // 登录成功只说明**第一个子目标**完成（saucedemo-coarse 曾因此把整单判成完成）。
+    const loginOnly = /(log ?in|sign ?in|登录|登陆)/i.test(goal) &&
+      !/(buy|purchase|checkout|order|add|cart|submit|fill|type|search|open|go to|complete|pay|delete|remove)/i.test(goal)
+    if (filledSecret && loginOnly && singleStepGoal(goal) && !textFieldStillOpen) {
       trace.push(`第 ${step} 步：密钥字段已填、页面已无输入框（地址 ${snapshot.origin}）→ 表单已提交，交回宿主校验`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:form_submitted', executed: false, reason: 'form_submitted' })
       return finish('needs_verification', '密钥字段已填且表单已翻页', snapshot)
@@ -1494,14 +1579,48 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 另外要求页面有**实质内容**（≥ MIN_PAGE_TEXT）：真机 webform-fine 提交后落到
     // "Form submitted" 目标页，URL 命中 `submit`，但提交的数据并不完整（日期被日期插件清空）——
     // 27 字的空壳页不构成"达成"，不能替调用方宣布完成。
+    // **"还没填就要走"守卫**：目标要求填值（fill/type/enter/choose/select…），但这一步
+    // 一次填值动作都还没发生 → 不许用"页面变了/点了提交"这类导航证据收尾。
+    // 真机 bench（guard-checkout / saucedemo-fine step 4）：目标 "Fill in the checkout
+    // information and continue" 在**购物车页**上先看到 "Checkout" 按钮（名字在目标里），
+    // 点它跳转到收货信息页 —— 旧逻辑据此宣布这一步完成，可三个字段一个都没填，
+    // 下一步 "Finish the order" 只能 input_required（缺 First Name），整条任务 missed。
+    // 只要求"发生过一次填值"：不要求调用方的每个 key 都能在当前页面匹配上，
+    // 否则 `query` 这类与页面 label 不同名的 key（wiki-search）会永远挡住导航收尾。
+    const filledThisRun = steps.some((item) => item.reason === 'filled_from_inputs')
+    const dataEntryGoal = /\b(fill|type|enter|choose|select|set)\b|输入|填写|选择/i.test(goal)
+    // 填过之后还要有**一次非填值的已执行动作**（提交/继续/选择…）：否则"填完就跳转收尾"
+    // 会把 "填完并继续" 这类目标停在中途。
+    const lastFillStep = filledThisRun ? [...steps].reverse().find((item) => item.reason === 'filled_from_inputs')?.step : undefined
+    const executedAfterFill = lastFillStep === undefined
+      ? false
+      : steps.some((item) => item.executed && item.step > lastFillStep && item.reason !== 'filled_from_inputs')
+    const evidenceNeedsFill = dataEntryGoal && (!filledThisRun || !executedAfterFill)
     if (singleStepGoal(goal) && pageText.length >= MIN_PAGE_TEXT && !looksLikeErrorPage(pageText, pageTitle)) {
       const urlHit = urlChangeMatchesGoal(goal, initialOrigin ?? snapshot.origin, snapshot.origin)
       if (urlHit !== undefined) {
         trace.push(`第 ${step} 步：地址新增段命中目标词「${urlHit}」（${snapshot.origin.slice(0, 240)} · mode=${observedPage.mode} · 正文 ${pageText.length} 字）→ 停，交回宿主校验`)
-        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:url_matched', executed: false, reason: 'url_matched' })
-        return finish('needs_verification', `地址已命中目标「${urlHit}」`, snapshot)
+        if (evidenceNeedsFill) {
+          trace.push(`第 ${step} 步：地址命中「${urlHit}」，但目标要求填值且这一步还没填过 → 不按完成收尾`)
+        } else {
+          steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:url_matched', executed: false, reason: 'url_matched' })
+          return finish('needs_verification', `地址已命中目标「${urlHit}」`, snapshot)
+        }
       }
     }
+    // **加入购物车 → 出现 Remove/移除**：电商通用模式，两种按钮文案是同一个商品的状态对。
+    // 真机 saucedemo（Add the Sauce Labs Backpack to the cart）：点完 Add to cart 后判断层
+    // 转头去点 "View details"（goal_done 0.24），最后 ambiguous；按钮变成 Remove 才是确定性证据。
+    if (lastAddToCart !== undefined && lastChange !== undefined) {
+      const removal = observedPage.candidates.find((candidate) => /^(?:remove|remove from cart)\b|^(?:移除|删除)/i.test((candidate.name ?? '').trim()))
+      if (removal !== undefined) {
+        trace.push(`第 ${step} 步：点过「${lastAddToCart.name}」后出现「${removal.name}」→ 商品已进购物车，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastAddToCart.id, executed: true, reason: 'cart_item_added' })
+        return finish('needs_verification', '购物车已出现 Remove/移除 控件', snapshot)
+      }
+    }
+    lastAddToCart = undefined
+
     // **目标点名的提交类控件已经点过、且页面确实变了** → 这一步的意图达成，收尾。
     // 真机 bench（fixture-hotel step 2）：点 "Find stays" 后结果区刷新（页面变了），但表单还在、
     // 按钮还在，判断层下一步继续选同一个按钮 → 10 步上限。这里用确定性证据停：
@@ -1517,7 +1636,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       // （真机 webform-fine：提交后导航失败落到错误页，整树只有 4 个元素，正文退化成
       // 无障碍树文本 → 错误页守卫看不到错误文案）。这种页面交给判断层与 page_error 门，
       // 不能因为"正文变了"就宣称提交成功。
-      if (applied && observedPage.mode === 'extract' && !looksLikeErrorPage(pageText, pageTitle)) {
+      // 整树路径（提交后页面极简/iframe）只在**这一步填过值**时允许收尾：
+      // webform-fine step 6 只点 Submit、这一步没填 → 仍由 page_error/no_progress 处理，不制造假完成。
+      const treeSubmitAllowed = observedPage.mode === 'tree' && filledThisRun && pageText.length >= MIN_PAGE_TEXT
+      if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle) && evidenceNeedsFill) {
+        trace.push(`第 ${step} 步：「${lastSubmitAction.name}」是目标点名的提交控件且页面已变化，但目标要求填值且还没填过 → 不按完成收尾`)
+      } else if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle)) {
         trace.push(`第 ${step} 步：「${lastSubmitAction.name}」是目标点名的提交控件且页面已变化 → 停，交回宿主校验`)
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastSubmitAction.id, executed: false, reason: 'named_submit_applied' })
         return finish('needs_verification', `已执行目标点名的提交控件「${lastSubmitAction.name}」且页面已变化`, snapshot)
@@ -1529,7 +1653,6 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **"填完 ≠ 完成"**：目标里带提交/搜索/添加这类后续动作、且本轮确实填过值时，
     // 必须有"后续动作生效"的证据（跳转 / 新增元素 / 正文变化）才允许停。
     // 真机 bench：todomvc "Add a todo" 填完就 likely_done、webform "... then submit" 没提交也报完成。
-    const filledThisRun = steps.some((item) => item.reason === 'filled_from_inputs')
     const followUpNeeded = FOLLOW_UP_VERBS.test(goal) && filledThisRun
     const followUpEvidence =
       lastChange !== undefined &&
@@ -1782,7 +1905,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // **填充类目标的确定性收尾**：调用方给的值都已生效、且目标里没有"再去提交/搜索/打开"的动词。
     // 真机（jk-login / fixture-hotel）：纯填值目标会被判断层拖成 ambiguous/no_progress。
-    if (pendingField === undefined && !FOLLOW_UP_VERBS.test(goal) && inputsApplied(allCandidates, deps.inputs, filledFields)) {
+    if (pendingField === undefined && !FOLLOW_UP_VERBS.test(goal) && inputsApplied(allCandidates, deps.inputs, filledFields, goal, verifiedFills)) {
       trace.push(`第 ${step} 步：调用方给的值都已生效，且目标没有后续动作 → 停，交回宿主校验`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:inputs_applied', executed: false, reason: 'inputs_applied', ...(goalDone === undefined ? {} : { goalDone }) })
       return finish('needs_verification', '调用方给的值都已生效', snapshot)
@@ -1860,6 +1983,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       return finish('judge_error', `判断选了不存在的候选 "${actionAnswer.optionId}"`, snapshot)
     }
 
+    // **确定性加购**：目标点名"把某商品加入购物车"、页面恰好一个匹配控件 → 直接执行，
+    // 不再让判断层在"View details / Add to cart"之间掷硬币（真机 saucedemo 整步 ambiguous）。
+    if (chosen.kind === 'click') {
+      const cartTarget = addToCartTarget(goal, candidates)
+      if (cartTarget !== undefined && cartTarget.id !== chosen.id) {
+        trace.push(`第 ${step} 步：目标明确要加购「${cartTarget.name ?? cartTarget.id}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
+        chosen = cartTarget
+      }
+    }
+
     // **确定性填值优先**：调用方给了值、页面上还有没生效的字段 → 先填它，
     // 不让判断层在"填哪个框 / 先不先点提交"上把流程拖成 ambiguous。
     // （真机 saucedemo：登录页上判断层置信 0.27，直接 ambiguous 交回宿主，登录框一个都没填。）
@@ -1931,7 +2064,26 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           await fillFromInputs(deps.browser, chosen, given, deps.signal)
           timings.actMs += now() - started
           actionFailures = 0
-          filledFields.set(chosen.id, given)
+          // **读回验证**（只在整树路径）：抽取路径的 state 已经能读"当前值"，这里补的是
+          // 载体没有 name/state 的场景（iframe 表单）。读回一致 → 这个 key 算已生效；
+          // 读回不一致（站点把值清空了）→ 不记录 filled，且连续两次就停，绝不当成完成。
+          if (observedPage.mode === 'tree') {
+            const readback = await deps.browser.get('value', chosen.ref, undefined, { signal: deps.signal }).catch(() => undefined)
+            const matched = readback !== undefined && readback.trim() === given.trim()
+            if (matched) {
+              for (const [key, value] of Object.entries(deps.inputs ?? {})) if (value === given) verifiedFills.add(key)
+              fillMismatches = 0
+              trace.push(`第 ${step} 步：读回值确认「${chosen.name || chosen.id}」已生效`)
+            } else if (readback !== undefined) {
+              fillMismatches += 1
+              trace.push(`第 ${step} 步：读回值与调用方给的不一致（第 ${fillMismatches} 次）→ 不当作已生效`)
+              if (fillMismatches >= 2) {
+                steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: chosen.id, executed: true, reason: 'fill_not_applied' })
+                return finish('no_progress', '填进去的值没有留在页面上（读回不一致）', snapshot)
+              }
+            }
+          }
+          if (fillMismatches === 0) filledFields.set(chosen.id, given)
           // 密码框的 name 常常是空的，但它的 state 一定是脱敏后的 `已有内容: ●●●`（extract 只对 type=password 这样脱敏）。
           if (
             SECRET_KEY.test(chosen.name ?? '') ||
@@ -2098,9 +2250,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       lastJsClick = executed.jsClicked
       // 记下"这次点的是不是目标点名的提交类控件"：下一步用**页面变化**作为达成证据
       // （单步目标 + 非登录/数量型 + 控件名在目标里 + 动词是提交类，四个条件全由代码判）。
-      lastSubmitAction =
+      lastAddToCart =
         chosen.kind === 'click' &&
         singleStepGoal(goal) &&
+        /add\b[^.]{0,60}\bcart\b|加入购物车|添加到购物车/i.test(goal) &&
+        /add.*cart|加入购物车|添加到购物车/i.test(chosen.name ?? '')
+          ? { id: chosen.id, name: chosen.name ?? '' }
+          : undefined
+      lastSubmitAction =
+        chosen.kind === 'click' &&
+        (singleStepGoal(goal) || fillThenSubmitGoal(goal)) &&
         namedSubmitGoal(goal) &&
         submitControlOf(chosen.name ?? '') !== undefined &&
         goalMentions(chosen.name ?? '', goal)
@@ -2194,6 +2353,75 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       next: NEXT_HINTS[status],
     }
   }
+}
+
+/**
+ * 顺序执行调用方明确给出的子目标。只有某阶段返回 needs_verification 才推进；
+ * 任何不确定、错误或不可逆确认状态都会原样交回，不自动跨过该阶段。
+ */
+export async function runSubgoals(
+  goal: string,
+  subgoals: readonly TaskSubgoal[],
+  deps: TaskDeps,
+): Promise<TaskResult> {
+  if (goal.trim() === '') throw new JudgeUnavailableError('browser_run 需要 goal')
+  if (subgoals.length === 0 || subgoals.some((subgoal) => subgoal.goal.trim() === '')) {
+    throw new JudgeUnavailableError('browser_run 的 subgoals 必须是非空目标列表')
+  }
+
+  const startedAt = now()
+  const steps: TaskStep[] = []
+  const trace = [`总目标：${goal}`, `按顺序执行 ${subgoals.length} 个子目标`]
+  const usage = { calls: 0, inputTokens: 0, outputTokens: 0, estCostUsd: 0 }
+  const timings = { snapshotMs: 0, readMs: 0, titleMs: 0, askMs: 0, actMs: 0, totalMs: 0 }
+  let lastResult: TaskResult | undefined
+
+  const finish = (status: TaskStatus, reason: string): TaskResult => ({
+    status,
+    reason,
+    steps,
+    trace,
+    url: lastResult?.url ?? '',
+    usage,
+    timings: { ...timings, totalMs: Math.round(now() - startedAt) },
+    ...(lastResult?.candidates === undefined ? {} : { candidates: lastResult.candidates }),
+    next: NEXT_HINTS[status],
+  })
+
+  for (const [index, subgoal] of subgoals.entries()) {
+    const remaining = deps.maxSteps - steps.length
+    if (remaining <= 0) {
+      trace.push(`子目标 ${index + 1}/${subgoals.length} 未开始：整个序列已达到 ${deps.maxSteps} 步上限`)
+      return finish('budget', '有序子目标达到总步数上限')
+    }
+
+    trace.push(`子目标 ${index + 1}/${subgoals.length}：${subgoal.goal}`)
+    const result = await runTask(subgoal.goal, {
+      ...deps,
+      maxSteps: remaining,
+      inputs: subgoal.inputs,
+    })
+    lastResult = result
+    const offset = steps.length
+    steps.push(...result.steps.map((step) => ({ ...step, step: offset + step.step, phase: index + 1 })))
+    trace.push(...result.trace.map((line) => `子目标 ${index + 1}/${subgoals.length}：${line}`))
+    usage.calls += result.usage.calls
+    usage.inputTokens += result.usage.inputTokens
+    usage.outputTokens += result.usage.outputTokens
+    usage.estCostUsd += result.usage.estCostUsd
+    timings.snapshotMs += result.timings.snapshotMs
+    timings.readMs += result.timings.readMs
+    timings.titleMs += result.timings.titleMs
+    timings.askMs += result.timings.askMs
+    timings.actMs += result.timings.actMs
+
+    if (result.status !== 'needs_verification') {
+      trace.push(`停止在子目标 ${index + 1}/${subgoals.length}：状态 ${result.status}，不自动推进`)
+      return finish(result.status, `子目标 ${index + 1}/${subgoals.length} 未通过：${result.reason}`)
+    }
+  }
+
+  return finish(lastResult?.status ?? 'budget', lastResult?.reason ?? '没有可执行的子目标')
 }
 
 /** 结束状态 → 交回宿主的下一步提示（三家参考实现都遵循"运行不宣布完成，调用方独立验证"）。 */

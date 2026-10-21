@@ -20,6 +20,7 @@ import {
   submitControlOf,
   SNAPSHOT_STATE_CAP,
   pickAlternate,
+  runSubgoals,
   runTask,
   stateSignature,
 } from '../lib/task.js'
@@ -34,6 +35,7 @@ function fakePage(elements, { withExtract = false } = {}) {
     elements: elements.map((element) => ({ ...element })),
     text: '初始页面',
     acts: [],
+    values: {},
     snapshots: 0,
   }
   const refs = () => Object.fromEntries(state.elements.map((element) => [element.ref, { name: element.name, role: element.role }]))
@@ -51,10 +53,11 @@ function fakePage(elements, { withExtract = false } = {}) {
     snapshot: async () => snapshot(),
     /** 页面**可见正文**（真实实现走 CLI 的 `read`）。 */
     read: async () => state.text,
-    /** 页面**标题**（真实实现走 CLI 的 `get title`）。 */
-    get: async (what) => (what === 'title' ? 'E2E 单元测试页' : ''),
-    async act(action, target) {
+    /** 页面**标题/字段值**（真实实现走 CLI 的 `get title` / `get value`）。 */
+    get: async (what, target) => (what === 'title' ? 'E2E 单元测试页' : what === 'value' ? (state.values[target] ?? '') : ''),
+    async act(action, target, payload) {
       state.acts.push(`${action} ${target}`)
+      if (action === 'fill') state.values[target] = payload?.value ?? ''
       const raw = String(target)
       const byIndex = /^\[data-dsh-idx="(\d+)"\]$/.exec(raw)
       const ref = byIndex === null ? raw.replace(/^@/, '') : state.elements[Number(byIndex[1])]?.ref
@@ -817,4 +820,254 @@ test('置信度低且前两名接近 → ambiguous，并给出前 3 名候选', 
   assert.deepEqual(page.state.acts, [], 'ambiguous 时不该执行动作')
   assert.equal(result.candidates?.length, 3)
   assert.match(result.candidates[0].description, /保存|提交|取消/)
+})
+
+/* ───────────────── 有序子目标（subgoals）：只在 needs_verification 后推进 ───────────────── */
+
+test('subgoals：每个阶段验证通过后按顺序推进，并标出阶段号', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '继续', onClick: (state) => { state.text = '第一步完成' } },
+    { ref: 'e2', role: 'button', name: '完成', onClick: (state) => { state.text = '第二步完成' } },
+  ])
+  const judge = fakeJudge([
+    { action: 'click:e1', goalDone: 0.1, confirmProbability: 0.95 },
+    { action: 'click:e1', goalDone: 0.95 },
+    { action: 'click:e2', goalDone: 0.1, confirmProbability: 0.95 },
+    { action: 'click:e2', goalDone: 0.93 },
+  ])
+  const result = await runSubgoals('先继续再完成', [
+    { goal: '点击继续' },
+    { goal: '点击完成' },
+  ], deps(page.browser, judge))
+
+  assert.equal(result.status, 'needs_verification')
+  assert.deepEqual(page.state.acts, ['click @e1', 'click @e2'], '两个阶段都要执行，且顺序不能反')
+  assert.deepEqual(result.steps.map((step) => step.phase), [1, 1, 2, 2])
+  assert.deepEqual(result.steps.map((step) => step.step), [1, 2, 3, 4], '总步数在阶段之间连续')
+  assert.ok(result.trace.some((line) => line.includes('按顺序执行 2 个子目标')))
+})
+
+test('subgoals：阶段返回 likely_done 就停下，不自动跑下一阶段', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '继续', onClick: (state) => { state.text = '第一步完成' } },
+    { ref: 'e2', role: 'button', name: '完成' },
+    { ref: 'e3', role: 'button', name: '不该点我' },
+  ])
+  const judge = fakeJudge([
+    { action: 'click:e1', goalDone: 0.1, confirmProbability: 0.9 },
+    { action: 'click:e1', goalDone: 0.95 },
+    { action: 'click:e2', goalDone: 0.7, confirmProbability: 0.8 },
+  ])
+  const result = await runSubgoals('两阶段', [
+    { goal: '点击继续' },
+    { goal: '点击完成' },
+    { goal: '点击不该点我' },
+  ], deps(page.browser, judge))
+
+  assert.equal(result.status, 'likely_done', '不确定的完成只交回宿主验证')
+  assert.ok(!page.state.acts.includes('click @e3'), '第三阶段不能跑')
+  assert.equal(page.state.acts.filter((line) => line === 'click @e2').length, 1, '第二阶段停下后不再重复点')
+  assert.ok(result.trace.some((line) => line.includes('停止在子目标 2/3')))
+})
+
+test('subgoals：needs_confirmation 原样交回，不跨过不可逆门', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '下单' }])
+  const judge = {
+    apiVersion: 1,
+    async ask() {
+      return {
+        answers: {
+          action: { kind: 'choice', optionId: 'click:e1', probabilities: { 'click:e1': 1 }, confidence: 1 },
+          goal_done: { kind: 'noul', probability: 0 },
+          stuck: { kind: 'noul', probability: 0 },
+          irreversible: { kind: 'noul', probability: 0.95 },
+        },
+        usage: { inputTokens: 1, outputTokens: 0 },
+        model: 'test', provider: 'test', connection: 'test', fingerprint: 'test',
+      }
+    },
+  }
+  const result = await runSubgoals('下单', [{ goal: '提交订单' }, { goal: '查看结果' }], deps(page.browser, judge))
+  assert.equal(result.status, 'needs_confirmation')
+  assert.deepEqual(page.state.acts, [], '不可逆动作未确认前不能执行')
+  assert.ok(result.trace.some((line) => line.includes('停止在子目标 1/2')))
+})
+
+test('subgoals：整体步数上限跨阶段共享', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'button', name: '继续', onClick: (state) => { state.text = '动了一下' } }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1 }])
+  const result = await runSubgoals('两阶段', [{ goal: '点击继续' }, { goal: '再点一次' }], deps(page.browser, judge, { maxSteps: 1 }))
+  assert.equal(result.status, 'budget')
+  assert.equal(result.steps.length, 1, '总步数不能因为分阶段而翻倍')
+  assert.ok(result.trace.some((line) => line.includes('子目标 2/2 未开始')))
+})
+
+test('subgoals：空列表或空目标 → 显式报错（不静默当成已完成）', async () => {
+  const page = fakePage(BUTTONS)
+  await assert.rejects(() => runSubgoals('目标', [], deps(page.browser, fakeJudge([]))), /subgoals/)
+  await assert.rejects(() => runSubgoals('目标', [{ goal: '  ' }], deps(page.browser, fakeJudge([]))), /subgoals/)
+})
+
+/* ───────────────── "填完再继续"不能被购物车页的 Checkout 跳转提前收尾 ───────────────── */
+
+test('目标要求填值：跳转到收货页时还没填过任何字段 → 不收尾，继续填', async () => {
+  const page = fakePage([
+    {
+      ref: 'e1',
+      role: 'button',
+      name: 'Checkout',
+      onClick: (state) => {
+        state.origin = 'https://example.test/checkout-step-one.html'
+        state.text = 'Checkout: Your Information'
+        state.elements = [
+          { ref: 'e2', role: 'textbox', name: 'First Name' },
+          { ref: 'e3', role: 'button', name: 'Continue' },
+        ]
+      },
+    },
+  ], { withExtract: true })
+  const judge = fakeJudge([
+    { action: 'click:0', goalDone: 0.05 },
+    { action: 'input:0', goalDone: 0.05 },
+    { action: 'click:1', goalDone: 0.05, confirmProbability: 0.95 },
+  ])
+  const result = await runTask('Fill in the checkout information and continue', deps(page.browser, judge, {
+    inputs: { first_name: 'Ada' },
+  }))
+
+  const trace = result.trace.join('\n')
+  assert.match(trace, /还没填过 → 不按完成收尾/, '在购物车页点 Checkout 跳转后不能宣布完成')
+  assert.ok(
+    result.steps.some((step) => step.reason === 'filled_from_inputs'),
+    `跳转后应该继续把 First Name 填上：${JSON.stringify(result.steps)}`,
+  )
+  assert.ok(page.state.acts.some((line) => line.startsWith('fill ')), `应该执行 fill，实际：${page.state.acts}`)
+  assert.equal(result.status, 'needs_verification')
+})
+
+/* ───────────────── 登录成功 / 加入购物车：确定性证据（不是靠 goal_done 抖） ───────────────── */
+
+/** 会随动作变化的抽取页：fill 会把 state 写成"当前值"，click 由 handler 决定页面怎么变。 */
+function liveExtractPage(items, handlers = {}) {
+  const state = { items: items.map((item) => ({ ...item })), text: '初始页面', title: '标题', url: 'https://a.test/' }
+  return {
+    state,
+    browser: {
+      async extract() {
+        return { items: state.items, text: state.text, title: state.title, url: state.url }
+      },
+      // 抽取覆盖不足时会退回整树：这里给一棵"没有文本输入框"的空树，正好符合登录后的页面。
+      async snapshot() { return { origin: state.url, digest: 'tree-digest', snapshot: '', refs: {} } },
+      async read() { return state.text },
+      async get() { return state.title },
+      async act(action, ref, payload) {
+        const index = state.items.findIndex((_, i) => String(ref) === `[data-dsh-idx="${i}"]`)
+        if (action === 'fill' && index >= 0) state.items[index].state = `当前值: ${payload.value}`
+        handlers[action]?.(state, { index, payload })
+      },
+      async run() {},
+    },
+  }
+}
+
+test('登录后只剩下拉框（没有文本输入框）也算表单已翻页 → 不收 ambiguous', async () => {
+  const page = liveExtractPage([
+    { index: 0, role: 'textbox', name: 'Password', covered: false, state: '' },
+    { index: 1, role: 'button', name: 'Login', covered: false, state: '' },
+  ], {
+    click: (state) => {
+      state.text = 'Products'
+      state.items = [{ index: 0, role: 'combobox', name: 'Sort products', covered: false, state: '当前值: Name (A to Z)' }]
+    },
+  })
+  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.1 }, { action: 'click:1', goalDone: 0.2 }])
+  const result = await runTask('Log in', deps(page.browser, judge, { inputs: { password: 'secret_sauce' } }))
+  assert.equal(result.status, 'needs_verification')
+  assert.match(result.trace.join('\n'), /密钥字段已填、页面已无输入框/)
+})
+
+test('点过 Add to cart 后出现 Remove → 商品已进车，不用判断层再猜', async () => {
+  const page = liveExtractPage([
+    { index: 0, role: 'button', name: 'Add to cart', covered: false, state: '' },
+    { index: 1, role: 'button', name: 'View details', covered: false, state: '' },
+  ], {
+    click: (state) => {
+      state.text = '1 item in cart'
+      // 别的商品仍然有 Add to cart：真实列表页也这样，抽取的"目标覆盖检查"才不会退回整树。
+      state.items = [
+        { index: 0, role: 'button', name: 'Remove', covered: false, state: '' },
+        { index: 1, role: 'button', name: 'Add to cart', covered: false, state: '' },
+        { index: 2, role: 'button', name: 'View details', covered: false, state: '' },
+      ]
+    },
+  })
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.1 }, { action: 'click:1', goalDone: 0.1 }])
+  const result = await runTask('Add the Sauce Labs Backpack to the cart', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.match(result.trace.join('\n'), /商品已进购物车/)
+})
+
+/* ───────────────── 单步判定 / 动词排序（粗粒度目标不能提前收尾） ───────────────── */
+
+test('singleStepGoal：逗号+and 串起来的多个行动子句算多步', async () => {
+  const { singleStepGoal } = await import('../lib/task.js')
+  assert.equal(singleStepGoal('Log in, buy the Sauce Labs Backpack and complete the checkout'), false)
+  assert.equal(singleStepGoal('Fill in the checkout information and continue'), true, 'continue 单独不算独立子句')
+  assert.equal(singleStepGoal('Add the Sauce Labs Backpack to the cart'), true)
+  assert.equal(singleStepGoal('Log in'), true)
+})
+
+
+
+/* ───────────────── 整树路径的读回验证（iframe 表单：填了但判断层永远判不出） ───────────────── */
+
+test('整树路径：读回值一致 → 纯填值目标直接交回宿主（不再 budget）', async () => {
+  // 无名称 textbox 是 iframe 里的典型形态：候选没有 name/state，inputsApplied 靠读回值。
+  const page = fakePage([{ ref: 'e1', role: 'textbox', name: '' }])
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.05 }])
+  const result = await runTask('Type the email address into the email field of the embedded form', deps(page.browser, judge, {
+    inputs: { email: 'jev@example.com' },
+  }))
+  assert.equal(result.status, 'needs_verification', `应该靠读回值收尾，实际：${result.status} / ${result.reason}`)
+  assert.match(result.trace.join('\n'), /读回值确认/)
+})
+
+test('整树路径：读回值被页面清空 → 不当作已生效，也不声称完成', async () => {
+  const page = fakePage([{ ref: 'e1', role: 'textbox', name: '' }])
+  // 页面把值吞掉：fill 之后读回空串
+  const browser = { ...page.browser, get: async (what) => (what === 'title' ? 'E2E 单元测试页' : '') }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.05 }])
+  const result = await runTask('Type the date into the date field', deps(browser, judge, {
+    inputs: { date: '09/16/2026' }, maxSteps: 6,
+  }))
+  assert.notEqual(result.status, 'needs_verification')
+  assert.notEqual(result.status, 'likely_done')
+  assert.match(result.trace.join('\n'), /不一致/)
+})
+
+test('FOLLOW_UP_VERBS：address 里的 add 不算"还要添加"', async () => {
+  const { FOLLOW_UP_VERBS } = await import('../lib/task.js')
+  assert.equal(FOLLOW_UP_VERBS.test('Type the email address into the field'), false)
+  assert.equal(FOLLOW_UP_VERBS.test('Add the backpack to the cart'), true)
+})
+
+/* ───────────────── 确定性加购 / 填完提交 ───────────────── */
+
+test('addToCartTarget：目标点名的商品只有一个加购控件对得上 → 返回它', async () => {
+  const { addToCartTarget } = await import('../lib/task.js')
+  const candidates = [
+    { id: 'click:1', kind: 'click', name: 'Add to cart', near: 'Sauce Labs Backpack $29.99' },
+    { id: 'click:2', kind: 'click', name: 'Add to cart', near: 'Sauce Labs Bike Light $9.99' },
+    { id: 'click:3', kind: 'click', name: 'View details for Sauce Labs Backpack', near: 'Sauce Labs Backpack' },
+  ]
+  const target = addToCartTarget('Add the Sauce Labs Backpack to the cart', candidates)
+  assert.equal(target?.id, 'click:1')
+  assert.equal(addToCartTarget('Open the cart page', candidates), undefined, '非加购目标不触发')
+})
+
+test('fillThenSubmitGoal：填一下再提交是两动作单目标，多动作目标不算', async () => {
+  const { fillThenSubmitGoal } = await import('../lib/task.js')
+  assert.equal(fillThenSubmitGoal('Type into the text input, then submit the form'), true)
+  assert.equal(fillThenSubmitGoal('Fill in the text input, password, textarea and choose the second radio, then submit'), false)
+  assert.equal(fillThenSubmitGoal('Log in'), false)
 })

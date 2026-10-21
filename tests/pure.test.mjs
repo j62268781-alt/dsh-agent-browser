@@ -127,7 +127,8 @@ test('SKILL.md frontmatter 解析：只认单行 key: value，缺了就不猜', 
 test('插件补充会随工具/决策开关变化（工具关掉就说"用 bash 调 CLI"）', () => {
   const on = pluginNote({ tools: true, decision: true })
   assert.match(on, /browser_snapshot/)
-  assert.match(on, /browser_run\(goal\)/)
+  assert.match(on, /browser_run\(goal, inputs\?, subgoals\?\)/)
+  assert.match(on, /只有 `needs_verification` 才推进/)
   assert.match(on, /references\/commands\.md/)
 
   const off = pluginNote({ tools: false, decision: false })

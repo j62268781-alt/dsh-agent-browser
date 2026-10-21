@@ -81,7 +81,8 @@ export function pluginNote(options: { readonly tools: boolean; readonly decision
       '- `browser_snapshot` 取无障碍树 + `@eN`；`browser_act` 执行**一个**动作（可带 `expectUrl`/`expectName` 做执行前新鲜度断言）；',
       '- `browser_read` 只读；`browser_session` 管 open/close/tabs；`browser_screenshot` 截图。',
       options.decision
-        ? '- `browser_run(goal)`：插件内部的有界循环，每步由判断模型在代码枚举的候选里选一个动作；结束时状态是 `needs_verification`，不是"已完成"。文字输入会以 `input_required` 交回你。'
+        ? '- `browser_run(goal, inputs?, subgoals?)`：插件内部的有界循环，每步由判断模型在代码枚举的候选里选一个动作；结束时状态是 `needs_verification`，不是"已完成"。' +
+          '已知字段用 `inputs` 一次给全（插件在同一次调用里填/选/勾完，不再每个字段问一轮）；已知顺序用 `subgoals` 一次给全（每阶段独立验证，只有 `needs_verification` 才推进，遇到 ambiguous/likely_done/needs_confirmation 会停下交回）。'
         : '- 「决策」当前关闭，所以没有 `browser_run`。',
     )
   }

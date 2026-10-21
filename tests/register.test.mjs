@@ -142,7 +142,7 @@ test('内置 skill 的内容是原文 + 插件补充，且 references 目录绝�
   const skill = ctx.get('skills').skills[0]
   assert.match(skill.content, /agent-browser skills get core/)   // 原文在
   assert.match(skill.content, /DSH 插件补充/)                     // 补充也在
-  assert.match(skill.content, /browser_run\(goal\)/)              // 决策开着要说
+  assert.match(skill.content, /browser_run\(goal, inputs\?, subgoals\?\)/) // 决策开着要说（且说清可一次给全）
   assert.equal(skill.resourceBase.kind, 'directory')
   assert.ok(skill.resourceBase.path.endsWith('/skills/agent-browser'))
   assert.deepEqual(skill.invocation, { modelInvocable: true, userInvocable: true })
@@ -282,4 +282,28 @@ test('决策可用性：服务在且用途可用 → 可用，并说出用途连
   const check = await ctx.get('browser').checkJudgment()
   assert.equal(check.available, true)
   assert.match(check.reason, /typesafe/)
+})
+
+/* ───────────────── browser_run 的 JSON 参数：解析失败必须报错，不能静默丢 ───────────────── */
+
+test('inputs：字面量（数字/布尔）也接受，但嵌套对象显式报错', async () => {
+  const { parseInputs } = await import('../lib/index.js')
+  assert.deepEqual(parseInputs('{"Free cancellation":true,"Guests":2}'), { 'Free cancellation': 'true', Guests: '2' })
+  assert.equal(parseInputs(undefined), undefined)
+  assert.equal(parseInputs('  '), undefined)
+  assert.throws(() => parseInputs('{"a":{"b":"c"}}'), /必字符串|必须是字符串/)
+  assert.throws(() => parseInputs('[1,2]'), /必须是 JSON 对象/)
+  assert.throws(() => parseInputs('{not json'), /不是合法 JSON/)
+})
+
+test('subgoals：按调用方给的顺序解析，每项可以带自己的 inputs', async () => {
+  const { parseSubgoals } = await import('../lib/index.js')
+  assert.deepEqual(
+    parseSubgoals('[{"goal":"Log in","inputs":{"username":"standard_user"}},{"goal":"Add to cart"}]'),
+    [{ goal: 'Log in', inputs: { username: 'standard_user' } }, { goal: 'Add to cart' }],
+  )
+  assert.equal(parseSubgoals(undefined), undefined)
+  assert.throws(() => parseSubgoals('[]'), /非空 JSON 数组/)
+  assert.throws(() => parseSubgoals('["Log in"]'), /必须是对象/)
+  assert.throws(() => parseSubgoals('[{"inputs":{}}]'), /goal 必须是非空字符串/)
 })
