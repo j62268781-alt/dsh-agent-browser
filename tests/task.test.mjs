@@ -1179,3 +1179,116 @@ test('弹层关闭：点过 Close 之后该控件从候选里消失 → needs_ve
   assert.equal(result.status, 'needs_verification')
   assert.ok(result.trace.some((line) => /弹层已关/.test(line)), result.trace.join('\n'))
 })
+
+test('低成本交回上游 LLM：次优候选概率低于 0.25 时拒绝盲点（防 p=0.06 跳走），附带含 ref 的 candidates 与 pageText', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'button', name: '无效按钮' },
+    { ref: 'e2', role: 'link', name: '外部首页链接', onClick: (state) => { state.origin = 'https://wrong.example/' } },
+  ])
+  const judge = fakeJudge([
+    { action: 'click:e1', probabilities: { 'click:e1': 0.94, 'click:e2': 0.06 }, confirmProbability: 0.1 },
+    { action: 'click:e1', probabilities: { 'click:e1': 0.94, 'click:e2': 0.06 }, confirmProbability: 0.1 },
+  ])
+  const result = await runTask('完成某操作', deps(page.browser, judge))
+  assert.equal(result.status, 'no_progress')
+  assert.equal(page.state.origin, 'https://example.test/', '绝不能去点 p=0.06 的次优外链把页面跳走')
+  assert.ok(Array.isArray(result.candidates) && result.candidates.length > 0, '交回上游 LLM 时应携带现场 candidates')
+  assert.equal(result.candidates[0]?.ref, '@e1', '交回的 candidate 应包含可直接给 browser_act 用的 ref')
+  assert.ok(typeof result.pageText === 'string' && result.pageText.length > 0, '交回上游 LLM 时应携带 pageText')
+})
+
+test('input[role=combobox]（如 GitHub Search issues）走 fill 而非 select，且打完字未按 Enter 前不假完成', async () => {
+  const state = { filled: false, submitted: false }
+  const browser = {
+    acts: [],
+    async extract() {
+      const items = [
+        {
+          index: 0,
+          role: 'combobox',
+          name: 'Search issues',
+          covered: false,
+          state: state.filled ? '已有内容: flaky screenshot' : '已有内容: is:issue state:open',
+        },
+        { index: 1, role: 'option', name: 'Suggestion 1', covered: false },
+      ]
+      return {
+        items,
+        text: state.submitted ? 'Results for flaky screenshot'.repeat(3) : 'Issues list'.repeat(5),
+        title: 'Issues',
+        url: state.submitted ? 'https://github.com/a/b/issues?q=flaky+screenshot' : 'https://github.com/a/b/issues',
+      }
+    },
+    async snapshot() { throw new Error('不该退回整树') },
+    async read() { return 'Issues list'.repeat(5) },
+    async get() { return 'Issues' },
+    async act(action, target, payload) {
+      this.acts.push(`${action} ${target} ${JSON.stringify(payload ?? {})}`)
+      if (action === 'fill') state.filled = true
+      if (action === 'press' && payload?.value === 'Enter') state.submitted = true
+    },
+    async run() {},
+  }
+  // 第 2 步故意给 goal_done=0.82（中间带）：修复前会因自动补全下拉导致 lastChange.added 而在按 Enter 前触发 likely_done 假完成
+  const judge = fakeJudge([
+    { action: 'input:0', goalDone: 0.2 },
+    { action: 'click:1', goalDone: 0.82 },
+    { action: 'click:1', goalDone: 0.95 },
+  ])
+  const result = await runTask("Search this repository's issues for the given words", deps(browser, judge, {
+    inputs: { query: 'flaky screenshot' },
+  }))
+  assert.ok(browser.acts.some((a) => a.startsWith('fill ')), `应对 input[role=combobox] 执行 fill 而非 select：${browser.acts.join(' | ')}`)
+  assert.ok(browser.acts.some((a) => a.startsWith('press body') && /Enter/.test(a)), `应按 Enter 提交搜索：${browser.acts.join(' | ')}`)
+  assert.equal(state.submitted, true, '必须真正提交搜索后才结束')
+  assert.equal(result.status, 'needs_verification')
+})
+
+test('按 Enter 提交后输入框变空（TodoMVC 模式）视为已消费，不再反复重填，且 confirm 不问 control 的 target_match', async () => {
+  const state = { val: '', todos: [] }
+  const browser = {
+    acts: [],
+    async extract() {
+      const items = [
+        {
+          index: 0,
+          role: 'textbox',
+          name: 'What needs to be done?',
+          covered: false,
+          state: state.val === '' ? '' : `已有内容: ${state.val}`,
+        },
+        { index: 99, role: 'a', name: 'TodoMVC', covered: false },
+        ...state.todos.map((t, idx) => ({ index: idx + 1, role: 'checkbox', name: t, covered: false, state: '未勾选' })),
+      ]
+      return {
+        items,
+        text: `todos: ${state.todos.join(', ')}`.padEnd(50, ' '),
+        title: 'TodoMVC',
+        url: 'https://demo.playwright.dev/todomvc/#/',
+      }
+    },
+    async snapshot() { throw new Error('不该退回整树') },
+    async read() { return `todos: ${state.todos.join(', ')}`.padEnd(50, ' ') },
+    async get() { return 'TodoMVC' },
+    async act(action, target, payload) {
+      this.acts.push(`${action} ${target}`)
+      if (action === 'fill') state.val = payload.value
+      if (action === 'press' && payload?.value === 'Enter' && state.val !== '') {
+        state.todos.push(state.val)
+        state.val = ''
+      }
+    },
+    async run() {},
+  }
+  const judge = fakeJudge([
+    { action: 'input:0', goalDone: 0.1 },
+    { action: 'control:press_enter', goalDone: 0.7 },
+    { action: 'control:wait', goalDone: 0.92, confirmProbability: 0.9 },
+  ])
+  const result = await runTask("Add a new todo item that says 'buy milk'", deps(browser, judge, {
+    inputs: { todo: 'buy milk' },
+  }))
+  assert.equal(result.status, 'needs_verification')
+  assert.deepEqual(state.todos, ['buy milk'], '只应添加一次 buy milk，不能在清空后重填第二次')
+  assert.equal(browser.acts.filter((a) => a.startsWith('fill ')).length, 1, 'fill 只应执行 1 次')
+})

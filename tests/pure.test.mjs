@@ -439,13 +439,73 @@ test('抽取：可见弹层里 cursor:pointer 的叶子控件（<p>Close</p>）�
   assert.ok(page.items.some((item) => item.name === 'Close'), `弹层关闭键应进候选，实际：${JSON.stringify(page.items)}`)
 })
 
-test('pendingFieldOf：填过又被清空的字段算 pending（读回校验），但有重填上限', () => {
+test('pendingFieldOf：填过又被清空的字段算 pending（读回校验），但有重填上限与 Enter 消费豁免', () => {
   // 字段当前是空的（state.value === undefined），但 filled 里记着它被填过 → 值没留住，要重填。
   const empty = [{ id: 'input:0', kind: 'input', role: 'textbox', name: 'Date picker', description: '在…里输入' }]
   const filled = new Map([['input:0', '09/16/2026']])
   assert.equal(pendingFieldOf(empty, { date: '09/16/2026' }, 'submit the form', filled)?.id, 'input:0')
   // 重填到上限（站点每次清空）→ 不再当 pending，交给正常判断，不无限拉锯。
   assert.equal(pendingFieldOf(empty, { date: '09/16/2026' }, 'submit the form', filled, new Set(['input:0'])), undefined)
+  // 按 Enter 提交消费后变空的字段（如 TodoMVC 新建框）→ 不再当 pending 重填。
+  assert.equal(pendingFieldOf(empty, { date: '09/16/2026' }, 'Add a todo', filled, new Set(), new Set(['input:0'])), undefined)
   // 没填过的空字段 + 通用 key：不当作 pending（否则所有空文本框都会被反复填）。
   assert.equal(pendingFieldOf(empty, { text: 'x' }, 'submit the form', new Map()), undefined)
+})
+
+test('抽取：checkbox 不把默认 value="on" 当名字，且能从紧邻文本/同级 label 取名（ti-checkboxes / todomvc）', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<form id="checkboxes"><input type="checkbox"> checkbox 1<br><input type="checkbox" checked> checkbox 2</form>' +
+      '<main><label for="toggle-all">Mark all as complete</label><ul class="todo-list"><li><div class="view"><input class="toggle" type="checkbox"><label>buy milk</label></div></li></ul></main>',
+    { url: 'https://a.test/checkboxes', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 20, height: 20, top: 10, left: 10, right: 30, bottom: 30, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  const names = page.items.map((item) => item.name)
+  assert.ok(!names.includes('on'), `不应出现默认 "on" 名字，实际：${JSON.stringify(page.items)}`)
+  assert.ok(names.includes('checkbox 1') && names.includes('checkbox 2'), `应抽到紧邻文本名，实际：${JSON.stringify(names)}`)
+  assert.ok(names.includes('buy milk'), `应抽到同级 label 名，实际：${JSON.stringify(names)}`)
+  const markAll = page.items.find((item) => item.name === 'Mark all as complete')
+  assert.ok(!(markAll?.near ?? '').includes('buy milk'), `外层容器的 near 不应混入列表项 buy milk，实际：${markAll?.near}`)
+})
+
+test('isAlreadySatisfied：多子句勾选目标按各子句独立判定 checked / unchecked', () => {
+  const goal = 'Make checkbox 1 checked and checkbox 2 unchecked'
+  const cb1Checked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '已勾选', description: '' }
+  const cb1Unchecked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '未勾选', description: '' }
+  const cb2Checked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '已勾选', description: '' }
+  const cb2Unchecked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '未勾选', description: '' }
+  assert.equal(isAlreadySatisfied(cb1Checked, goal), true)
+  assert.equal(isAlreadySatisfied(cb1Unchecked, goal), false)
+  assert.equal(isAlreadySatisfied(cb2Unchecked, goal), true)
+  assert.equal(isAlreadySatisfied(cb2Checked, goal), false)
+})
+
+test('candidatesFromExtracted：稠密页（>40 个点击项）在 choose/dropdown 目标下保留 combobox 并压制 Remove 干扰项', () => {
+  const fillers = Array.from({ length: 45 }, (_, idx) => ({
+    index: idx,
+    role: 'a',
+    name: `Link ${idx}`,
+    covered: false,
+  }))
+  const items = [
+    ...fillers,
+    { index: 45, role: 'button', name: 'Remove Purple', covered: false },
+    { index: 46, role: 'combobox', name: 'Ocean', covered: false },
+  ]
+  const candidates = candidatesFromExtracted(items, 'In the first dropdown on the page, choose the colour Purple')
+  const combo = candidates.find((c) => c.role === 'combobox')
+  assert.ok(combo !== undefined, 'combobox 不应被前 40 个普通点击项截丢')
+  assert.equal(candidates[0]?.role, 'combobox', `combobox 应排在第一位（高于 Remove Purple），实际首位：${JSON.stringify(candidates[0])}`)
+})
+
+test('urlChangeMatchesGoal：两跳纯导航目标只认末跳目的地词（不在第一跳提前收尾）', () => {
+  const goal = 'Open the cart and go to checkout'
+  assert.equal(urlChangeMatchesGoal(goal, 'https://www.saucedemo.com/inventory.html', 'https://www.saucedemo.com/cart.html'), undefined)
+  assert.equal(urlChangeMatchesGoal(goal, 'https://www.saucedemo.com/inventory.html', 'https://www.saucedemo.com/checkout-step-one.html'), 'checkout')
 })
