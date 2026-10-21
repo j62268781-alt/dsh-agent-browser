@@ -81,12 +81,24 @@ const SCRIPT_LINES = [
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
   '    const style = getComputedStyle(el)',
-  "    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue",
+  "    const tag = el.tagName.toLowerCase()",
+  "    const type = String(el.getAttribute('type') || '').toLowerCase()",
+  // 自定义样式的 checkbox/radio（如 TodoMVC 的 40×40 `input.toggle`）常设 opacity:0 盖在图标上接收点击，
+  // 只要尺寸 ≥10×10 就保留，不能当成不可见丢掉。
+  "    const overlayToggle = (type === 'checkbox' || type === 'radio') && rect.width >= 10 && rect.height >= 10",
+  "    if (style.visibility === 'hidden' || style.display === 'none' || (style.opacity === '0' && !overlayToggle)) continue",
   "    let labelText = ''",
   "    if (el.labels && el.labels.length > 0) labelText = String(el.labels[0].innerText || '')",
   "    if (!labelText && el.id) { const byFor = document.querySelector('label[for=\"' + el.id + '\"]'); if (byFor) labelText = String(byFor.innerText || '') }",
   "    if (!labelText) { const wrap = el.closest ? el.closest('label') : null; if (wrap) labelText = String(wrap.innerText || '') }",
-  "    const raw = el.getAttribute('aria-label') || el.getAttribute('title') || labelText || el.innerText || el.getAttribute('alt') || el.value || el.placeholder || ''",
+  "    if (!labelText && (type === 'checkbox' || type === 'radio') && el.nextElementSibling && ['LABEL', 'SPAN'].includes(el.nextElementSibling.tagName)) {",
+  "      labelText = String(el.nextElementSibling.innerText || el.nextElementSibling.textContent || '')",
+  '    }',
+  // 浏览器 DOM 标准里不带 value 属性的 checkbox/radio 默认 el.value === 'on'，
+  // 直接拿它当名字会让页面上所有无 label 勾选框都叫「on」（真机 ti-checkboxes / todomvc）。
+  // 同级/关联 labelText 优先于泛化的 aria-label（如 TodoMVC 所有框都叫 aria-label="Toggle Todo"，而同级 label 才是 "buy milk"）。
+  "    const valName = (type === 'checkbox' || type === 'radio') && el.value === 'on' ? '' : el.value",
+  "    const raw = labelText || el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.getAttribute('alt') || valName || el.placeholder || ''",
   '    let name = String(raw)',
   "    name = name.split(String.fromCharCode(10)).join(' ')",
   "    name = name.split(String.fromCharCode(9)).join(' ')",
@@ -95,6 +107,17 @@ const SCRIPT_LINES = [
   "    while (name.indexOf('  ') >= 0) name = name.split('  ').join(' ')",
   '    name = name.trim().slice(0, 60)',
   "    const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)",
+  // **无名勾选框的紧邻文本兜底**：ti-checkboxes 是 `<input type=checkbox> checkbox 1<br>`（相邻文本节点），
+  // TodoMVC 是 `<input class=toggle type=checkbox><label>buy milk</label>`（同级 label）。
+  "    if (name === '' && (type === 'checkbox' || type === 'radio')) {",
+  '      let sib = el.nextSibling',
+  "      while (sib && sib.nodeType === 3 && String(sib.textContent || '').trim() === '') sib = sib.nextSibling",
+  '      if (sib && sib.nodeType === 3) {',
+  "        name = String(sib.textContent || '').split(String.fromCharCode(10))[0].trim().slice(0, 40)",
+  "      } else if (el.nextElementSibling && ['LABEL', 'SPAN'].includes(el.nextElementSibling.tagName)) {",
+  "        name = String(el.nextElementSibling.innerText || el.nextElementSibling.textContent || '').split(String.fromCharCode(10)).join(' ').trim().slice(0, 40)",
+  '      }',
+  '    }',
   // **无名字段的上下文兜底**：自定义控件（react-select、combobox）的输入框没有 label，
   // name 会是空串，判断层只能看到"10 个匿名 combobox"（真机 react-select → ambiguous）。
   // 取最近两层的短文本当名字（有界 ≤40 字符，且要求容器别太大），只对字段生效。
@@ -118,8 +141,6 @@ const SCRIPT_LINES = [
   '    const inView = rect.top + rect.height / 2 >= 0 && rect.top + rect.height / 2 <= innerHeight && rect.left + rect.width / 2 >= 0 && rect.left + rect.width / 2 <= innerWidth',
   '    const covered = inView && top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0',
   "    el.setAttribute('data-dsh-idx', String(idx))",
-  "    const tag = el.tagName.toLowerCase()",
-  "    const type = String(el.getAttribute('type') || '').toLowerCase()",
   // **显式 role 优先**：`<input role="combobox">`（react-select 等）被下面的 input 推断
   // 无条件覆盖成 textbox → 页面上一个 combobox 都没有 → 相关性门判定"缺角色 combobox"
   // 退回整树 → 45 个候选里判断层点了「Remove Purple」干扰项（真机 react-select，trace 直证）。
@@ -148,8 +169,10 @@ const SCRIPT_LINES = [
   "    let options = null",
   "    if (tag === 'select') { try { options = [...el.options].filter(function (o) { return o.value !== '' && !o.disabled }).slice(0, 30).map(function (o) { return [String(o.text || o.value).trim().slice(0, 60), String(o.value).slice(0, 60)] }) } catch (err) { options = null } }",
   // 元素**所在行/容器的文本**：判断层靠它区分"导航条的 comments"和"这条 story 的 42 comments"。
+  // 但如果父节点包了整张列表/表格（TodoMVC 的 <main> 同时包住 Mark all as complete 与 <ul.todo-list>），
+  // 不能把整张列表拼进 near，否则「Mark all as complete」会带上「附近: ... buy milk」抢走单条勾选目标。
   "    let near = ''",
-  "    try { var parentText = el.parentElement ? String(el.parentElement.innerText || '') : ''; near = parentText.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80) } catch (err) { near = '' }",
+  "    try { var p = el.parentElement; var wrapsList = p && p.querySelector && p.querySelector('ul,ol,table') && (!el.closest || !el.closest('li,tr,td,th')); var parentText = p && !wrapsList ? String(p.innerText || '') : ''; near = parentText.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80) } catch (err) { near = '' }",
   "    out.push([idx, role, name, covered, extra, options, near])",
   '    idx += 1',
   '    if (out.length >= 300) break',
