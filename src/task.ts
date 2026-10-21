@@ -1109,7 +1109,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     await deps.browser.waitForReady({ signal: deps.signal, timeoutMs: 2500 }).catch(() => false)
   }
 
-  let delivered: { id: string; snapshot: Snapshot; textSample?: string; selector?: string } | undefined
+  /**
+   * 上一步交付的动作。`navigational` = 这个动作**可能**引发跳转（点链接/按钮/按 Enter）。
+   *
+   * 为什么要区分：勾选框、填值、滚动这些动作**本来就不会跳转**，对它们做
+   * "等到 URL/正文变化"只会白等 4s（实测 ti-checkboxes：只勾一个框，9 次等待烧了 17s）。
+   */
+  let delivered:
+    | { id: string; snapshot: Snapshot; textSample?: string; selector?: string; navigational?: boolean }
+    | undefined
   /** 同一个无效动作出现了几次；≥2 就停（ronadin2002/jev-cua 的 `stalled_action` 纪律）。 */
   const stalled = new Map<string, number>()
   /** 当前语义状态下已经试过的动作：作为"次优候选"的排除集，避免来回打转。 */
@@ -1208,6 +1216,54 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // **优先用页面内抽取（P8）**：候选小、可信（遮挡/不可见已过滤），状态也随之小一个数量级。
     // 抽取失败（CSP 拦 eval、脚本异常等）就退回整树——功能不降级，只是慢一些、贵一些。
     const observePage = async (): Promise<{ snapshot: Snapshot; candidates: TaskCandidate[]; text: string; prose: string; title: string; mode: 'extract' | 'tree'; truncated?: boolean }> => {
+      /**
+       * **动作面注入**：goal 点名要按的键 / 悬停 / 拖拽 → 追加候选。
+       *
+       * 必须对**抽取和整树两条路径都做**：真机 key-press / drag 在抽取阶段零命中时
+       * 会退回整树，而之前注入只写在抽取分支里 → 树路径根本没有 press/drag 候选，
+       * 于是目标永远做不到（key-press 甚至退化成 input_required 要求填文字）。
+       */
+      const withActionCandidates = (base: readonly TaskCandidate[]): TaskCandidate[] => {
+        const candidates = [...base]
+        const extra: TaskCandidate[] = []
+        for (const key of keysWantedByGoal(goal)) {
+          if (key === 'Enter') continue // control:press_enter 已经覆盖
+          extra.push({ id: `control:press_${key}`, description: `按 ${key} 键`, kind: 'control' })
+        }
+        if (wantsHover(goal)) {
+          for (const candidate of candidates.slice(0, 6)) {
+            if (candidate.kind === 'click' && candidate.ref !== undefined) {
+              extra.push({
+                id: `hover:${candidate.id}`,
+                description: `把鼠标移到${candidate.description.replace(/^点击/, '')}`,
+                kind: 'control',
+                ref: candidate.ref,
+                name: candidate.name,
+              })
+            }
+          }
+        }
+        if (wantsDrag(goal)) {
+          const draggables = candidates.filter((candidate) => candidate.kind === 'click' && candidate.ref !== undefined).slice(0, 4)
+          for (const source of draggables) {
+            for (const target of draggables) {
+              if (source.id === target.id) continue
+              extra.push({
+                id: `drag:${source.id}->${target.id}`,
+                description: `把「${source.name ?? source.id}」拖到「${target.name ?? target.id}」上`,
+                kind: 'control',
+                ref: source.ref,
+                targetRef: target.ref,
+              })
+            }
+          }
+        }
+        if (extra.length > 0) {
+          trace.push(`第 ${step} 步：目标要求非点击动作 → 注入 ${extra.length} 个候选（${extra.slice(0, 3).map((item) => item.id).join('、')}…）`)
+        }
+        return [...candidates, ...extra]
+      }
+
       const useTree = async (): Promise<{ snapshot: Snapshot; candidates: TaskCandidate[]; text: string; prose: string; title: string; mode: 'extract' | 'tree' }> => {
         const observed = await observe()
         const trimmed = observed.text.replace(/\s+/g, ' ').trim()
@@ -1215,7 +1271,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const snapshot: Snapshot = { ...observed, textDigest: stableHash(visibleText.replace(/\s+/g, ' ').trim()) }
         return {
           snapshot,
-          candidates: candidatesOf(snapshot, goal),
+          candidates: withActionCandidates(candidatesOf(snapshot, goal)),
           text: visibleText,
           prose: trimmed === '' ? observed.snapshot : observed.text,
           title: observed.title,
@@ -1235,47 +1291,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const controls = lastActionWasText
           ? CONTROL_CANDIDATES
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
-        const candidates = [...candidatesFromExtracted(page.items, goal), ...controls]
-        // **动作面**：goal 点名要按的键 / 悬停 / 拖拽 → 注入对应候选。
-        // 上游 CLI 早就有 press/hover/drag（skills/references/commands.md），以前是我们没铺候选。
-        const extraControls: TaskCandidate[] = []
-        for (const key of keysWantedByGoal(goal)) {
-          if (key === 'Enter') continue // control:press_enter 已经覆盖
-          extraControls.push({ id: `control:press_${key}`, description: `按 ${key} 键`, kind: 'control' })
-        }
-        if (wantsHover(goal)) {
-          for (const candidate of candidates.slice(0, 6)) {
-            if (candidate.kind === 'click' && candidate.ref !== undefined) {
-              extraControls.push({
-                id: `hover:${candidate.id}`,
-                description: `把鼠标移到${candidate.description.replace(/^点击/, '')}`,
-                kind: 'control',
-                ref: candidate.ref,
-                name: candidate.name,
-              })
-            }
-          }
-        }
-        if (wantsDrag(goal)) {
-          const draggables = candidates.filter((candidate) => candidate.kind === 'click' && candidate.ref !== undefined).slice(0, 4)
-          for (const source of draggables) {
-            for (const target of draggables) {
-              if (source.id === target.id) continue
-              extraControls.push({
-                id: `drag:${source.id}->${target.id}`,
-                description: `把「${source.name ?? source.id}」拖到「${target.name ?? target.id}」上`,
-                kind: 'control',
-                ref: source.ref,
-                targetRef: target.ref,
-              })
-            }
-          }
-        }
-        if (extraControls.length > 0) {
-          trace.push(`第 ${step} 步：目标要求非点击动作 → 注入 ${extraControls.length} 个候选（${extraControls.slice(0, 3).map((item) => item.id).join('、')}…）`)
-          candidates.push(...extraControls)
-        }
-
+        const candidates = withActionCandidates([...candidatesFromExtracted(page.items, goal), ...controls])
         // **目标覆盖检查**：抽取只认 DOM 语义元素，会漏掉"语义上可点、但只是 generic"的控件
         // （真机：hao123 的城市切换入口是 div + clickable）。如果目标提到的东西在抽取结果里
         // 一个都没对上，就退回整树——那里有 a11y 的 clickable 标记。
@@ -1297,19 +1313,31 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         // **只在页面候选里比相关性**：控制项的描述是中文固定文案（"向下滚动一屏"…），
         // 混进来会让 bestScore 恒 > 0，覆盖检查（零命中→退回整树）永远不触发。
         const pageCandidates = candidates.filter((candidate) => candidate.kind !== 'control')
-        if (goalTokens.length > 0 && pageCandidates.length > 0) {
+        // **hover/drag 类目标不要退回整树**：a11y 树里根本没有这些元素
+        // （真机 drag_and_drop：div#column-a/b 在 includeMedia 抽取里有、树里没有 → 
+        //  退回整树等于把已经拿到的目标丢掉，然后一路 budget）。
+        const mediaGoal = wantsHover(goal) || wantsDrag(goal)
+        if (!mediaGoal && goalTokens.length > 0 && pageCandidates.length > 0) {
           const bestScore = Math.max(...pageCandidates.map((candidate) => goalTokens.filter((token) => candidate.description.toLowerCase().includes(token)).length))
           // **子串命中 ≠ 目标存在**：goal "Check the checkbox" 的 token "check" 会
           // 命中 "textbox"（子串），于是 bestScore>0，覆盖检查失效（真机 shadow-checkbox：
           // 页面上根本没有 checkbox，循环却拿着一个 textbox 一路 budget）。
           // 这里额外要求：goal 里出现的**控件名词**在候选角色里能找到对应。
+          // **只保留"页面上必须有对应控件"的强名词**，并且要整词匹配。
+          // 教训（实测）：
+          // - `\btab` 会命中 "table" → ti-sort-table 被误判缺 tab 角色，反复退回整树到 budget；
+          // - `text`/`link`/`button` 这类词在自然语言里太常见（"text input"、"link to"），
+          //   误判代价是"白白退回整树"，而整树候选多 45 个，判断层更容易 ambiguous。
+          // 所以只有在 **goal 明确指某类控件** 时才做角色校验。
           const roleNouns: Record<string, string[]> = {
-            checkbox: ['checkbox', 'switch'], radio: ['radio'], textbox: ['textbox', 'searchbox'], text: ['textbox', 'searchbox'],
-            button: ['button'], link: ['link'], tab: ['tab'], option: ['option', 'combobox'], dropdown: ['combobox', 'option'],
-            select: ['combobox', 'option'], combobox: ['combobox'], slider: ['slider'], image: ['img'], img: ['img'],
+            checkbox: ['checkbox', 'switch'],
+            radio: ['radio'],
+            dropdown: ['combobox', 'option'],
+            combobox: ['combobox'],
+            slider: ['slider'],
           }
           const wantedRoles = Object.entries(roleNouns)
-            .filter(([noun]) => new RegExp(`\\b${noun}`, 'i').test(goal))
+            .filter(([noun]) => new RegExp(`\\b${noun}s?\\b`, 'i').test(goal))
             .flatMap(([, roles]) => roles)
           const roleMissing =
             wantedRoles.length > 0 &&
@@ -1383,7 +1411,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       const settledAgain = await observePage()
       if (stateChanged(observedPage.snapshot, settledAgain.snapshot)) {
         observedPage = settledAgain
-      } else {
+      } else if (delivered.navigational === true) {
         const shifted = typeof deps.browser.waitForPageShift === 'function'
           ? await deps.browser
           .waitForPageShift(
@@ -1966,7 +1994,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       // **先确认"真的没效果"再判**：跳转可能是慢的（实测 850–1150ms）。
       // 这里再给一次事件驱动的机会：URL/正文/目标出现任一变化就当作"有效果"，
       // 用新观察继续，而不是立刻换候选或判 no_progress（github-pulls 就是这么挂的）。
-      if (delivered.textSample !== undefined || delivered.selector !== undefined) {
+      if (delivered.navigational === true) {
         const shiftedLate = typeof deps.browser.waitForPageShift === 'function'
           ? await deps.browser
               .waitForPageShift(
@@ -1975,7 +2003,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
                   textSample: delivered.textSample ?? '',
                   ...(delivered.selector === undefined ? {} : { selector: delivered.selector }),
                 },
-                { signal: deps.signal, timeoutMs: 4000 },
+                { signal: deps.signal, timeoutMs: 1500 },
               )
               .catch(() => false)
           : false
@@ -2087,6 +2115,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         snapshot, // 执行前的树：下一步用 stateChanged(它, 新树) 判"有没有推进"
         textSample: pageText.replace(/\s+/g, ' ').trim().slice(0, 80),
         ...(chosen.ref === undefined ? {} : { selector: chosen.ref }),
+        // 只有"点链接/按钮/按 Enter"这类动作才可能跳转；
+        // 勾选/填值/滚动不跳转，对它们等待纯属浪费。
+        navigational:
+          chosen.kind === 'click' &&
+          ['link', 'a', 'button', 'tab', 'menuitem'].includes((chosen.role ?? '').toLowerCase()) ||
+          chosen.id === 'control:press_enter' ||
+          chosen.id === 'control:back',
       }
       trace.push(`第 ${step} 步：${chosen.description} ✓`)
       steps.push({
