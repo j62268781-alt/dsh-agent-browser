@@ -32,6 +32,7 @@ const SCRIPT_LINES = [
   "  document.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx'))",
   '  const out = []',
   '  let idx = 0',
+  '  const parentTextCache = new WeakMap()',
   '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
   '  let nodes = Array.from(new Set(document.querySelectorAll(selector)))',
   // **可排序表头**：jQuery tablesorter 这类插件把点击事件**委托**在 <th> 上
@@ -81,22 +82,45 @@ const SCRIPT_LINES = [
   // 按 DOM 顺序截断会让导航把主内容区的目标控件挤出候选（目标"看不见"，判断层只能盲选）。
   // 只在**确实超上限**时把导航/页脚/页头元素排到后面，普通页面顺序完全不变。
   '  if (nodes.length > 300) {',
+  '    const parentCounts = new Map()',
+  '    for (const node of nodes) {',
+  '      const p = node.parentElement',
+  '      if (p) parentCounts.set(p, (parentCounts.get(p) || 0) + 1)',
+  '    }',
+  '    const highValue = []',
   '    const primary = []',
+  '    const bulk = []',
   '    const secondary = []',
   '    for (const node of nodes) {',
   '      let isNav = false',
   "      try { isNav = Boolean(node.closest && node.closest('nav,header,footer,[role=\"navigation\"],[role=\"banner\"],[role=\"contentinfo\"]')) } catch (err) { isNav = false }",
-  '      if (isNav) secondary.push(node)',
-  '      else primary.push(node)',
+  '      if (isNav) { secondary.push(node); continue }',
+  "      const nType = String(node.getAttribute && node.getAttribute('type') || '').toLowerCase()",
+  "      const nAc = String(node.getAttribute && node.getAttribute('autocomplete') || '').toLowerCase()",
+  '      const pCount = node.parentElement ? (parentCounts.get(node.parentElement) || 0) : 0',
+  "      if (nType === 'password' || nType === 'search' || nType === 'email' || (nAc !== '' && nAc !== 'off' && nAc !== 'on') || (pCount >= 2 && pCount <= 5)) {",
+  '        highValue.push(node)',
+  '      } else if (pCount > 15) {',
+  '        bulk.push(node)',
+  '      } else {',
+  '        primary.push(node)',
+  '      }',
   '    }',
-  '    nodes = primary.concat(secondary)',
+  '    nodes = highValue.concat(primary, bulk, secondary)',
   '  }',
+  '  const keptEls = []',
+  '  const formIds = new Map()',
+  '  let nextFormId = 1',
   '  for (const el of nodes) {',
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
   '    const style = getComputedStyle(el)',
   "    const tag = el.tagName.toLowerCase()",
   "    const type = String(el.getAttribute('type') || '').toLowerCase()",
+  "    const acRaw = String(el.getAttribute('autocomplete') || '').toLowerCase().trim()",
+  "    const autocomplete = acRaw !== '' && acRaw !== 'off' && acRaw !== 'on' ? acRaw.slice(0, 60) : ''",
+  "    const autocompleteField = autocomplete.split(' ').pop() || ''",
+  "    const sensitiveField = type === 'password' || autocompleteField === 'one-time-code' || autocompleteField.indexOf('cc-') === 0",
   // 自定义样式的 checkbox/radio（如 TodoMVC 的 40×40 `input.toggle`）常设 opacity:0 盖在图标上接收点击，
   // 只要尺寸 ≥10×10 就保留，不能当成不可见丢掉。
   "    const overlayToggle = (type === 'checkbox' || type === 'radio') && rect.width >= 10 && rect.height >= 10",
@@ -111,7 +135,7 @@ const SCRIPT_LINES = [
   // 浏览器 DOM 标准里不带 value 属性的 checkbox/radio 默认 el.value === 'on'，
   // 直接拿它当名字会让页面上所有无 label 勾选框都叫「on」（真机 ti-checkboxes / todomvc）。
   // 同级/关联 labelText 优先于泛化的 aria-label（如 TodoMVC 所有框都叫 aria-label="Toggle Todo"，而同级 label 才是 "buy milk"）。
-  "    const valName = (type === 'checkbox' || type === 'radio') && el.value === 'on' ? '' : el.value",
+  "    const valName = sensitiveField ? '' : (type === 'checkbox' || type === 'radio') && el.value === 'on' ? '' : el.value",
   "    const raw = labelText || el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.getAttribute('alt') || valName || el.placeholder || ''",
   '    let name = String(raw)',
   "    name = name.split(String.fromCharCode(10)).join(' ')",
@@ -183,9 +207,8 @@ const SCRIPT_LINES = [
   "      extra = '当前值: ' + String(el.value || '')",
   "    } else if (tag === 'input' || tag === 'textarea') {",
   "      const v = String(el.value || '')",
-  // 密码框的值**不能出页面**：它会变成判断层输入（jk-login fixture 暴露：密码原文进了 state）。
-  // 只汇报"已填写/未填写"，值本身永远是 ●●●。
-  "      if (v) extra = type === 'password' ? '已有内容: ●●●' : '已有内容: ' + v.slice(0, 30)",
+   // 标准 password、one-time-code 和 cc-* 字段仅报告是否填写，绝不输出输入原值。
+   "      if (v) extra = sensitiveField ? '已有内容: ●●●' : '已有内容: ' + v.slice(0, 30)",
   "    } else if (tag === 'a' && el.href) {",
   "      try { const u = new URL(el.href); extra = '链接: ' + u.host + u.pathname.slice(0, 40) } catch (e) { extra = '' }",
   "    }",
@@ -207,16 +230,88 @@ const SCRIPT_LINES = [
   // 但如果父节点包了整张列表/表格（TodoMVC 的 <main> 同时包住 Mark all as complete 与 <ul.todo-list>），
   // 不能把整张列表拼进 near，否则「Mark all as complete」会带上「附近: ... buy milk」抢走单条勾选目标。
   "    let near = ''",
-  "    try { var p = el.parentElement; var wrapsList = p && p.querySelector && p.querySelector('ul,ol,table') && (!el.closest || !el.closest('li,tr,td,th')); var parentText = p && !wrapsList ? String(p.innerText || '') : ''; near = parentText.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80) } catch (err) { near = '' }",
+  '    try {',
+  '      var p = el.parentElement',
+  "      var wrapsList = p && p.querySelector && p.querySelector('ul,ol,table') && (!el.closest || !el.closest('li,tr,td,th'))",
+  "      if (p && !wrapsList) {",
+  '        var parentText = parentTextCache.get(p)',
+  '        if (parentText === undefined) {',
+  "          parentText = String(p.innerText || '').split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80)",
+  '          parentTextCache.set(p, parentText)',
+  '        }',
+  '        near = parentText',
+  '      }',
+  "    } catch (err) { near = '' }",
   '    let inMain = 0',
   '    try {',
   "      const inNav = Boolean(el.closest && el.closest('nav,header,footer,[role=\"navigation\"],[role=\"banner\"],[role=\"contentinfo\"]'))",
   "      const inPrimary = Boolean(el.closest && el.closest('main,article,form,table,dialog,[role=\"main\"],[role=\"dialog\"],[role=\"region\"],[aria-modal=\"true\"]'))",
   '      inMain = inPrimary && !inNav ? 1 : inNav ? -1 : 0',
   '    } catch (err) { inMain = 0 }',
-  "    out.push([idx, role, name, covered, extra, options, near, null, inMain])",
+  "    let inputType = ''",
+  "    if (tag === 'input') {",
+  "      inputType = type || 'text'",
+  "    } else if (tag === 'button') {",
+  "      const btnType = type || 'submit'",
+  "      if (btnType === 'submit' && Boolean(el.form || (el.closest && el.closest('form')))) inputType = 'submit'",
+  '    }',
+  '    const ownerForm = el.form || (el.closest ? el.closest(\'form\') : null)',
+  "    let formId = ''",
+  '    if (ownerForm) {',
+  "      const explicitFormId = String(ownerForm.id || '').trim()",
+  "      if (explicitFormId !== '') { formId = 'id:' + explicitFormId }",
+  '      else {',
+  '        formId = formIds.get(ownerForm) || \'\'',
+  "        if (formId === '') { formId = 'f' + String(nextFormId); nextFormId += 1; formIds.set(ownerForm, formId) }",
+  '      }',
+  '    }',
+  '    keptEls.push(el)',
+  "    out.push([idx, role, name, covered, extra, options, near, null, inMain, inputType, autocomplete, '', '', formId])",
   '    idx += 1',
   '    if (out.length >= 300) break',
+  '  }',
+  '  const ancCounts = new Map()',
+  "  const groupableEls = keptEls.filter((el) => el.tagName !== 'LABEL')",
+  '  for (let i = 0; i < groupableEls.length; i += 1) {',
+  '    let cur = groupableEls[i].parentElement',
+  '    for (let d = 0; d < 6 && cur; d += 1) {',
+  "      const cTag = cur.tagName ? cur.tagName.toLowerCase() : ''",
+  "      if (cTag === 'body' || cTag === 'html' || cTag === 'main') break",
+  '      ancCounts.set(cur, (ancCounts.get(cur) || 0) + 1)',
+  '      cur = cur.parentElement',
+  '    }',
+  '  }',
+  '  const groupMap = new Map()',
+  '  const groupLabels = new Map()',
+  '  const groupTags = new Set([\'form\', \'fieldset\', \'div\', \'tr\', \'li\'])',
+  '  let nextGroup = 1',
+  '  for (let i = 0; i < keptEls.length; i += 1) {',
+  '    let cur = keptEls[i].parentElement',
+  '    let chosenGroup = null',
+  '    for (let d = 0; d < 6 && cur; d += 1) {',
+  "      const cTag = cur.tagName ? cur.tagName.toLowerCase() : ''",
+  "      if (cTag === 'body' || cTag === 'html' || cTag === 'main') break",
+  '      const cnt = ancCounts.get(cur) || 0',
+  '      if (groupTags.has(cTag) && cnt >= 2 && cnt <= 6) { chosenGroup = cur; break }',
+  '      cur = cur.parentElement',
+  '    }',
+  '    if (chosenGroup) {',
+  '      let gid = groupMap.get(chosenGroup)',
+  '      if (!gid) {',
+  "        gid = 'g' + String(nextGroup)",
+  '        nextGroup += 1',
+  '        groupMap.set(chosenGroup, gid)',
+  "        let gl = String(chosenGroup.getAttribute && chosenGroup.getAttribute('aria-label') || '')",
+  '        if (!gl && chosenGroup.querySelector) {',
+  "          const h = chosenGroup.querySelector('legend,h1,h2,h3,h4,h5,h6,caption')",
+  "          if (h) gl = String(h.innerText || h.textContent || '')",
+  '        }',
+  "        gl = gl.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 30)",
+  '        groupLabels.set(chosenGroup, gl)',
+  '      }',
+  '      out[i][11] = gid',
+  "      out[i][12] = groupLabels.get(chosenGroup) || ''",
+  '    }',
   '  }',
   "  const body = document.body ? document.body.innerText : ''",
   '  return JSON.stringify({',
@@ -258,6 +353,16 @@ export interface ExtractedItem {
   readonly tag?: string
   /** 语义区域：`true` = 主内容区（main/form/table/article/dialog），`false` = 页头/导航/页脚（nav/header/footer）。 */
   readonly inMain?: boolean
+  /** 物理输入类型（如 `password` / `search` / `email` / `submit` / `text`），与语言无关。 */
+  readonly inputType?: string
+  /** HTML 标准自动填充语义（如 `username` / `current-password` / `one-time-code`）。 */
+  readonly autocomplete?: string
+  /** DOM 最小容器分组 ID（如 `g1`），同一局部容器内的控件共享。 */
+  readonly groupId?: string
+  /** 容器分组的简短标签（来自 legend / aria-label / 组内标题）。 */
+  readonly groupLabel?: string
+  /** 所属表单 ID；没有 DOM id 时为本次抽取内生成的编号。 */
+  readonly formId?: string
 }
 
 /**
@@ -304,7 +409,9 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra, options, near, tag, inMain] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?]
+    const [index, role, name, covered, extra, options, near, tag, inMain, inputType, autocomplete, groupId, groupLabel, formId] = entry as [
+      unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?,
+    ]
     items.push({
       index: Number(index),
       role: String(role ?? ''),
@@ -315,6 +422,11 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
       ...(typeof near === 'string' && near !== '' ? { near } : {}),
       ...(typeof tag === 'string' && tag !== '' ? { tag } : {}),
       ...(typeof inMain === 'number' && inMain !== 0 ? { inMain: inMain > 0 } : typeof inMain === 'boolean' ? { inMain } : {}),
+      ...(typeof inputType === 'string' && inputType !== '' ? { inputType } : {}),
+      ...(typeof autocomplete === 'string' && autocomplete !== '' ? { autocomplete } : {}),
+      ...(typeof groupId === 'string' && groupId !== '' ? { groupId } : {}),
+      ...(typeof groupLabel === 'string' && groupLabel !== '' ? { groupLabel } : {}),
+      ...(typeof formId === 'string' && formId !== '' ? { formId } : {}),
     })
   }
   return items

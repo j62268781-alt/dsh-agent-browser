@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -285,9 +285,33 @@ test('字段名与目标词：通用 key 宽松匹配、词边界区分 Textarea
   assert.equal(goalMentions('Textarea', 'type into the textarea'), true)
 })
 
-test('抽取状态里绝不出现密码原文', async () => {
+test('抽取状态里绝不出现标准敏感字段原文', async () => {
+  const { JSDOM } = await import('jsdom')
   const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
-  assert.match(EXTRACT_SCRIPT, /type === 'password' \? '已有内容: ●●●'/)
+  const dom = new JSDOM(
+    '<input type="password" aria-label="Secret" value="pw-value">' +
+      '<input autocomplete="section-login one-time-code" aria-label="Otp" value="123456">' +
+      '<input autocomplete="cc-number" aria-label="Card" value="4111111111111111">' +
+      '<input autocomplete="email" aria-label="Email" value="person@example.test">',
+    { url: 'https://a.test/secrets', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 100, height: 24, top: 10, left: 10, right: 110, bottom: 34, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  const candidates = candidatesFromExtracted(page.items)
+  for (const name of ['Secret', 'Otp', 'Card']) {
+    const item = page.items.find((candidate) => candidate.name === name)
+    assert.equal(item?.state, '已有内容: ●●●', `${name} 应只报告掩码状态`)
+  }
+  assert.equal(candidates.find((candidate) => candidate.name === 'Otp')?.groupRole, 'otp')
+  const email = page.items.find((candidate) => candidate.name === 'Email')
+  assert.equal(email?.state, '已有内容: person@example.test')
+  assert.ok(!JSON.stringify(page.items).includes('pw-value'))
+  assert.ok(!JSON.stringify(page.items).includes('123456'))
+  assert.ok(!JSON.stringify(page.items).includes('4111111111111111'))
 })
 
 test('填充类收尾：调用方给的值都已生效才算完成', () => {
@@ -446,6 +470,65 @@ test('抽取：可排序表头（th.header / role=columnheader / cursor:pointer�
   assert.ok(!headers.some((item) => item.name === 'First Name'), '没有排序迹象的普通表头不该进（噪声）')
 })
 
+test('抽取：外语表单只凭标准属性与最近容器得到 formId、槽位和签名', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<form id="credential-form"><div><input type="text" autocomplete="username" aria-label="Compte"></div>' +
+      '<div><input type="password" autocomplete="current-password" aria-label="Secret"></div>' +
+      '<button>Envoyer</button></form>' +
+      '<div><input type="search" aria-label="Chercher"><button type="button" aria-label="Action"></button></div>',
+    { url: 'https://a.test/foreign', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 100, height: 24, top: 10, left: 10, right: 110, bottom: 34, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  const account = page.items.find((item) => item.name === 'Compte')
+  const password = page.items.find((item) => item.name === 'Secret')
+  const submit = page.items.find((item) => item.name === 'Envoyer')
+  const search = page.items.find((item) => item.name === 'Chercher')
+  assert.equal(account?.inputType, 'text')
+  assert.equal(account?.autocomplete, 'username')
+  assert.equal(account?.formId, 'id:credential-form')
+  assert.equal(password?.inputType, 'password')
+  assert.equal(password?.autocomplete, 'current-password')
+  assert.equal(submit?.inputType, 'submit')
+  assert.equal(account?.groupId, password?.groupId)
+  assert.equal(password?.groupId, submit?.groupId)
+  assert.equal(search?.inputType, 'search')
+  const candidates = candidatesFromExtracted(page.items)
+  const accountCandidate = candidates.find((candidate) => candidate.name === 'Compte')
+  const passwordCandidate = candidates.find((candidate) => candidate.name === 'Secret')
+  const submitCandidate = candidates.find((candidate) => candidate.name === 'Envoyer')
+  const searchCandidate = candidates.find((candidate) => candidate.name === 'Chercher')
+  assert.equal(accountCandidate?.groupRole, 'username')
+  assert.equal(passwordCandidate?.groupRole, 'password')
+  assert.equal(submitCandidate?.groupRole, 'submit')
+  assert.equal(searchCandidate?.groupRole, 'search')
+  assert.equal(accountCandidate?.groupSignature, 'textbox:username+textbox:password+button:submit')
+  const outline = groupOutlineOf(candidates)
+  assert.match(outline, /textbox:username/)
+  assert.match(outline, /textbox:password/)
+  assert.ok(!outline.includes('Envoyer') && !outline.includes('Secret'), '大纲不重复候选标签')
+})
+
+test('候选大纲把重复同构行折叠为组计数', () => {
+  const items = Array.from({ length: 12 }, (_, row) => [
+    { index: row * 3, role: 'a', name: `Record ${row}`, covered: false, groupId: `g${row}` },
+    { index: row * 3 + 1, role: 'button', name: 'Edit', covered: false, groupId: `g${row}` },
+    { index: row * 3 + 2, role: 'button', name: 'Delete', covered: false, groupId: `g${row}` },
+  ]).flat()
+  const candidates = candidatesFromExtracted(items)
+  const legacy = candidates.map((candidate) => `${candidate.role} ${candidate.name}`).join('\n')
+  const outline = groupOutlineOf(candidates)
+  assert.match(outline, /group×12: a:a \+ button:button \+ button:button/)
+  assert.ok(outline.length < legacy.length / 5, `大纲 ${outline.length} 字符，应显著短于逐候选 ${legacy.length} 字符`)
+  assert.ok(!outline.includes('Record 0') && !outline.includes('Delete'))
+})
+
 test('抽取：超过 300 上限时先保主内容区，导航链接不挤掉目标控件', async () => {
   const { JSDOM } = await import('jsdom')
   const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
@@ -530,7 +613,7 @@ test('isAlreadySatisfied：多子句勾选目标按各子句独立判定 checked
   assert.equal(isAlreadySatisfied(cb2Checked, goal), false)
 })
 
-test('candidatesFromExtracted：稠密页（>40 个点击项）在 choose/dropdown 目标下保留 combobox 并压制 Remove 干扰项', () => {
+test('candidatesFromExtracted：物理 combobox role 即使不识别 goal 动词也进入 Jev 前 10', () => {
   const fillers = Array.from({ length: 45 }, (_, idx) => ({
     index: idx,
     role: 'a',
@@ -545,7 +628,7 @@ test('candidatesFromExtracted：稠密页（>40 个点击项）在 choose/dropdo
   const candidates = candidatesFromExtracted(items, 'In the first dropdown on the page, choose the colour Purple')
   const combo = candidates.find((c) => c.role === 'combobox')
   assert.ok(combo !== undefined, 'combobox 不应被前 40 个普通点击项截丢')
-  assert.equal(candidates[0]?.role, 'combobox', `combobox 应排在第一位（高于 Remove Purple），实际首位：${JSON.stringify(candidates[0])}`)
+  assert.ok(candidates.slice(0, 10).includes(combo), '标准 combobox role 应进入 Jev 首轮可见候选')
 })
 
 test('inputsApplied：读回为空的原生字段不算生效；目标点名禁用控件时也不许收尾', () => {
@@ -616,8 +699,8 @@ test('抽取：通用 ARIA 状态（expanded/selected/pressed/disabled）、主�
   assert.equal(checkouts.length, 1, `外层 div[role=button] 与内层 <button> 同名孪生节点应去重为 1 个，实际：${JSON.stringify(checkouts)}`)
 })
 
-test('rankByGoal：分层打分、同名序号 #1/#2、主内容区优先与重复项多样性封顶（Top-10 不被同名按钮塞满）', () => {
-  // 1) 同名或同角色控件自动标注 #1 / #2，且 second radio 精准命中 #2
+test('rankByGoal：纯词面软排序、结构分数、同名多样性封顶与主内容区优先', () => {
+  // 1) 序号在候选描述中显式呈现；goal 的 second 由 Jev 理解，不由插件规则抢先决定。
   const radios = candidatesFromExtracted(
     [
       { index: 0, role: 'radio', name: 'Checked radio', covered: false, state: '已勾选' },
@@ -625,8 +708,8 @@ test('rankByGoal：分层打分、同名序号 #1/#2、主内容区优先与重�
     ],
     'Select the second radio button',
   )
-  assert.match(radios[0].description, /radio #2/, `第 2 个 radio 应排第一且带 #2 标注：${radios[0].description}`)
-  assert.equal(radios[0].name, 'Default radio')
+  const secondRadio = radios.find((candidate) => candidate.name === 'Default radio')
+  assert.match(secondRadio?.description ?? '', /radio #2/, '第 2 个 radio 要带稳定序号供判断层选择')
 
   // 2) 列表页 15 个未命中目标的同名 View Details 按钮最多保留 2 个在第一梯队，把名额让给底部的唯一业务按钮且主内容区优先于导航栏
   const listItems = [

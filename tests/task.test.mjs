@@ -558,6 +558,40 @@ test('P8：优先用页面内抽取（一次 eval 拿候选），判断层收到
   assert.ok(Object.keys(asked).length <= 10, `判断层选项 ${Object.keys(asked).length} 个，超过上限`)
 })
 
+test('P8：首轮 snapshot 发结构大纲，action options 保留文案且 digest 覆盖全候选', async () => {
+  const makeItems = (lastName) => Array.from({ length: 12 }, (_, row) => {
+    const recordName = row === 11 ? lastName : `Record ${row}`
+    return [
+      { index: row * 3, role: 'link', name: recordName, covered: false, groupId: `g${row}` },
+      { index: row * 3 + 1, role: 'button', name: 'Edit', covered: false, groupId: `g${row}` },
+      { index: row * 3 + 2, role: 'button', name: 'Delete', covered: false, groupId: `g${row}` },
+    ]
+  }).flat()
+  const makeBrowser = (lastName) => ({
+    async extract() { return { items: makeItems(lastName), text: 'Table with repeated records. '.repeat(4), title: 'Records', url: 'https://a.test/records' } },
+    async snapshot() { throw new Error('抽取成功不应退回整树') },
+    async read() { return 'Table with repeated records.' },
+    async get() { return 'Records' },
+    async act() {},
+    async run() {},
+  })
+  const run = async (lastName) => {
+    const judge = fakeJudge([{ action: 'click:0', goalDone: 0.99 }])
+    const result = await runTask('Open Record 0', deps(makeBrowser(lastName), judge))
+    const actionAsk = judge.asked.find((entry) => entry.questions.action !== undefined)
+    assert.ok(actionAsk !== undefined)
+    return { result, state: actionAsk.state, options: JSON.stringify(actionAsk.questions.action.options) }
+  }
+
+  const first = await run('Record 11')
+  const second = await run('Changed record 11')
+  assert.match(first.state.snapshot, /group×\d+: link:link \+ button:button/)
+  assert.ok(!first.state.snapshot.includes('Record') && !first.state.snapshot.includes('Edit'))
+  assert.ok(first.options.includes('Record') || first.options.includes('Edit'), '详细候选文案仍由 action options 提供')
+  assert.ok(first.state.snapshot.length < first.options.length, '大纲应比详细选项短')
+  assert.notEqual(first.result.steps[0]?.digest, second.result.steps[0]?.digest, '尾部候选变化仍应改变完整 digest')
+})
+
 test('P8：抽取失败时退回整树（功能不降级）', async () => {
   const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成' } }])
   page.browser.extract = async () => { throw new Error('CSP 拦住了 eval') }

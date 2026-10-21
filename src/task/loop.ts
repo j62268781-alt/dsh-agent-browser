@@ -17,6 +17,7 @@ import {
   addToCartTarget,
   candidatesFromExtracted,
   candidatesOf,
+  groupOutlineOf,
   withActionCandidates,
 } from './candidates.js'
 import {
@@ -267,34 +268,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
         const candidates = withActionCandidates([...candidatesFromExtracted(page.items, goal), ...controls], goal, step, trace)
         const pageCandidates = candidates.filter((candidate) => candidate.kind !== 'control')
-        const mediaGoal = wantsHover(goal) || wantsDrag(goal)
-        if (!mediaGoal && pageCandidates.length > 0) {
-          const roleNouns: Record<string, string[]> = {
-            checkbox: ['checkbox', 'switch'],
-            radio: ['radio'],
-            dropdown: ['combobox', 'option'],
-            combobox: ['combobox'],
-            slider: ['slider'],
-            input: ['textbox', 'searchbox', 'combobox', 'input', 'textarea'],
-            field: ['textbox', 'searchbox', 'combobox', 'input', 'textarea'],
-            textbox: ['textbox', 'searchbox', 'input', 'textarea'],
-            textarea: ['textbox', 'textarea'],
-          }
-          const wantedRoles = Object.entries(roleNouns)
-            .filter(([noun]) => new RegExp(`\\b${noun}s?\\b`, 'i').test(goal))
-            .flatMap(([, roles]) => roles)
-          const roleMissing =
-            wantedRoles.length > 0 &&
-            !pageCandidates.some((candidate) => wantedRoles.includes((candidate.role ?? '').toLowerCase()))
-          if (roleMissing) {
-            trace.push(
-              `第 ${step} 步：抽取结果缺少目标要求的控件角色（${[...new Set(wantedRoles)].join('/')}，可能位于 Shadow DOM 或 iframe 内）→ 退回整树观察`,
-            )
-            return useTree()
-          }
-        }
-        const extractable = candidates.filter((candidate) => candidate.kind !== 'control')
-        if (extractable.length === 0) {
+        if (pageCandidates.length === 0) {
           trace.push(`第 ${step} 步：页面内抽取没有可用元素（${page.items.length} 个元素）→ 退回整树观察`)
           return useTree()
         }
@@ -303,6 +277,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
             `${candidate.role ?? ''} ${candidate.name ?? ''}${candidate.state === undefined || candidate.state === '' ? '' : `（${candidate.state}）`}`.trim(),
           )
           .join('\n')
+        const outline = groupOutlineOf(candidates)
         const refs: Record<string, { name: string; role: string; clickable?: boolean }> = {}
         for (const item of page.items) refs[String(item.index)] = { name: item.name, role: item.role, clickable: true }
         const trimmed = page.text.replace(/\s+/g, ' ').trim()
@@ -317,7 +292,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const combinedText = statefulLines !== '' && !baseText.includes(statefulLines) ? `${baseText}\n${statefulLines}` : baseText
         const snapshot: Snapshot = {
           origin: page.url,
-          snapshot: compact,
+          snapshot: outline,
           refs,
           removedRefs: [],
           digest: stableHash(compact),

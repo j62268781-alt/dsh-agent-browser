@@ -135,6 +135,20 @@ export interface TaskCandidate {
   readonly targetRef?: string
   /** 语义区域：`true` = 主内容区，`false` = 全局导航/页头/页脚。 */
   readonly inMain?: boolean
+  /** 物理输入类型（如 `password` / `search` / `email` / `submit` / `text`），与语言无关。 */
+  readonly inputType?: string
+  /** HTML 标准自动填充语义（如 `username` / `current-password` / `one-time-code`）。 */
+  readonly autocomplete?: string
+  /** DOM 最小容器分组 ID（如 `g1`），同一局部容器内的控件共享。 */
+  readonly groupId?: string
+  /** 容器分组的简短标签（来自 legend / aria-label / 组内标题）。 */
+  readonly groupLabel?: string
+  /** 所属表单 ID。 */
+  readonly formId?: string
+  /** 由 DOM 顺序、role 与标准 input 属性生成，不含页面文案。 */
+  readonly groupSignature?: string
+  /** 由物理属性与组内拓扑自动推导的语义槽位（零文字依赖）。 */
+  readonly groupRole?: 'username' | 'password' | 'submit' | 'search' | 'otp'
 }
 
 export interface TaskStep {

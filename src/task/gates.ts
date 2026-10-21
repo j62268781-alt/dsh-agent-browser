@@ -7,6 +7,7 @@ import {
   ENABLE_VERBS,
   FOLLOW_UP_VERBS,
   NAVIGATION_GOALS,
+  SECRET_KEY,
   SUBMIT_CONTROL_VERBS,
   TEXT_ENTRY_ROLES,
   type TaskCandidate,
@@ -94,6 +95,36 @@ export function inputMatchesOf(
   for (const [id, matches] of fuzzyByField) {
     if (matches.length === 1) result.set(id, matches[0]!)
   }
+
+  // 物理与组拓扑兜底绑定（零页面文字依赖：支持外语/无 label 的登录组与 300-input 页面）：
+  // 1) 未绑定的密钥类 key ↔ 页面唯一的物理密码框（groupRole === 'password' 或 inputType === 'password'）；
+  // 2) 同组（或紧邻拓扑推导出的）唯一 groupRole === 'username' 文本框 ↔ 剩余唯一的账号/非密钥 key。
+  const boundKeys = new Set([...result.values()].map((item) => item.key))
+  const unboundEntries = entries.filter((entry) => !boundKeys.has(entry.key))
+  if (unboundEntries.length > 0) {
+    const secretEntries = unboundEntries.filter((entry) => SECRET_KEY.test(entry.key))
+    const physicalPwds = fields.filter(
+      (candidate) =>
+        !result.has(candidate.id) &&
+        (candidate.groupRole === 'password' || candidate.inputType === 'password'),
+    )
+    if (secretEntries.length === 1 && physicalPwds.length === 1) {
+      result.set(physicalPwds[0]!.id, { key: secretEntries[0]!.key, value: secretEntries[0]!.value })
+      boundKeys.add(secretEntries[0]!.key)
+    }
+
+    const remainingNonSecret = entries.filter((entry) => !boundKeys.has(entry.key) && !SECRET_KEY.test(entry.key))
+    const physicalUsers = fields.filter(
+      (candidate) => !result.has(candidate.id) && candidate.groupRole === 'username',
+    )
+    if (remainingNonSecret.length === 1 && physicalUsers.length === 1) {
+      result.set(physicalUsers[0]!.id, {
+        key: remainingNonSecret[0]!.key,
+        value: remainingNonSecret[0]!.value,
+      })
+    }
+  }
+
   return result
 }
 
@@ -147,7 +178,12 @@ export function isAlreadySatisfied(
     if (DISABLE_VERBS.test(scope) && !ENABLE_VERBS.test(scope)) return !state.checked
     return false
   }
-  if (state.redacted === true) return matchInputValue(candidate, inputs) !== undefined
+  if (state.redacted === true) {
+    return (
+      matchInputValue(candidate, inputs) !== undefined ||
+      (inputs !== undefined && Object.keys(inputs).some((key) => SECRET_KEY.test(key)))
+    )
+  }
   if (state.value !== undefined) {
     const wanted = matchInputValue(candidate, inputs)
     if (wanted !== undefined) return valueMatchesCandidate(candidate, state.value, wanted)
@@ -231,6 +267,13 @@ export function pendingFieldOf(
       if (filled?.has(candidate.id) === true) return candidate
       if (filled !== undefined && [...filled.values()].includes(wanted)) continue
       if (specificallyNamed(candidate, inputs)) return candidate
+      if (
+        candidate.groupRole === 'username' ||
+        candidate.groupRole === 'password' ||
+        candidate.inputType === 'password'
+      ) {
+        return candidate
+      }
       if (goal !== undefined && goalMentions(candidate.name ?? '', goal)) return candidate
     }
   }
