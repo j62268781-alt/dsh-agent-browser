@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-browser",
   "version": "0.1.0",
-  "description": "Browser automation for DeepSeek Harness: a narrow tool surface over the agent-browser CLI (Rust + CDP accessibility snapshots and @eN refs), with a settings page and an optional in-plugin goal loop judged by ctx.judgment. Zero MCP tools injected into the prompt.",
+  "description": "DSH plugin for browser automation: narrow agent-browser CLI (Rust + CDP) tool surface, in-page DOM candidate extraction, settings self-check UI, and a low-cost Jev + upstream LLM bounded decision loop (browser_run).",
   "type": "module",
   "license": "MIT",
   "keywords": [

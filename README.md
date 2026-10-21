@@ -22,7 +22,7 @@
 | 内置 skill（`skills/agent-browser/`：核心命令 + 5 份 references） | ✅ 已实现（`ctx.skills.register()` 运行时注册，装插件即得） |
 | `browser_snapshot` / `browser_act` / `browser_read` / `browser_session` / `browser_screenshot` | ✅ 已实现 |
 | `browser_raw` 逃生舱（白名单） | ✅ 已实现，默认关 |
-| `browser_run`（决策循环，judge = `ctx.judgment`） | ✅ 已实现（首次真机联调待做：需要一条 Jev 连接） |
+| `browser_run`（决策循环，judge = `ctx.judgment`） | ✅ 已实现并完成 39 任务真机基准验证（支持页面内抽取、`inputs` 一次填全、`subgoals` 阶段编排，以及 **Jev + 上游 LLM 低成本早停交回闭环**） |
 | CLI 版本锁 `>=0.38 <0.39` | ✅ 已实现（实测基准 0.38.2） |
 | 动作审计落盘 / 配额可视化 | ⏳ 见 DESIGN.md §8（M3） |
 
@@ -131,23 +131,25 @@ engine 与自定义路径）；CLI 不可用时退回文件系统 / PATH 探测�
 
 ---
 
-## 决策（`browser_run`）
+## 决策（`browser_run`：Jev + 上游 LLM 低成本闭环）
 
-「决策」开启后多一个 `browser_run(goal)`：插件内部跑一个**有界循环**——
+「决策」开启后多一个 `browser_run(goal, inputs?, subgoals?, allowIrreversible?)`：插件内部跑一个**有界循环**——
 
 ```
-每步重新快照 → 代码枚举候选（refs + scroll/back/wait/done，文本输入不入候选）
-  → ctx.judgment.ask(state, { action: choice, goal_done: noul, stuck: noul }, { purpose: 'browser.action' })
-  → 停止门在**动作之前**判定（goal_done / stuck）
-  → 执行前再取一次快照比对，变了就丢弃这次决策（stale_state）
-  → 执行**一个**动作 → 记 history → 下一步
+每步页面内抽取候选（extract.ts 一次 eval 拿齐可见元素/状态/附近上下文 + 正文/标题/URL；必要时回退 a11y 树）
+  → 确定性完成门（URL 新增段命中 / 弹层关闭消失 / 加购变 Remove / 下拉或勾选态全部达成 / 填值生效）
+  → ctx.judgment.ask(state, { action: choice, goal_done, done_change, stuck, irreversible, login, page_error })
+  → 停止门在**动作之前**判定（goal_done + 独立 confirm / likely_done / page_error / needs_login / stuck）
+  → 首选动作无效时：仅当次优候选概率 p ≥ 0.25 才允许换路，否则**立即早停交回上游 LLM**（绝不盲点跳走）
+  → 执行**一个**动作（或按调用方 `inputs` 直接填/选/勾）→ 记 history/diff → 下一步
 ```
 
-纪律：
+核心纪律：
 
-- **门控是确定性的，判断只做排序**：域名白名单等硬规则由 CLI 的 `--allowed-domains` 负责，绝不交给判断。
-- **文字/密钥不决策**：需要时以 `input_required` 交回宿主，由宿主提供值。
-- **结束语是 `needs_verification`**，不是"已完成"——最终校验留给宿主。
+- **确定性门控优先，判断只做排序**：域名白名单、不可逆拦截（`needs_confirmation`）、状态守卫（已勾选不再反点）、Enter 消费防重填等全部由代码确定性执行。
+- **Jev + 上游 LLM 低成本闭环**：Jev 擅长的确定性步骤在单次工具调用内快速跑完；遇到复杂自定义组件或置信不足（`ambiguous` / `no_progress` / `blocked` / `page_error` / `input_required`），**立即早停并在返回值里附带前 5 个可操作 `candidates`（含 `ref` 句柄）与 `pageText` 摘要**——上游主模型无需再调一次 `browser_snapshot`，可直接用 `browser_act` 一步接管。
+- **文字/密钥不猜**：调用方可由 `inputs` 一次传入（敏感字段自动脱敏为 `●●●`，绝不出境）；缺值时以 `input_required` 交回宿主。
+- **结束语是 `needs_verification`**，不是"已完成"——最终校验留给宿主（39 任务真机基准 `false-done = 0`）。
 - **降级必须显式**：没有 `ctx.judgment`、用途名未配置、密钥缺失、配额耗尽 → 类型化失败 + 明确文案，绝不静默退回主模型假装在决策。
 
 判断走 [`dsh-judgment`](../dsh-judgment/README.md)：在 **设置 → 决策** 里建一条连接，
@@ -160,26 +162,38 @@ engine 与自定义路径）；CLI 不可用时退回文件系统 / PATH 探测�
 ```bash
 pnpm install
 pnpm build            # host(tsc) + 客户端(esbuild → lib/client.js)
-pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑（29 项，不需要真 DSH）
+pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑 + 决策循环回归（177 项单测，离线可跑）
 pnpm typecheck
 pnpm verify:remote    # Remote 通路交叉验证（17 项）：host SRC fallback ↔ 手写 contribution
 pnpm verify:served    # 问运行中的应用：boot 数据里有没有本插件的客户端半（7 项）
 pnpm probe            # 真 CLI 探针（会开浏览器，结束前自动关掉自己的会话）
+pnpm bench:tasks      # 真机任务集基准（支持 --tier offline,base,hard,guard --connection TypeSafe --repeat 3）
 ```
 
-目录：
+目录结构：
 
 ```
-src/config.ts   配置（schemastery；开关决定工具注册）
-src/cli.ts      agent-browser CLI 薄封装：spawn · JSON 信封 · 版本锁 · 原生二进制解析
-src/task.ts     browser_run 的有界循环（消费 ctx.judgment）
-src/env.ts      环境探测（Chrome / 安装计划 / 跑命令）——自检那两项的本机侧
-src/skill.ts    内置 skill 的加载与注册
-src/index.ts    入口：Service 类（工具注册 + @Remote probe 自检）
-client/         设置页（统一 JSX，esbuild 打成 window.__ModuleLoader__ 单文件）
-skills/         随包发布的核心 skill（SKILL.md + references/）
-tests/          注册面 · 自检 · 纯逻辑
-scripts/        probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）
+src/
+├── config.ts         配置（schemastery；开关决定工具注册）
+├── cli.ts            agent-browser CLI 薄封装：spawn · JSON 信封 · 版本锁 · 原生二进制解析
+├── extract.ts        页面内 DOM 候选抽取（一次 eval 拿候选 + 状态 + 上下文 near + 正文/标题/URL）
+├── env.ts            环境探测（Chrome / 安装计划 / 跑命令）——自检那两项的本机侧
+├── skill.ts          内置 skill 的加载与注册
+├── index.ts          入口：Service 类（工具注册 + @Remote probe 自检）
+├── task.ts           向后兼容导出入口（re-export ./task/index.js）
+└── task/             按核心职责拆分的决策循环模块
+    ├── types.ts      公共类型、阈值常量（含 ALTERNATE_MIN_PROBABILITY = 0.25）与交回提示契约
+    ├── utils.ts      纯工具函数（哈希、语义签名、快照 diff、键名/词元解析、截断）
+    ├── candidates.ts 候选生成、目标相关性排序与特殊动作面（悬停/拖拽/按键）前置注入
+    ├── gates.ts      确定性门控与字段状态核对（多子句勾选守卫、Enter 消费追踪、多跳 URL 证据、次优筛选）
+    ├── judge.ts      Jev 协议问题构造、二阶段下拉选值、独立完成确认与分布缩容重采
+    ├── actions.ts    浏览器动作执行（fill/select/click/hover/drag/press）与异步加载等待
+    └── loop.ts       有界决策主循环（runTask）、有序子目标编排（runSubgoals）与上游 LLM 交回封装
+client/               设置页（统一 JSX，esbuild 打成 window.__ModuleLoader__ 单文件）
+skills/               随包发布的核心 skill（SKILL.md + references/）
+bench/                39 任务真机基准套件（tasks.mjs · run.mjs · score.mjs · nav.mjs 状态隔离与导航诊断）
+tests/                注册面 · 自检 · 抽取与门控纯逻辑 · 决策循环与基准单测（共 177 项）
+scripts/              probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）· e2e-run.mjs
 ```
 
 > ⚠️ **新增/客户端改动的生效方式**（实测）：`dsh plugin add` 之后 app 会**热组合**新的 bundle
