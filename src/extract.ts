@@ -132,6 +132,15 @@ const SCRIPT_LINES = [
   '      }',
   '    }',
   "    if (name === '' && !isField) continue",
+  // 孪生 DOM 壳去重：外层 div/span/li（因 onclick/tabindex/role 被抓到）若直接包裹了同名 a/button/input/select，
+  // 只保留内层真实控件，避免内外两层生成两个同名候选平分 Jev 概率。
+  "    if (!isField && !['a', 'button', 'summary', 'th'].includes(tag)) {",
+  "      const inner = el.querySelector ? el.querySelector('a,button,input,select,textarea') : null",
+  '      if (inner && nodes.indexOf(inner) >= 0) {',
+  "        const innerName = String(inner.innerText || inner.value || inner.getAttribute('aria-label') || '').split(String.fromCharCode(10)).join(' ').trim().slice(0, 60)",
+  "        if (innerName !== '' && innerName === name) continue",
+  '      }',
+  '    }',
   '    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))',
   '    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))',
   '    const top = document.elementFromPoint(cx, cy)',
@@ -166,6 +175,18 @@ const SCRIPT_LINES = [
   "    } else if (tag === 'a' && el.href) {",
   "      try { const u = new URL(el.href); extra = '链接: ' + u.host + u.pathname.slice(0, 40) } catch (e) { extra = '' }",
   "    }",
+  '    const ariaFlags = []',
+  "    if (Boolean(el.disabled) || el.getAttribute('aria-disabled') === 'true') ariaFlags.push('已禁用')",
+  "    if (el.getAttribute('aria-selected') === 'true') ariaFlags.push('已选中')",
+  "    if (el.getAttribute('aria-pressed') === 'true') ariaFlags.push('已按下')",
+  "    if (el.hasAttribute('aria-expanded')) ariaFlags.push(el.getAttribute('aria-expanded') === 'true' ? '已展开' : '已收起')",
+  "    else if (tag === 'summary' && el.parentElement && el.parentElement.tagName === 'DETAILS') {",
+  "      ariaFlags.push(el.parentElement.hasAttribute('open') ? '已展开' : '已收起')",
+  '    }',
+  '    if (ariaFlags.length > 0) {',
+  "      if (extra === '') extra = ariaFlags.join('、')",
+  "      else if (extra.indexOf('链接: ') === 0) extra = ariaFlags.join('、') + '，' + extra",
+  '    }',
   "    let options = null",
   "    if (tag === 'select') { try { options = [...el.options].filter(function (o) { return o.value !== '' && !o.disabled }).slice(0, 30).map(function (o) { return [String(o.text || o.value).trim().slice(0, 60), String(o.value).slice(0, 60)] }) } catch (err) { options = null } }",
   // 元素**所在行/容器的文本**：判断层靠它区分"导航条的 comments"和"这条 story 的 42 comments"。
@@ -173,7 +194,13 @@ const SCRIPT_LINES = [
   // 不能把整张列表拼进 near，否则「Mark all as complete」会带上「附近: ... buy milk」抢走单条勾选目标。
   "    let near = ''",
   "    try { var p = el.parentElement; var wrapsList = p && p.querySelector && p.querySelector('ul,ol,table') && (!el.closest || !el.closest('li,tr,td,th')); var parentText = p && !wrapsList ? String(p.innerText || '') : ''; near = parentText.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim().slice(0, 80) } catch (err) { near = '' }",
-  "    out.push([idx, role, name, covered, extra, options, near])",
+  '    let inMain = 0',
+  '    try {',
+  "      const inNav = Boolean(el.closest && el.closest('nav,header,footer,[role=\"navigation\"],[role=\"banner\"],[role=\"contentinfo\"]'))",
+  "      const inPrimary = Boolean(el.closest && el.closest('main,article,form,table,dialog,[role=\"main\"],[role=\"dialog\"],[role=\"region\"],[aria-modal=\"true\"]'))",
+  '      inMain = inPrimary && !inNav ? 1 : inNav ? -1 : 0',
+  '    } catch (err) { inMain = 0 }',
+  "    out.push([idx, role, name, covered, extra, options, near, null, inMain])",
   '    idx += 1',
   '    if (out.length >= 300) break',
   '  }',
@@ -215,6 +242,8 @@ export interface ExtractedItem {
   readonly near?: string
   /** 原始标签名（小写）：`a`/`button` 可以直接调用 `el.click()`，其余走真实鼠标事件。 */
   readonly tag?: string
+  /** 语义区域：`true` = 主内容区（main/form/table/article/dialog），`false` = 页头/导航/页脚（nav/header/footer）。 */
+  readonly inMain?: boolean
 }
 
 /**
@@ -261,7 +290,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra, options, near, tag] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?]
+    const [index, role, name, covered, extra, options, near, tag, inMain] = entry as [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?]
     items.push({
       index: Number(index),
       role: String(role ?? ''),
@@ -271,6 +300,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
       ...(Array.isArray(options) ? { options: options.map((option) => [String((option as unknown[])[0] ?? ''), String((option as unknown[])[1] ?? '')] as const) } : {}),
       ...(typeof near === 'string' && near !== '' ? { near } : {}),
       ...(typeof tag === 'string' && tag !== '' ? { tag } : {}),
+      ...(typeof inMain === 'number' && inMain !== 0 ? { inMain: inMain > 0 } : typeof inMain === 'boolean' ? { inMain } : {}),
     })
   }
   return items

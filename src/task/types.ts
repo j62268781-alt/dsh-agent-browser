@@ -133,6 +133,8 @@ export interface TaskCandidate {
   readonly near?: string
   readonly tag?: string
   readonly targetRef?: string
+  /** 语义区域：`true` = 主内容区，`false` = 全局导航/页头/页脚。 */
+  readonly inMain?: boolean
 }
 
 export interface TaskStep {
