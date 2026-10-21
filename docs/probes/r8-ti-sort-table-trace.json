@@ -1,0 +1,181 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 0,
+  "calls": 1,
+  "tokens": 1635,
+  "ms": 20262,
+  "askMs": 1459,
+  "statuses": {
+   "ambiguous": 1
+  },
+  "categories": {
+   "interaction": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "navSummary": {
+  "counts": {
+   "tasks": 1,
+   "hostMismatch": 0,
+   "urlUnstable": 0,
+   "lateNavigation": 0,
+   "sameHostOtherPath": 0,
+   "readyTimeout": 0,
+   "storageRan": 1,
+   "storageCleared": 1,
+   "storageSkipped": 0,
+   "storageErrors": 0
+  },
+  "problems": []
+ },
+ "initialStability": {
+  "compared": 0,
+  "stable": 0,
+  "unstable": []
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "base",
+  "--only",
+  "ti-sort-table",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-ti-sort-table-trace.json"
+ ],
+ "records": [
+  {
+   "id": "ti-sort-table",
+   "cat": "interaction",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "base",
+   "url": "https://the-internet.herokuapp.com/tables",
+   "steps": [
+    {
+     "goal": "Sort the first table by Last Name",
+     "status": "ambiguous",
+     "reason": "置信 0.07、前两名差 0.02：请从候选里挑",
+     "truth": false,
+     "calls": 1,
+     "tokens": 1635,
+     "usd": 0.000069,
+     "askMs": 1459,
+     "ms": 1808,
+     "rounds": 1,
+     "nav": {
+      "url_before_runTask": "https://the-internet.herokuapp.com/tables",
+      "result_url": "https://the-internet.herokuapp.com/tables",
+      "url_after_runTask": "https://the-internet.herokuapp.com/tables",
+      "url_before_assert": "https://the-internet.herokuapp.com/tables",
+      "url_after_assert": "https://the-internet.herokuapp.com/tables"
+     },
+     "resultSteps": [
+      {
+       "step": 1,
+       "origin": "https://the-internet.herokuapp.com/tables",
+       "action": "stop:ambiguous",
+       "executed": false,
+       "reason": "ambiguous",
+       "digest": "971dfb9b"
+      }
+     ],
+     "trace": [
+      "第 1 步：页面内抽取 18 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 1 步：goal_done=0.53 stuck=0.07 候选=22 置信=0.07",
+      "第 1 步：判断层分不清（置信 0.07，前两名差 0.02）→ ambiguous，交回候选"
+     ]
+    }
+   ],
+   "nav": {
+    "requested_url": "https://the-internet.herokuapp.com/tables",
+    "ok": true,
+    "diagnosis": "ok",
+    "url_before_open": "about:blank",
+    "url_after_open": "https://the-internet.herokuapp.com/tables",
+    "url_after_ready": "https://the-internet.herokuapp.com/tables",
+    "url_settled": "https://the-internet.herokuapp.com/tables",
+    "url_polls": [
+     {
+      "wait_ms": 120,
+      "url": "https://the-internet.herokuapp.com/tables"
+     }
+    ],
+    "url_changed_during_ready": false,
+    "url_changed_after_ready": false,
+    "stable": true,
+    "ready": true,
+    "ready_method": "waitForReady",
+    "host_matched": true,
+    "path_matched": true,
+    "query_matched": true,
+    "hash_matched": true,
+    "same_host_other_path": false,
+    "attempts": [
+     {
+      "attempt": 1,
+      "url_after_open": "https://the-internet.herokuapp.com/tables",
+      "host_matched": true
+     }
+    ],
+    "storage": {
+     "target_url": "https://the-internet.herokuapp.com/tables",
+     "target_origin": "https://the-internet.herokuapp.com",
+     "current_url_before": "https://the-internet.herokuapp.com/tables",
+     "current_origin_before": "https://the-internet.herokuapp.com",
+     "ran": true,
+     "storage_before": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_after": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_cleared": true,
+     "storage_clear_result": {
+      "local": true,
+      "session": true
+     },
+     "reloaded": true,
+     "ready_after_reload": true,
+     "url_after_reload": "https://the-internet.herokuapp.com/tables",
+     "initial_dom": {
+      "url": "https://the-internet.herokuapp.com/tables",
+      "title": "The Internet",
+      "text_head": "Data Tables\n\nOften times when you see a table it contains data which is sortable -- sometimes with actions that can be taken within each row (e.g. edit, delete). And it can be challenging to automate interaction with sets of data in a table depending on how it is constructed.\n\nExample 1\n\nNo Class or ID attributes to signify groupings of rows and columns\n\nLast Name\tFirst Name\tEmail\tDue\tWeb Site\tAction\nSmith\tJohn\tjsmith@gmail.com\t$50.00\thttp://www.jsmith.com\tedit delete\nBach\tFrank\tfbach@yahoo.com\t$51.00\thttp://www.frank.com\tedit delete\nDoe\tJason\tjdoe@hotmail.com\t$100.00\thttp://www.jdoe.com\tedit delete\nConway\tTim\ttconway@earthlink.net\t$50.00\thttp://www.timconway.com\tedit delete\nExample 2\n\nClass and ID attributes to signify groupings of rows and columns\n\nLast Name\tFirst Name\tEmail\tDue\tWeb Site\tAction\nSmith\tJohn\tjsmith@gmail.com\t$50.00\thttp://www.jsmith.com\tedit delete\nBach\tFrank\tfbach@yahoo.com\t$51.00\thttp://www.frank.com\tedit delete\nDoe\tJason\tjdoe@hotmail.com\t$100.00\thttp://www.jdoe.com\tedit delete\nConway\tTim\ttconway@earthlink.net\t$50.00\thttp://www.timconway.com\tedit delete\nPowered by Elemental Selenium and Sauce Labs",
+      "html_length": 6085,
+      "digest": "8b425306d505c16b"
+     }
+    },
+    "url_before_runTask": "https://the-internet.herokuapp.com/tables"
+   },
+   "ms": 20262,
+   "calls": 1,
+   "tokens": 1635,
+   "askMs": 1459,
+   "outcome": "evaluated",
+   "completed": true,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": false
+  }
+ ]
+}

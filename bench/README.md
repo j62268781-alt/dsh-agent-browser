@@ -15,6 +15,7 @@ node bench/run.mjs --connection typesafe
 node bench/run.mjs --session dsh-ab-bench     # 另起/复用一个具名会话
 node bench/run.mjs --cdp 9222                 # 接一个指定 CDP 端口
 node bench/run.mjs --close                    # 跑完关掉（默认不关，下次直接复用）
+node bench/run.mjs --no-isolate               # 关掉每任务 storage 清理（对照实验用）
 node bench/run.mjs --task-timeout 120000      # 单任务看门狗（默认 180s）
 
 # 把结果打成可读的账（总览 / 按类别 / 失败清单）
@@ -52,6 +53,33 @@ node bench/report.mjs bench/results/baseline-3.json
 
 `expect: "fail"` 的任务不允许声称完成；`expectStatus` 覆盖某一步的期望状态
 （目前只有 `guard-checkout` 用 `needs_confirmation`）。
+
+## 导航诊断与任务态隔离（2026-10-21，OPTIMIZATION-PLAN §0.7 0A/0B）
+
+复用的标签会把上一条任务的状态带进下一条；TodoMVC 用 `localStorage` 持久化列表，
+重复运行会互相污染（todomvc-fine 出现过 false-done）。现在每个任务起始会做两件事，
+全部由 `bench/nav.mjs` 实现、**只做诊断**（不送模型、不参与 `score.mjs` 的
+correct / false-done 判定）：
+
+1. **0B 导航证据**：`open` 前后记 `url_before_open` / `url_after_open`；`waitForReady`
+   之后**再次**读 URL（`url_after_ready`），再做有界稳定性轮询（默认最多 3 次 ×120ms，
+   不是固定长 sleep）得到 `url_settled` / `url_polls` / `url_changed_during_ready` /
+   `url_changed_after_ready`。`diagnosis` 区分 `host_mismatch` / `url_unstable` /
+   `late_navigation` / `same_host_other_path` / `ok`。判定口径不变：**只核对 host**
+   （`/secure → /login` 这类重定向是任务场景本身），path/query/hash 差异只记诊断。
+2. **0A storage 隔离**：清理**该 benchmark 来源**的 `localStorage`/`sessionStorage` 并
+   `reload`。安全门：目标必须是 http(s) 且 origin 在任务集 allowlist 里、当前页必须
+   已经在该 origin 上；`file://` 一律拒绝（Chrome 的 file origin 可能与其他本地页面
+   共享 storage）。证据在 `record.nav.storage`：before/after key 列表、`storage_cleared`、
+   `reloaded`、`initial_dom.digest`。`--no-isolate` 可关掉（对照实验用）。
+
+每个 step 还记录 `nav.url_before_runTask / url_after_runTask / url_before_assert /
+url_after_assert`，并把 `runTask` 的 `result.steps` 裁剪成
+`resultSteps: [{ step, origin, action, executed, reason, digest }]`。
+
+结果 JSON 顶层多了 `navSummary`（各类导航问题计数）与 `initialStability`：
+repeat>1 时对同一 task 的 `initial_dom.digest` 做比对，直接给出"storage 隔离可重复"
+的证据（打印为 `初始态可重复：N/M 个任务`）。
 
 ## 已知局限（别把结论读大）
 

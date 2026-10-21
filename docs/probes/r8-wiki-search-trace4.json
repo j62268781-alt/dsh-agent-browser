@@ -1,0 +1,163 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 0,
+  "calls": 0,
+  "tokens": 0,
+  "ms": 13862,
+  "askMs": 0,
+  "statuses": {
+   "error": 1
+  },
+  "categories": {
+   "large-page": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "navSummary": {
+  "counts": {
+   "tasks": 1,
+   "hostMismatch": 0,
+   "urlUnstable": 0,
+   "lateNavigation": 0,
+   "sameHostOtherPath": 0,
+   "readyTimeout": 0,
+   "storageRan": 1,
+   "storageCleared": 1,
+   "storageSkipped": 0,
+   "storageErrors": 0
+  },
+  "problems": []
+ },
+ "initialStability": {
+  "compared": 0,
+  "stable": 0,
+  "unstable": []
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "base",
+  "--only",
+  "wiki-search",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-wiki-search-trace4.json"
+ ],
+ "records": [
+  {
+   "id": "wiki-search",
+   "cat": "large-page",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "base",
+   "url": "https://en.wikipedia.org/wiki/Main_Page",
+   "steps": [
+    {
+     "goal": "Search for the article and open it",
+     "status": "error",
+     "reason": "CliError: agent-browser batch 退出码 1：[{\"command\":[\"snapshot\",\"-i\",\"-d\",\"8\"],\"error\":null,\"result\":{\"lifecycle\":{\"effectiveLaunch\":{\"browserLaunched\":true,\"engine\":\"chrome\",\"launchHash\":16930349757571590787},\"launched\":false,\"relaunchedBrowser\":false,\"restartedBackground\":false,\"restoreStatus\":\"not_co",
+     "calls": 0,
+     "tokens": 0,
+     "askMs": 0,
+     "ms": 3132,
+     "nav": {
+      "url_before_runTask": "https://en.wikipedia.org/wiki/Main_Page"
+     }
+    }
+   ],
+   "nav": {
+    "requested_url": "https://en.wikipedia.org/wiki/Main_Page",
+    "ok": true,
+    "diagnosis": "ok",
+    "url_before_open": "about:blank",
+    "url_after_open": "https://en.wikipedia.org/wiki/Main_Page",
+    "url_after_ready": "https://en.wikipedia.org/wiki/Main_Page",
+    "url_settled": "https://en.wikipedia.org/wiki/Main_Page",
+    "url_polls": [
+     {
+      "wait_ms": 120,
+      "url": "https://en.wikipedia.org/wiki/Main_Page"
+     }
+    ],
+    "url_changed_during_ready": false,
+    "url_changed_after_ready": false,
+    "stable": true,
+    "ready": true,
+    "ready_method": "waitForReady",
+    "host_matched": true,
+    "path_matched": true,
+    "query_matched": true,
+    "hash_matched": true,
+    "same_host_other_path": false,
+    "attempts": [
+     {
+      "attempt": 1,
+      "url_after_open": "https://en.wikipedia.org/wiki/Main_Page",
+      "host_matched": true
+     }
+    ],
+    "storage": {
+     "target_url": "https://en.wikipedia.org/wiki/Main_Page",
+     "target_origin": "https://en.wikipedia.org",
+     "current_url_before": "https://en.wikipedia.org/wiki/Main_Page",
+     "current_origin_before": "https://en.wikipedia.org",
+     "ran": true,
+     "storage_before": {
+      "local": [
+       "wmE-sessionTickTickCount",
+       "wmE-sessionTickLastTickTime"
+      ],
+      "session": [],
+      "local_count": 2,
+      "session_count": 0
+     },
+     "storage_after": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_cleared": true,
+     "storage_clear_result": {
+      "local": true,
+      "session": true
+     },
+     "reloaded": true,
+     "ready_after_reload": true,
+     "url_after_reload": "https://en.wikipedia.org/wiki/Main_Page",
+     "initial_dom": {
+      "url": "https://en.wikipedia.org/wiki/Main_Page",
+      "title": "Wikipedia, the free encyclopedia",
+      "text_head": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nMain Page\nTalk\nRead\nView source\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nWelcome to Wikipedia,\nthe free encyclopedia that anyone can edit.\n270,152 active editors7,254,793 articles in English\nFrom today's featured article\n\nThe Hongwu Emperor (21 October 1328 – 24 June 1398), personal name Zhu Yuanzhang, was the founding emperor of the Ming dynasty of China, reigning from 1368 to 1398. Born into a peasant family in Anhui, Zhu grew up amid famine, epidemics, and unrest under the Mongol-led Yuan dynasty. Orphaned at 16, he briefly lived as a novice monk before joining the Red Turban rebels in 1352. Rising rapidly, he captured Nanjing in 1356, established a regional regime, and defeated rival rebels. In 1368, he proclaimed the Ming dynasty, adopted the era name Hongwu, and expelled the Yuan from China proper. During his 30-year reign, he restored stability after decades of war, strengthened state institutions, promoted agriculture, and maintained a disciplined army while seeking to limit civilian suffering. He died in 1398 and was succeeded by his grandson, the Jianwen Emperor, who was overthrown in 1402 by Zhu Di, later known as the Yongle Emperor. (Full article...)\n\nRecently featured: London MonsterAncient Cappadocian languageThe Demi-Virgin\nArchiveBy emailMore featured articlesAbout\nDid you know ...\nThe Cross in Barre, Massachusetts\n... that a man made a gigantic cross (pictured) with letters visible from 20,000 feet (6,000 m) in the air?\n... that historians do not know the name of the first queen of Jerusalem?\n... that 53,000 people applied to live in a former New York City school?\n... that Manila's Chinatown built a new friendship arch in front of an existing one?\n... that according to one Guatemalan anarchist, almost all members of the Committee for Union Action were arrested and tortured by the Jorge Ubico dictatorship?\n... that during f",
+      "html_length": 418118,
+      "digest": "19dcad78098f6fbd"
+     }
+    },
+    "url_before_runTask": "https://en.wikipedia.org/wiki/Main_Page"
+   },
+   "error": "CliError: agent-browser batch 退出码 1：[{\"command\":[\"snapshot\",\"-i\",\"-d\",\"8\"],\"error\":null,\"result\":{\"lifecycle\":{\"effectiveLaunch\":{\"browserLaunched\":true,\"engine\":\"chrome\",\"launchHash\":16930349757571590787},\"launched\":false,\"relaunchedBrowser\":false,\"restartedBackground\":false,\"restoreStatus\":\"not_configured\",\"reused\":true,\"saveStatus\":\"not_attempted\"},\"origin\":\"https://en.wikipedia.org/w/index.php?title=Confectionery_store&action=edit\",\"refs\":{},\"removedRefs\":[],\"snapshot\":\"(no interactive eleme",
+   "ms": 13862,
+   "calls": 0,
+   "tokens": 0,
+   "askMs": 0,
+   "outcome": "evaluated",
+   "completed": true,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": false
+  }
+ ]
+}

@@ -1385,6 +1385,57 @@ react-select、ti-entry-ad、ti-dynamic-controls）——需要"商品级定位/
 所以：**本轮不声称 bench 分数变化**——`subgoals` 是产品能力（真实调用方是主模型，它可以自己给出顺序），
 不是 19/39 → 25/39 的杠杆。要动分数，仍然只能在**单 goal 循环**里修可复现的失败环节。
 
+### 4.5.9 R8 轮结算（2026-10-21）：先把测量做可信，再补候选证据
+
+§4.5.5 之后的两轮（ff3da0b、31fdb09）把分数推到 19–20/39 但没到目标。本轮按"**先修测量、再动候选层**"
+重排，成果全部落在**候选生成/停止证据**这一层，没有动判断层协议（判据：ambiguous 门、完成阈值、
+不可逆门一律不变）。
+
+**① 测量可信（bench 基础设施，不改评分类）**
+
+| 机制 | 做法 | 实测证据 |
+|---|---|---|
+| 任务态隔离 | 每任务清**该 benchmark origin** 的 localStorage/sessionStorage 后 reload；三重安全门（只 http(s) / 只任务集里出现过的 origin / 当前页必须已在该 origin），`--no-isolate` 可关 | 115/115 次清理成功；25 个"脏 run"清掉（TodoMVC 的 `react-todos` 5/6、wikipedia `wmE-*`、github `ref-selector:*`）；TodoMVC 初始 DOM digest 6 条完全一致 |
+| 导航诊断 | `bench/nav.mjs`：open 前/后、就绪后再读 URL（有界稳定性轮询，无固定长 sleep）；每 step 记 `url_before_runTask`/`result_url`/`url_before_assert`/`url_after_assert` + `resultSteps`(origin/action/executed/reason/digest) | nav 诊断 112/115 `ok`，3 条 `same_host_other_path`（login-wall 的 /secure→/login，预期）；**没有一条失败源于 runner 跑错页面** |
+| 成本 | 每任务多 ~7 次 CLI 调用（eval/reload/get url） | judge 调用与 tokens 与 r7 持平（711 calls / 1.55M tok），wall +45% |
+
+**② 候选证据层（本轮分数来源）**
+
+| # | 机制 | 根因（真机证据） |
+|---|---|---|
+| 1 | **URL 证据只给导航目标**：状态操作不再用地址词收尾；跨 origin 只比 path；解析失败不给证据 | todomvc-fine：「Mark the 'buy milk' todo as completed」的 `todo` 同时命中域名 `todomvc` 与 `#/todo` |
+| 2 | **终态页门**：导航类目标 + 本步确有跳转 + 独立确认 ≥0.8 → `needs_verification`（0 个可操作元素 ≠ 什么都没发生） | new-window 3/3 断言为真却 `no_progress`（新标签页只有正文）；**数据录入/提交类目标明确排除**——webform-fine 试过放行，3/3 立刻变 false-done（日期被站点插件清空） |
+| 3 | **搜索目标按 Enter**：填完搜索框后按 Enter 提交搜索 | Wikipedia 建议项里 `Alan Turing: The Enigma`（书）与 `Search for pages containing…`（Special:Search）都含目标词，判断层两次点中 → `/wiki/Alan_Turing:_The_Enigma` → goal_done 0.95 假完成；Enter 直达 `/wiki/Alan_Turing` |
+| 4 | **抽取层四补**：可排序表头（`th.header`/`role=columnheader`/`cursor:pointer`）、弹层内 `cursor:pointer` 叶子（`<p>Close</p>`）、**显式 role 优先**（`input[role=combobox]` 不再被覆盖成 textbox）、`[role=option]`/`[role=listbox]` + 无名字段的容器文本兜底 | ti-sort-table：18 个候选全是 edit/delete 链接，页面上"排序"这个动作对判断层**不存在**；ti-entry-ad：关闭键是无语义 `<p>`；react-select：combobox 被抽成 10 个匿名 textbox → 相关性门退回整树 → 判断层点「Remove Purple」 |
+| 5 | **弹层关闭证据**：点过 Close 且该控件从候选里消失（**按名字比，不按位置 id**）→ 收尾 | 弹层关掉了但循环继续点别的链接 → budget（truth=true 却 missed）；按 id 比会因"位置编号重排"永远判定还在 |
+| 6 | **读回校验**：填过又被站点清空的字段重新算 pending，有界重填 2 次 | webform 的日期被 bootstrap-datepicker 在 blur 时回写空值；旧逻辑"填过就不再管" |
+
+**③ 结果（同一 Jev-1.13 连接、同一任务集、repeat=3 多数票）**
+
+| 轮次 | 多数票 | false-done 任务 |
+|---|---|---|
+| r7 全量① | 20/39 | todomvc-fine、wiki-search、infinite-scroll、github-issue-search |
+| r7 全量② | 19/39 | todomvc-fine、wiki-search、infinite-scroll |
+| r8 中间（URL 证据门 + 终态页门 + 测量可信） | **21/39** | wiki-search 3/3、infinite-scroll 2/3、github-issue-search 2/3、todomvc-fine 1/3（多数票 3 条） |
+| r8 收尾（+候选证据层） | 网络故障期间 herokuapp/wikipedia 不可达，见下方说明 | — |
+
+**④ 没解决 / 不冒充解决**
+
+- **wiki-search** 在 r8 中间仍是 3/3 假完成（选到《The Enigma》而非条目）→ 由 ③ 的 Enter 机制修；
+  收尾全量里它 3/3 通过（定向验证）。
+- **guard-webform** 仍是 missed（提交后是终态页，但"提交类目标不享受终态页门"这条是为了不重蹈
+  webform-fine 的 false-done，宁缺勿假）。
+- **webform / webform-fine** 的日期断言**用 fill 不可能达成**：bootstrap-datepicker 在 blur 时按自己的
+  模型回写空值，实测"先填日期再点提交"提交串里 `my-date=` 仍为空（只有通过日历 UI 选日期才会保留）。
+  这是**页面组件 vs 任务断言**的冲突，记为任务口径问题，不写特判。
+- **infinite-scroll** 的 goal 只说 "scroll down"，assert 要 `>=3` 段，而一次滚动只加载 1 段 →
+  **任务文本与 oracle 不一致**（一次滚动后正文无"已加载 N 段"信号）。按纪律不改任务定义提分，
+  记为单独的 benchmark 修订项。
+- **page_error 概率门**在 saucedemo 结账流上 21 处 0.98–0.99（历史与现在都复现），但本轮"不把模型概率
+  当客观网络错误"的修复需要更多现场证据（prober 复跑 3/3 未复现 page_error，站点无风控），**留待下一轮**。
+- **react-select** 修了 role 覆盖后仍未通过（候选池已含 combobox，但判断层在"先开下拉/再选 Purple"
+  两步上没有稳定动作），需要"combobox → option"的二阶段提示词或确定性链路，下一轮再做。
+
 ## 5. 决策形态（v2 定稿）
 
 ### 5.1 「是否启用决策」的确切语义（两种可观察形态）

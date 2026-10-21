@@ -247,6 +247,35 @@ test('导航完成证据：只认地址新增段里命中的目标词', () => {
   assert.equal(urlChangeMatchesGoal('open the secure area', 'https://ti.example/login', 'https://ti.example/random'), undefined)
 })
 
+test('地址证据只给导航目标：状态操作的域名/路由词不算完成（todomvc 假完成归因）', () => {
+  const start = 'https://demo.playwright.dev/todomvc/'
+  // 目标里的 `todo` 同时是域名与 hash 路由的一部分 —— 状态操作不得据此收尾。
+  assert.equal(urlChangeMatchesGoal("Mark the 'buy milk' todo as completed", start, `${start}#/todo`), undefined)
+  assert.equal(urlChangeMatchesGoal("Mark the 'buy milk' todo as completed", start, `${start}#/completed`), undefined)
+  // 过滤目标：`#/completed` 只是筛选器状态，不能替代"结果区只剩 1 条"的验证。
+  assert.equal(urlChangeMatchesGoal('Show only the completed todos', start, `${start}#/completed`), undefined)
+  assert.equal(urlChangeMatchesGoal('Clear all completed todos', start, `${start}#/completed`), undefined)
+  assert.equal(urlChangeMatchesGoal('Select the second radio button', 'https://a.test/form', 'https://a.test/form#radio-2'), undefined)
+  // **跨 origin 不拿域名当新增段**：站点名里的词不是"目标页面存在"的证据。
+  assert.equal(urlChangeMatchesGoal('Open the todomvc app', 'https://a.test/', 'https://todomvc.com/'), undefined)
+  // 跨 origin 的真导航仍按**路径**给证据。
+  assert.equal(
+    urlChangeMatchesGoal('Open the Poetry category', 'https://books.toscrape.com/', 'https://mirror.test/catalogue/category/books/poetry_23/index.html'),
+    'poetry',
+  )
+  // 真导航目标：新增 path/hash 命中目标词照旧收尾。
+  assert.equal(
+    urlChangeMatchesGoal(
+      'Open the book "Shakespeare\'s Sonnets"',
+      'https://books.toscrape.com/catalogue/page-1.html',
+      'https://books.toscrape.com/catalogue/shakespeares-sonnets_1/index.html',
+    ),
+    'shakespeare',
+  )
+  // 地址解析失败时不给证据（不许退回"整串 URL 子串匹配"）。
+  assert.equal(urlChangeMatchesGoal('open the dashboard', 'not a url', 'also not a url !'), undefined)
+})
+
 test('字段名与目标词：通用 key 宽松匹配、词边界区分 Textarea / Text input', () => {
   assert.equal(specificallyNamed({ id: 'input:0', description: 'x', kind: 'input', name: 'Text input' }, { text: 'Jev' }), false)
   assert.equal(specificallyNamed({ id: 'input:0', description: 'x', kind: 'input', name: 'Destination' }, { Destination: 'Lisbon' }), true)
@@ -368,4 +397,55 @@ test('字段名归一：下划线/连字符/大小写都算同一个字段', () 
   const candidate = { id: 'input:1', description: '', kind: 'input', role: 'textbox', name: 'First Name' }
   assert.equal(matchInputValue(candidate, { first_name: 'Ada' }), 'Ada')
   assert.equal(matchInputValue(candidate, { postal_code: '10001' }), undefined)
+})
+
+test('抽取：可排序表头（th.header / role=columnheader / cursor:pointer）进候选池', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<table><thead><tr><th class="header"><span>Last Name</span></th><th>First Name</th></tr></thead>' +
+      '<tbody><tr><td>Smith</td><td>John</td></tr></tbody></table>' +
+      '<div role="columnheader">Amount</div>',
+    { url: 'https://a.test/tables', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  // jsdom 没有布局：给固定尺寸，否则抽取脚本的 `rect.width < 2` 会把所有元素过滤掉。
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 100, height: 20, top: 10, left: 10, right: 110, bottom: 30, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  // jsdom 没有实现 `innerText`（抽取脚本用它取可见名）：用 textContent 顶上。
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const raw = run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location)
+  const page = parseExtracted(raw)
+  const headers = page.items.filter((item) => item.role === 'columnheader')
+  assert.ok(headers.some((item) => item.name === 'Last Name'), `表头应进候选，实际：${JSON.stringify(page.items)}`)
+  assert.ok(headers.some((item) => item.name === 'Amount'), 'role=columnheader 的表头也要进')
+  assert.ok(!headers.some((item) => item.name === 'First Name'), '没有排序迹象的普通表头不该进（噪声）')
+})
+
+test('抽取：可见弹层里 cursor:pointer 的叶子控件（<p>Close</p>）进候选池', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<div id="modal"><div class="modal"><p>正文</p><div class="modal-footer"><p style="cursor: pointer">Close</p></div></div></div>',
+    { url: 'https://a.test/entry_ad', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 300, height: 120, top: 10, left: 10, right: 310, bottom: 130, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  assert.ok(page.items.some((item) => item.name === 'Close'), `弹层关闭键应进候选，实际：${JSON.stringify(page.items)}`)
+})
+
+test('pendingFieldOf：填过又被清空的字段算 pending（读回校验），但有重填上限', () => {
+  // 字段当前是空的（state.value === undefined），但 filled 里记着它被填过 → 值没留住，要重填。
+  const empty = [{ id: 'input:0', kind: 'input', role: 'textbox', name: 'Date picker', description: '在…里输入' }]
+  const filled = new Map([['input:0', '09/16/2026']])
+  assert.equal(pendingFieldOf(empty, { date: '09/16/2026' }, 'submit the form', filled)?.id, 'input:0')
+  // 重填到上限（站点每次清空）→ 不再当 pending，交给正常判断，不无限拉锯。
+  assert.equal(pendingFieldOf(empty, { date: '09/16/2026' }, 'submit the form', filled, new Set(['input:0'])), undefined)
+  // 没填过的空字段 + 通用 key：不当作 pending（否则所有空文本框都会被反复填）。
+  assert.equal(pendingFieldOf(empty, { text: 'x' }, 'submit the form', new Map()), undefined)
 })

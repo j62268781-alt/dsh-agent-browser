@@ -1071,3 +1071,111 @@ test('fillThenSubmitGoal：填一下再提交是两动作单目标，多动作�
   assert.equal(fillThenSubmitGoal('Fill in the text input, password, textarea and choose the second radio, then submit'), false)
   assert.equal(fillThenSubmitGoal('Log in'), false)
 })
+
+/* ───────────────── 终态页：跳转后没有任何可操作元素 ───────────────── */
+
+/** 一个"点一下就跳到只剩正文的终态页"的替身（new-window / webform 提交页的真实形状）。 */
+function terminalPage({ navigate = true } = {}) {
+  const state = { url: 'https://a.test/windows', text: 'Click Here for a new window', navigated: false }
+  // 页面都会变成"只剩正文的终态"；`navigate` 决定地址是否也跟着变
+  // （同一形态的两种真实情况：真跳转 vs 原地把内容换掉）。
+  const enterTerminal = () => {
+    state.navigated = true
+    state.text = 'New Window'
+    if (navigate) state.url = 'https://a.test/windows/new'
+  }
+  const browser = {
+    async extract() {
+      const items = state.navigated ? [] : [{ index: 0, role: 'a', name: 'Open the new window', covered: false, tag: 'a' }]
+      return { items, text: state.text, title: state.navigated ? 'New Window' : 'Windows', url: state.url }
+    },
+    async snapshot() {
+      return {
+        origin: state.url,
+        digest: state.navigated ? 'terminal' : 'windows',
+        snapshot: state.navigated ? 'text  New Window' : 'link "Open the new window" @e1',
+        refs: state.navigated ? {} : { e1: { name: 'Open the new window', role: 'link' } },
+      }
+    },
+    async read() { return state.text },
+    async get() { return state.navigated ? 'New Window' : 'Windows' },
+    async act(action) {
+      if (action === 'click') enterTerminal()
+    },
+    async jsClick() { enterTerminal() },
+    async run() {},
+  }
+  return { state, browser }
+}
+
+test('终态页：确实跳转过 + 独立确认高 → needs_verification（不再 no_progress）', async () => {
+  const page = terminalPage()
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.2 }]) // confirm 默认 0.95
+  const result = await runTask('Open the new window', deps(page.browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.ok(result.trace.some((line) => /终态/.test(line)), `trace 里应有终态判定，实际：${result.trace.join('\n')}`)
+})
+
+test('终态页：**没跳转过**的空页面仍然 no_progress（空页面本身不是完成证据）', async () => {
+  const page = terminalPage({ navigate: false })
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.2 }])
+  const result = await runTask('Open the new window', deps(page.browser, judge))
+  assert.equal(result.status, 'no_progress')
+  assert.match(result.reason, /没有可操作的元素/)
+})
+
+test('终态页：**数据录入/提交类目标不享受这条通道**（webform-fine 的 false-done 归因）', async () => {
+  const page = terminalPage()
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.2 }])
+  // 提交后页面同样跳到"只剩正文"的终态页、确认 p 也高，但字段可能已被站点脚本清空：
+  // 这类目标的成功必须由提交前的读回证明，不能由"跳到了终态页"证明。
+  const result = await runTask('Submit the form', deps(page.browser, judge))
+  assert.equal(result.status, 'no_progress')
+  assert.doesNotMatch(result.trace.join('\n'), /终态/) 
+})
+
+test('搜索目标：填完搜索框后按 Enter 提交搜索（不让判断层点建议里的陷阱链接）', async () => {
+  const items = [
+    { index: 0, role: 'searchbox', name: 'Search Wikipedia', covered: false },
+    { index: 1, role: 'a', name: 'Alan Turing: The Enigma Biography', covered: false },
+    { index: 2, role: 'a', name: 'Search for pages containing Alan Turing', covered: false },
+  ]
+  const browser = extractPage(items)
+  // 判断层两次都点了"名字里有目标词"的陷阱链接（真机 wiki-search 的实测行为）。
+  const judge = fakeJudge([{ action: 'input:0', goalDone: 0.1 }, { action: 'click:1', goalDone: 0.95 }])
+  const result = await runTask('Search for the article and open it', deps(browser, judge, { inputs: { query: 'Alan Turing' } }))
+  assert.ok(
+    (browser.acts ?? []).some((line) => line.startsWith('press body') && /enter/i.test(line)),
+    `应该按 Enter 提交搜索，实际动作：${(browser.acts ?? []).join(' | ')}`,
+  )
+  assert.ok(result.trace.some((line) => /按 Enter 提交搜索/.test(line)))
+})
+
+test('弹层关闭：点过 Close 之后该控件从候选里消失 → needs_verification（不再 budget）', async () => {
+  const state = { closed: false }
+  const browser = {
+    async extract() {
+      const items = state.closed
+        ? [{ index: 0, role: 'a', name: 'click here', covered: false }]
+        : [{ index: 1, role: 'p', name: 'Close', covered: false }]
+      return { items, text: 'ad page', title: 'Entry Ad', url: 'https://a.test/entry_ad' }
+    },
+    async snapshot() {
+      return {
+        origin: 'https://a.test/entry_ad',
+        digest: state.closed ? 'closed' : 'open',
+        snapshot: state.closed ? 'link "click here"' : 'p "Close"',
+        refs: {},
+      }
+    },
+    async read() { return 'ad page' },
+    async get() { return 'Entry Ad' },
+    async act() { state.closed = true },
+    async jsClick() { state.closed = true },
+    async run() {},
+  }
+  const judge = fakeJudge([{ action: 'click:1', goalDone: 0.1 }])
+  const result = await runTask('Close the advertisement modal', deps(browser, judge))
+  assert.equal(result.status, 'needs_verification')
+  assert.ok(result.trace.some((line) => /弹层已关/.test(line)), result.trace.join('\n'))
+})

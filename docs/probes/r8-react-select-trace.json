@@ -1,0 +1,79 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 0,
+  "calls": 0,
+  "tokens": 0,
+  "ms": 21101,
+  "askMs": 0,
+  "statuses": {},
+  "categories": {
+   "custom-widget": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "navSummary": {
+  "counts": {
+   "tasks": 1,
+   "hostMismatch": 0,
+   "urlUnstable": 0,
+   "lateNavigation": 0,
+   "sameHostOtherPath": 0,
+   "readyTimeout": 0,
+   "storageRan": 0,
+   "storageCleared": 0,
+   "storageSkipped": 0,
+   "storageErrors": 0
+  },
+  "problems": []
+ },
+ "initialStability": {
+  "compared": 0,
+  "stable": 0,
+  "unstable": []
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "hard",
+  "--only",
+  "react-select",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-react-select-trace.json"
+ ],
+ "records": [
+  {
+   "id": "react-select",
+   "cat": "custom-widget",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "hard",
+   "url": "https://react-select.com/home",
+   "steps": [],
+   "nav": {},
+   "error": "浏览器命令超过 20000ms 未返回：agent-browser --session dsh-probe --headed --idle-timeout 10m --content-boundaries open https://react-select.com/home --json",
+   "ms": 21101,
+   "calls": 0,
+   "tokens": 0,
+   "askMs": 0,
+   "outcome": "evaluated",
+   "completed": false,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": false
+  }
+ ]
+}

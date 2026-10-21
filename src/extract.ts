@@ -32,8 +32,51 @@ const SCRIPT_LINES = [
   "  document.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx'))",
   '  const out = []',
   '  let idx = 0',
-  '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
+  '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
   '  const nodes = Array.from(new Set(document.querySelectorAll(selector)))',
+  // **可排序表头**：jQuery tablesorter 这类插件把点击事件**委托**在 <th> 上
+  // （没有 onclick 属性、没有 role/tabindex），只按标签/属性抓会整列漏掉。
+  // 真机 ti-sort-table：18 个候选全是 edit/delete 链接，判断层根本看不到"排序"这个动作
+  // → ambiguous / budget；而表头点一下确实能把 Last Name 排出来（Bach 到首位）。
+  // 只收"看起来可排序"的表头（class 带 sort/header、role=columnheader、cursor:pointer），
+  // 否则稠密表格页会凭空多出几十个噪声候选。
+  '  const headers = Array.from(document.querySelectorAll(\'th,[role="columnheader"]\'))',
+  '  for (const header of headers) {',
+  '    if (nodes.indexOf(header) >= 0) continue',
+  '    let sortable = false',
+  "    try { sortable = /sort|header/i.test(String(header.className || '')) } catch (err) { sortable = false }",
+  "    if (!sortable && header.getAttribute('role') === 'columnheader') sortable = true",
+  "    if (!sortable) { try { sortable = getComputedStyle(header).cursor === 'pointer' } catch (err) { sortable = false } }",
+  '    if (sortable) nodes.push(header)',
+  '  }',
+  // **可见弹层里的"光标即落点"控件**：现代页面把关闭/确认挂在 div/p/span 上，
+  // 既没有 role 也没有 onclick/tabindex（真机 ti-entry-ad：关闭键就是 `<p>Close</p>`
+  // + CSS `cursor: pointer`，抽取只看到弹层背后那条被遮挡的链接 → 判断层无候选可选）。
+  // 只在**弹层内部**收这类元素（不做全页扫描）：全页扫 cursor:pointer 会让稠密页凭空多出
+  // 几十个噪声候选；弹层里的可点叶子本来就是"当前唯一该操作的东西"。
+  '  const layers = Array.from(document.querySelectorAll(\'[role="dialog"],dialog,[aria-modal="true"],[id*="modal"],[class*="modal"],[class*="Modal"]\'))',
+  '  const pointerLeaves = []',
+  '  for (const layer of layers) {',
+  '    if (pointerLeaves.length >= 20) break',
+  "    let layerStyle = null",
+  "    try { layerStyle = getComputedStyle(layer) } catch (err) { layerStyle = null }",
+  "    if (layerStyle !== null && (layerStyle.display === 'none' || layerStyle.visibility === 'hidden')) continue",
+  '    const rect = layer.getBoundingClientRect()',
+  '    if (rect.width < 40 || rect.height < 20) continue',
+  "    const inside = Array.from(layer.querySelectorAll('a,button,p,div,span,li'))",
+  '    for (const el of inside) {',
+  '      if (pointerLeaves.length >= 20) break',
+  '      if (nodes.indexOf(el) >= 0 || pointerLeaves.indexOf(el) >= 0) continue',
+  '      let cursorPointer = false',
+  "      try { cursorPointer = getComputedStyle(el).cursor === 'pointer' } catch (err) { cursorPointer = false }",
+  '      if (!cursorPointer) continue',
+  "      if (el.querySelector('a,button,input,select,textarea,[role],[onclick],[tabindex]') !== null) continue",
+  "      const text = String(el.innerText || '').trim()",
+  '      if (text === \'\' || text.length > 40) continue',
+  '      pointerLeaves.push(el)',
+  '    }',
+  '  }',
+  '  for (const leaf of pointerLeaves) nodes.push(leaf)',
   '  for (const el of nodes) {',
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
@@ -52,6 +95,19 @@ const SCRIPT_LINES = [
   "    while (name.indexOf('  ') >= 0) name = name.split('  ').join(' ')",
   '    name = name.trim().slice(0, 60)',
   "    const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)",
+  // **无名字段的上下文兜底**：自定义控件（react-select、combobox）的输入框没有 label，
+  // name 会是空串，判断层只能看到"10 个匿名 combobox"（真机 react-select → ambiguous）。
+  // 取最近两层的短文本当名字（有界 ≤40 字符，且要求容器别太大），只对字段生效。
+  '    if (name === \'\' && isField) {',
+  '      let node = el.parentElement',
+  '      for (let depth = 0; depth < 2 && node; depth += 1) {',
+  "        let ctx = ''",
+  "        try { ctx = String(node.innerText || '') } catch (err) { ctx = '' }",
+  "        ctx = ctx.split(String.fromCharCode(10)).join(' ').trim()",
+  '        if (ctx !== \'\' && ctx.length <= 40) { name = ctx; break }',
+  '        node = node.parentElement',
+  '      }',
+  '    }',
   "    if (name === '' && !isField) continue",
   '    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))',
   '    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))',
@@ -64,10 +120,17 @@ const SCRIPT_LINES = [
   "    el.setAttribute('data-dsh-idx', String(idx))",
   "    const tag = el.tagName.toLowerCase()",
   "    const type = String(el.getAttribute('type') || '').toLowerCase()",
-  "    let role = el.getAttribute('role') || tag",
-  "    if (tag === 'input') role = type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'search' ? 'searchbox' : type === 'submit' || type === 'button' ? 'button' : 'textbox'",
-  "    else if (tag === 'select') role = 'combobox'",
-  "    else if (tag === 'textarea') role = 'textbox'",
+  // **显式 role 优先**：`<input role="combobox">`（react-select 等）被下面的 input 推断
+  // 无条件覆盖成 textbox → 页面上一个 combobox 都没有 → 相关性门判定"缺角色 combobox"
+  // 退回整树 → 45 个候选里判断层点了「Remove Purple」干扰项（真机 react-select，trace 直证）。
+  "    const explicitRole = String(el.getAttribute('role') || '').toLowerCase()",
+  // 表头给判断层一个明确角色（`th` 当角色名没有意义：它说明不了"这列能排序"）。
+  "    let role = explicitRole !== '' ? explicitRole : tag === 'th' ? 'columnheader' : tag",
+  "    if (explicitRole === '') {",
+  "      if (tag === 'input') role = type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'search' ? 'searchbox' : type === 'submit' || type === 'button' ? 'button' : 'textbox'",
+  "      else if (tag === 'select') role = 'combobox'",
+  "      else if (tag === 'textarea') role = 'textbox'",
+  "    }",
   "    let extra = ''",
   "    if (role === 'checkbox' || role === 'radio' || role === 'switch' || el.hasAttribute('aria-checked')) {",
   "      const on = el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked)",

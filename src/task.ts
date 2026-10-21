@@ -238,6 +238,9 @@ export interface TaskSubgoal {
 /* ─────────────────────────── 候选枚举（代码，不是判断） ─────────────────────────── */
 
 /** 页面内抽取（`extract()`）→ 候选：句柄 + 角色 + 名字，遮挡的默认不进池。 */
+/** 同一个字段"填了又被站点清空"时最多重填几次（有界，避免与站点脚本拉锯）。 */
+const MAX_REFILLS = 2
+
 /** 候选预算：按 goal 相关性排序后取前 N（点击优先；目标像"要打字"时输入优先）。 */
 function headCandidates(
   clicks: readonly TaskCandidate[],
@@ -407,6 +410,7 @@ export function pendingFieldOf(
   inputs?: Readonly<Record<string, string>>,
   goal?: string,
   filled?: ReadonlyMap<string, string>,
+  exhausted?: ReadonlySet<string>,
 ): TaskCandidate | undefined {
   if (inputs === undefined) return undefined
   for (const candidate of candidates) {
@@ -429,13 +433,29 @@ export function pendingFieldOf(
     // 空字段：具体 key 一定 pending；**通用 key 只有"目标点名了这个字段"且本轮还没填过**才算。
     // 否则 `text` 会把所有空文本字段（含 Textarea/Disabled input）都算成没填，反复填到 budget。
     if (state.value === undefined) {
+      // 重填到上限的字段不再当 pending（否则"站点清空 → 重填"会无限循环）。
+      if (exhausted?.has(candidate.id) === true) continue
       if (specificallyNamed(candidate, inputs)) return candidate
-      if (filled?.has(candidate.id) === true) continue
+      // **填过又变空 = 值没留在页面上**（真机 webform：日期被日期插件在 blur 时清空）。
+      // 这类字段必须重填，否则提交的是缺字段的表单。
+      if (filled?.has(candidate.id) === true) return candidate
       if (goal !== undefined && goalMentions(candidate.name ?? '', goal)) return candidate
     }
   }
   return undefined
 }
+
+/** 目标是"搜索/查找"：这类目标填完搜索框之后，Enter 就是提交搜索的确定性语义。 */
+const SEARCH_GOALS = /\b(search|find|query|look ?up)\b|搜索|查询|查找|检索/i
+
+/**
+ * 目标是不是**明确的导航目标**（"打开/进入/跳到某页面"）。
+ *
+ * 只有这类目标才允许拿"地址新增段命中目标词"当完成证据：状态操作
+ * （标记/勾选/筛选/排序/清空…）的效果体现在页面内容里，而站点域名和前端路由
+ * 常常携带同名词（`todomvc` / `#/todo` / `#/completed`），拿地址词收尾就是假完成。
+ */
+const NAVIGATION_GOALS = /\b(open|go to|goto|navigate|visit|follow|jump to)\b|打开|访问|进入|跳转|前往|点开/i
 
 /**
  * 导航类目标的**确定性证据**：目标里的特征词出现在"当前地址相对起始地址**新增的那一段**"里。
@@ -447,28 +467,40 @@ export function pendingFieldOf(
  * 只比**新增段**：起始页地址里本来就有的词（wikipedia 的 `/wiki/`、fixture 的 `fixture.html`）
  * 不算命中，否则任何"在 wikipedia 上打开某条目"的目标都会在起始页就被判完成。
  *
- * @returns 命中的目标词（null 表示没有证据）
+ * **只给明确的导航目标用**（真机 todomvc-fine，false-done 归因）：
+ * 目标 "Mark the 'buy milk' todo as completed" 里的 `todo` 同时是站点域名
+ * （`demo.playwright.dev/todomvc`）和 hash 路由（`#/todo`）的一部分 —— 只要"地址变了"
+ * 就算证据，点开筛选器 / 完成一项的那一刻就会被判成"标记完成"，而断言为假。
+ * mark/complete/toggle/filter/sort 这类**状态操作**的效果只在页面内容里，
+ * 地址里出现同名片段没有证据价值。宁可少给一次证据（多走一步），也不制造假完成。
+ *
+ * @returns 命中的目标词（undefined 表示没有证据）
  */
 export function urlChangeMatchesGoal(goal: string, startUrl: string, currentUrl: string): string | undefined {
   if (startUrl === '' || currentUrl === '' || startUrl === currentUrl) return undefined
-  const lower = currentUrl.toLowerCase()
-  let delta = lower
+  if (!NAVIGATION_GOALS.test(goal)) return undefined
+  let delta = ''
   try {
     const start = new URL(startUrl)
     const current = new URL(currentUrl)
+    const currentTail = `${current.pathname}${current.search}${current.hash}`.toLowerCase()
     if (start.origin === current.origin) {
       const startTail = `${start.pathname}${start.search}${start.hash}`.toLowerCase()
-      const currentTail = `${current.pathname}${current.search}${current.hash}`.toLowerCase()
       if (currentTail === startTail) return undefined
       // 只保留**新增**的部分：前缀相同就去掉公共前缀（hash-only 导航时公共前缀是整条路径）。
       let shared = 0
       while (shared < startTail.length && shared < currentTail.length && startTail[shared] === currentTail[shared]) shared += 1
       delta = currentTail.slice(shared)
-      if (delta === '') return undefined
+    } else {
+      // **跨 origin 只比路径**：把整个地址（含域名）当新增段，站点名里的词
+      // （todomvc.com 的 `todo`）就会命中目标 —— 那是域名，不是"目标页面存在"的证据。
+      delta = currentTail
     }
   } catch {
-    delta = lower
+    // 地址解析不出来就没有证据可给（不要退回"整串 URL 子串匹配"）。
+    return undefined
   }
+  if (delta === '') return undefined
   // 只认有辨识度的词（≥4 个字符）：`the`/`open`/`page` 这类词在地址里命中没有证据价值。
   const tokens = goalTokensOf(goal).filter((token) => /[a-z0-9]/.test(token) && token.length >= 4)
   return tokens.find((token) => delta.includes(token))
@@ -1214,6 +1246,10 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
    * 整树候选没有 name/state，`inputsApplied` 永远判不生效 —— iframe-form 就是因此反复填到 budget。
    */
   const verifiedFills = new Set<string>()
+  /** 同一字段"填了又被清空"的重填次数上限（超过就不再把该字段当 pending）。 */
+  const refillCounts = new Map<string, number>()
+  /** 已经重填到上限的字段 id：不再当 pending，让循环按正常判断继续。 */
+  const refillExhausted = new Set<string>()
   /** 读回值连续与调用方给的不一致（页面清空/没接受输入）：2 次就停，不无限重填。 */
   let fillMismatches = 0
   /** 上一步是不是"填了文字"：只有刚填过输入框，Enter 才是合理的提交动作（否则会在下拉页上反复按 Enter）。 */
@@ -1222,6 +1258,11 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   let lastSubmitAction: { id: string; name: string } | undefined
   /** 上一步点的是不是"加入购物车"：下一步出现 Remove/移除 控件 = 商品已进车（电商通用模式）。 */
   let lastAddToCart: { id: string; name: string } | undefined
+  /**
+   * 这一步点的是不是**弹层的关闭控件**（目标要关闭弹层 + 控件名像 Close/Dismiss/关闭）。
+   * 下一步用"该控件从候选里消失"作为确定性证据（真机 ti-entry-ad）。
+   */
+  let lastDismissAction: { id: string; name: string } | undefined
   /** 进入"页面在加载"等待前的正文：加载结束后正文出现新内容 = 结果已出现（见 loading_finished）。 */
   let awaitedLoading: { text: string } | undefined
   /** 上一次用的是 `el.click()`（合成事件）：没效果时回退成"滚进视口 + 真实鼠标点击"。 */
@@ -1608,6 +1649,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         }
       }
     }
+    // **点过弹层关闭控件、该控件确实从页面消失** → 弹层已关，收尾交回宿主。
+    // 真机 ti-entry-ad：关闭键是 `<p>Close</p>`（无 role/button），判断层点对了、弹层也关了，
+    // 但之后仍继续点页面上的别的链接 → 10 步 budget（truth=true 却 missed）。
+    // 门：目标要关闭 + 这一步点的控件名像 Close + 它已经不在候选里 + 页面确实变了。
+    if (lastDismissAction !== undefined && lastChange !== undefined) {
+      // **按名字比，不能按 id 比**：抽取候选的 id 是位置编号（`click:<idx>`），
+      // 关闭弹层后页面元素重排，别的元素会拿到同一个编号 —— 按 id 比会永远判定"还在"。
+      const stillThere = observedPage.candidates.some((candidate) => (candidate.name ?? '').trim() === (lastDismissAction?.name ?? '').trim())
+      if (!stillThere) {
+        trace.push(`第 ${step} 步：点过「${lastDismissAction.name}」后该控件消失 → 弹层已关，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastDismissAction.id, executed: true, reason: 'dismissed_overlay' })
+        return finish('needs_verification', `已关闭「${lastDismissAction.name}」`, snapshot)
+      }
+    }
+    lastDismissAction = undefined
+
     // **加入购物车 → 出现 Remove/移除**：电商通用模式，两种按钮文案是同一个商品的状态对。
     // 真机 saucedemo（Add the Sauce Labs Backpack to the cart）：点完 Add to cart 后判断层
     // 转头去点 "View details"（goal_done 0.24），最后 ambiguous；按钮变成 Remove 才是确定性证据。
@@ -1717,6 +1774,25 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       // 没有可操作元素：可能是"字段都按调用方的值填完了"。确认结果只记进 trace 供排查，
       // **不作为完成依据**（没有可操作元素本身不构成目标达成的证据）。
       const confirmed = await confirmWithContext()
+      // **"页面已经跳到终态"是另一回事**：0 个可操作元素不等于"什么都没发生"。
+      // 真机 new-window（r8 全量 3/3 断言为真）：点 "Click Here" 后新标签打开
+      // `New Window` 页——那页只有正文、没有任何可点元素，旧逻辑在这里直接 no_progress
+      // （断言为真却不敢收尾 = 假阴性）。webform 提交后的 "Form submitted / Received!"
+      // 同形。门（三条同时成立才收尾，缺一条维持 no_progress）：
+      //   1) 这一步**确实发生了跳转**（url_changed）——"没跳转的空页面"仍然是失败/错误页；
+      //   2) 不是浏览器错误页（上面已挡）；
+      //   3) 独立确认 p ≥ 0.8（不是步骤内的 goal_done，避免自证）；
+      //   4) 目标本身是**导航类**目标（打开/进入某页面）。
+      // 为什么要有第 4 条（实测代价 3/3 false-done）：webform-fine step7 的 "Submit the form"
+      // 提交后同样是"只剩正文的终态页"，确认 p 也很高——但日期字段被站点日期插件清空了，
+      // 断言为假。**数据录入类目标的成功不能由"跳到一个只剩正文的页"证明**，
+      // 那必须靠提交前的字段读回（见 webform 的 readback 纪律）。导航目标没有这个问题。
+      const navigatedToTerminal = lastChange?.url_changed === true && NAVIGATION_GOALS.test(goal)
+      if (navigatedToTerminal && confirmed.probability >= 0.8) {
+        trace.push(`第 ${step} 步：已跳到没有可操作元素的终态页（跳转证据 + 独立确认 p=${confirmed.probability.toFixed(2)}）→ 停，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:terminal_page', executed: false, reason: 'terminal_page' })
+        return finish('needs_verification', `页面已跳转到终态（无可操作元素，确认 p=${confirmed.probability.toFixed(2)}）`, snapshot)
+      }
       trace.push(`第 ${step} 步：页面上没有可操作的元素（独立确认 p=${confirmed.probability.toFixed(2)}，不作为完成依据）→ 停`)
       return finish('no_progress', '页面上没有可操作的元素', snapshot)
     }
@@ -1993,13 +2069,41 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
     }
 
+    // **搜索目标：填完搜索框后先按 Enter 提交搜索**（真机 wiki-search，false-done 根因）。
+    // 真站（Wikipedia）：填完 "Alan Turing" 后自动补全里有
+    //   "Alan Turing: The Enigma Biography by Andrew Hodges"（书名）与
+    //   "Search for pages containing Alan Turing"（Special:Search 结果页）——
+    // 两者名字都含目标词，判断层两次点了陷阱并落到 /wiki/Alan_Turing:_The_Enigma，
+    // 随后 goal_done=0.95 → 假完成。按 Enter 是 searchbox 的确定性语义：提交这个搜索词
+    // （实测：Enter 直接到 /wiki/Alan_Turing，断言为真；点独立 Search 按钮同效）。
+    // 只在"这一步刚填过文本输入框"（lastActionWasText）时触发，且候选里确实有 Enter。
+    if (SEARCH_GOALS.test(goal) && lastActionWasText && chosen.kind === 'click') {
+      const enter = candidates.find((candidate) => candidate.id === 'control:press_enter')
+      if (enter !== undefined) {
+        trace.push(`第 ${step} 步：目标要搜索、刚填过输入框 → 按 Enter 提交搜索（判断层选了「${chosen.name ?? chosen.id}」）`)
+        chosen = enter
+      }
+    }
+
     // **确定性填值优先**：调用方给了值、页面上还有没生效的字段 → 先填它，
     // 不让判断层在"填哪个框 / 先不先点提交"上把流程拖成 ambiguous。
     // （真机 saucedemo：登录页上判断层置信 0.27，直接 ambiguous 交回宿主，登录框一个都没填。）
     if (deps.inputs !== undefined && Object.keys(deps.inputs).length > 0 && chosen.kind !== 'input') {
-      const pending = pendingFieldOf(candidates, deps.inputs, goal, filledFields)
+      const pending = pendingFieldOf(candidates, deps.inputs, goal, filledFields, refillExhausted)
       if (pending !== undefined) {
-        trace.push(`第 ${step} 步：还有没生效的字段「${pending.name ?? pending.id}」→ 先填它`)
+        const vanished = filledFields.has(pending.id)
+        if (vanished) {
+          // **读回校验**：填过之后又变空的字段 = 站点把它清掉了（真机 webform：
+          // bootstrap-datepicker 在 blur 时按自己的模型回写空值）。
+          // 提交前必须重填，否则提交的是"缺字段"的表单（断言必假）。
+          // 有界：同一个字段最多重填 2 次，之后不再当 pending（避免"清空-重填"无限循环）。
+          const attempts = (refillCounts.get(pending.id) ?? 0) + 1
+          refillCounts.set(pending.id, attempts)
+          if (attempts > MAX_REFILLS) refillExhausted.add(pending.id)
+          trace.push(`第 ${step} 步：字段「${pending.name ?? pending.id}」的值没留在页面上（读回不一致，第 ${attempts} 次重填）`)
+        } else {
+          trace.push(`第 ${step} 步：还有没生效的字段「${pending.name ?? pending.id}」→ 先填它`)
+        }
         chosen = pending
       }
     }
@@ -2255,6 +2359,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         singleStepGoal(goal) &&
         /add\b[^.]{0,60}\bcart\b|加入购物车|添加到购物车/i.test(goal) &&
         /add.*cart|加入购物车|添加到购物车/i.test(chosen.name ?? '')
+          ? { id: chosen.id, name: chosen.name ?? '' }
+          : undefined
+      lastDismissAction =
+        chosen.kind === 'click' &&
+        /\b(close|dismiss|hide)\b|关闭|关掉|收起/i.test(goal) &&
+        /close|dismiss|关闭|关掉|got it|i understand/i.test(chosen.name ?? '')
           ? { id: chosen.id, name: chosen.name ?? '' }
           : undefined
       lastSubmitAction =

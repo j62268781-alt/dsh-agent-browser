@@ -1,0 +1,195 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 0,
+  "calls": 2,
+  "tokens": 5685,
+  "ms": 8851,
+  "askMs": 982,
+  "statuses": {
+   "ambiguous": 1
+  },
+  "categories": {
+   "custom-widget": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "navSummary": {
+  "counts": {
+   "tasks": 1,
+   "hostMismatch": 0,
+   "urlUnstable": 0,
+   "lateNavigation": 0,
+   "sameHostOtherPath": 0,
+   "readyTimeout": 0,
+   "storageRan": 1,
+   "storageCleared": 1,
+   "storageSkipped": 0,
+   "storageErrors": 0
+  },
+  "problems": []
+ },
+ "initialStability": {
+  "compared": 0,
+  "stable": 0,
+  "unstable": []
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "hard",
+  "--only",
+  "react-select",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-react-select-trace2.json"
+ ],
+ "records": [
+  {
+   "id": "react-select",
+   "cat": "custom-widget",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "hard",
+   "url": "https://react-select.com/home",
+   "steps": [
+    {
+     "goal": "In the first dropdown on the page, choose the colour Purple",
+     "status": "ambiguous",
+     "reason": "置信 0.11、前两名差 0.00：请从候选里挑",
+     "truth": false,
+     "calls": 2,
+     "tokens": 5685,
+     "usd": 0.000239,
+     "askMs": 982,
+     "ms": 1530,
+     "rounds": 2,
+     "nav": {
+      "url_before_runTask": "https://react-select.com/home",
+      "result_url": "https://react-select.com/home",
+      "url_after_runTask": "https://react-select.com/home",
+      "url_before_assert": "https://react-select.com/home",
+      "url_after_assert": "https://react-select.com/home"
+     },
+     "resultSteps": [
+      {
+       "step": 1,
+       "origin": "https://react-select.com/home",
+       "action": "click:e80",
+       "executed": true,
+       "reason": "executed",
+       "digest": "6fc6db333375e83d"
+      },
+      {
+       "step": 2,
+       "origin": "https://react-select.com/home",
+       "action": "stop:ambiguous",
+       "executed": false,
+       "reason": "ambiguous",
+       "digest": "f844d0e3857b9448"
+      }
+     ],
+     "trace": [
+      "第 1 步：抽取结果里没有与目标相关的候选（目标词 the/first/dropdown/page，缺角色 combobox/option）→ 退回整树观察",
+      "第 1 步：goal_done=0.52 stuck=0.07 候选=45 置信=0.62",
+      "第 1 步：点击「Remove Purple」（button，ref @e80） ✓",
+      "第 2 步：抽取结果里没有与目标相关的候选（目标词 the/first/dropdown/page，缺角色 combobox/option）→ 退回整树观察",
+      "第 2 步：抽取结果里没有与目标相关的候选（目标词 the/first/dropdown/page，缺角色 combobox/option）→ 退回整树观察",
+      "第 2 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 2 步：抽取结果里没有与目标相关的候选（目标词 the/first/dropdown/page，缺角色 combobox/option）→ 退回整树观察",
+      "第 2 步：goal_done=0.22 stuck=0.05 done_change=0.22 候选=45 置信=0.11",
+      "第 2 步：判断层分不清（置信 0.11，前两名差 0.00）→ ambiguous，交回候选"
+     ]
+    }
+   ],
+   "nav": {
+    "requested_url": "https://react-select.com/home",
+    "ok": true,
+    "diagnosis": "ok",
+    "url_before_open": "https://react-select.com/home",
+    "url_after_open": "https://react-select.com/home",
+    "url_after_ready": "https://react-select.com/home",
+    "url_settled": "https://react-select.com/home",
+    "url_polls": [
+     {
+      "wait_ms": 120,
+      "url": "https://react-select.com/home"
+     }
+    ],
+    "url_changed_during_ready": false,
+    "url_changed_after_ready": false,
+    "stable": true,
+    "ready": true,
+    "ready_method": "waitForReady",
+    "host_matched": true,
+    "path_matched": true,
+    "query_matched": true,
+    "hash_matched": true,
+    "same_host_other_path": false,
+    "attempts": [
+     {
+      "attempt": 1,
+      "url_after_open": "https://react-select.com/home",
+      "host_matched": true
+     }
+    ],
+    "storage": {
+     "target_url": "https://react-select.com/home",
+     "target_origin": "https://react-select.com",
+     "current_url_before": "https://react-select.com/home",
+     "current_origin_before": "https://react-select.com",
+     "ran": true,
+     "storage_before": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_after": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_cleared": true,
+     "storage_clear_result": {
+      "local": true,
+      "session": true
+     },
+     "reloaded": true,
+     "ready_after_reload": true,
+     "url_after_reload": "https://react-select.com/home",
+     "initial_dom": {
+      "url": "https://react-select.com/home",
+      "title": "React Select",
+      "text_head": "Home\nProps\nStyles\nComponents\nAsync\nCreatable\nAdvanced\nTypeScript\nUpgrading\nReact Select\n\nA flexible and beautiful Select Input control for ReactJS with multiselect, autocomplete, async and creatable support.\n\nStar\n28,019\nFollow\n🎉 Feature Highlights\nWelcome\nGetting Started\nAnimated Components\nCustom Styles\nAsync\nCreatable\nFixed Options\nWelcome\n\nEach of the examples below is an interactive example of react-select.\n\nSee the source or open the examples on codesandbox using the buttons that appear when you hover over each select below.\n\nFor complete docs, see the Props API and Advanced Usage.\n\nTo contribute, or open an issue, check out the source code on GitHub.\n\nSingle\nOcean\nClearableSearchableDisabledLoadingRTL\nMulti\nPurple\nRed\n\n\nGetting Started\n\nStart by installing react-select\n\nyarn add react-select\n\n\nor\n\nnpm i --save react-select\n\n\nImport the default export and render in your component:\n\nimport React from 'react'\nimport Select from 'react-select'\n\nconst options = [\n  { value: 'chocolate', label: 'Chocolate' },\n  { value: 'strawberry', label: 'Strawberry' },\n  { value: 'vanilla', label: 'Vanilla' }\n]\n\nconst MyComponent = () => (\n  <Select options={options} />\n)\n\nGrouped\nBlue\nAnimated Components\n\nReact-Select comes with a makeAnimated function that create animated wrappers around components passed in as arguments. If no arguments are passed, built-in components are wrapped instead.\n\nimport makeAnimated from 'react-select/animated';\n\n\nRemove the values below to see them in action.\n\nAnimation\nOrange\nYellow\nCustom Styles\n\nStyle individual components with custom css using the styles prop.\n\nSingle\nPurple\nMulti Select\nOcean\nBlue\n\nYou can see a full explanation of how to do this on the styles page.\n\nAsync\n\nUse the Async component to load options from a remote source as the user types.\n\nimport AsyncSelect from 'react-select/async';\n\nCallbacks\nSelect...\nPromises\nSelect...\n\nYou can see a full explanation of how to do this on the async page.\n\nCreatable\n\nThe Creatable component ",
+      "html_length": 64776,
+      "digest": "82ef649c8252ef66"
+     }
+    },
+    "url_before_runTask": "https://react-select.com/home"
+   },
+   "ms": 8851,
+   "calls": 2,
+   "tokens": 5685,
+   "askMs": 982,
+   "outcome": "evaluated",
+   "completed": true,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": false
+  }
+ ]
+}

@@ -1,0 +1,263 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 0,
+  "calls": 11,
+  "tokens": 23316,
+  "ms": 18783,
+  "askMs": 4431,
+  "statuses": {
+   "budget": 1
+  },
+  "categories": {
+   "iframe": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "navSummary": {
+  "counts": {
+   "tasks": 1,
+   "hostMismatch": 0,
+   "urlUnstable": 0,
+   "lateNavigation": 0,
+   "sameHostOtherPath": 0,
+   "readyTimeout": 0,
+   "storageRan": 1,
+   "storageCleared": 1,
+   "storageSkipped": 0,
+   "storageErrors": 0
+  },
+  "problems": []
+ },
+ "initialStability": {
+  "compared": 0,
+  "stable": 0,
+  "unstable": []
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "hard",
+  "--only",
+  "iframe-datepicker",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-iframe-datepicker-trace.json"
+ ],
+ "records": [
+  {
+   "id": "iframe-datepicker",
+   "cat": "iframe",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "hard",
+   "url": "https://jqueryui.com/datepicker/",
+   "steps": [
+    {
+     "goal": "Open the date picker and pick the 15th of the month it shows",
+     "status": "budget",
+     "reason": "达到最大步数 10",
+     "truth": false,
+     "calls": 11,
+     "tokens": 23316,
+     "usd": 0.000979,
+     "askMs": 4431,
+     "ms": 7349,
+     "rounds": 6,
+     "nav": {
+      "url_before_runTask": "https://jqueryui.com/datepicker/",
+      "result_url": "https://jqueryui.com/datepicker/#default",
+      "url_after_runTask": "https://jqueryui.com/datepicker/#default",
+      "url_before_assert": "https://jqueryui.com/datepicker/#default",
+      "url_after_assert": "https://jqueryui.com/datepicker/#default"
+     },
+     "resultSteps": [
+      {
+       "step": 1,
+       "origin": "https://jqueryui.com/datepicker/",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      },
+      {
+       "step": 2,
+       "origin": "https://jqueryui.com/datepicker/#default",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      },
+      {
+       "step": 4,
+       "origin": "https://jqueryui.com/datepicker/#default",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      },
+      {
+       "step": 6,
+       "origin": "https://jqueryui.com/datepicker/#default",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      },
+      {
+       "step": 8,
+       "origin": "https://jqueryui.com/datepicker/#default",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      },
+      {
+       "step": 10,
+       "origin": "https://jqueryui.com/datepicker/#default",
+       "action": "click:20",
+       "executed": true,
+       "reason": "executed",
+       "digest": "c46ec799"
+      }
+     ],
+     "trace": [
+      "第 1 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 1 步：goal_done=0.08 stuck=0.06 候选=44 置信=0.85",
+      "第 1 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓",
+      "第 2 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 2 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 2 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 2 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 2 步：goal_done=0.10 stuck=0.06 done_change=0.10 候选=44 置信=0.96",
+      "第 2 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓",
+      "第 3 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 3 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 3 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 3 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 3 步：goal_done=0.05 stuck=0.10 候选=44 置信=0.96",
+      "第 3 步：Default functionality 的跳转是延迟的 → 等到了页面变化，继续观察",
+      "第 4 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 4 步：goal_done=0.05 stuck=0.10 候选=44 置信=0.96",
+      "第 4 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓",
+      "第 5 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 5 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 5 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 5 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 5 步：goal_done=0.05 stuck=0.09 候选=44 置信=0.95",
+      "第 5 步：Default functionality 的跳转是延迟的 → 等到了页面变化，继续观察",
+      "第 6 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 6 步：goal_done=0.05 stuck=0.09 候选=44 置信=0.95",
+      "第 6 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓",
+      "第 7 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 7 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 7 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 7 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 7 步：goal_done=0.04 stuck=0.10 候选=44 置信=0.94",
+      "第 7 步：Default functionality 的跳转是延迟的 → 等到了页面变化，继续观察",
+      "第 8 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 8 步：goal_done=0.04 stuck=0.10 候选=44 置信=0.95",
+      "第 8 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓",
+      "第 9 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 9 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 9 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 9 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 9 步：goal_done=0.05 stuck=0.10 候选=44 置信=0.93",
+      "第 9 步：Default functionality 的跳转是延迟的 → 等到了页面变化，继续观察",
+      "第 10 步：页面内抽取 94 个元素（跳过被遮挡 0 个）→ 44 个候选",
+      "第 10 步：goal_done=0.05 stuck=0.10 候选=44 置信=0.93",
+      "第 10 步：点击「Default functionality」（a，链接: jqueryui.com/resources/demos/datepicker/default.html） ✓"
+     ]
+    }
+   ],
+   "nav": {
+    "requested_url": "https://jqueryui.com/datepicker/",
+    "ok": true,
+    "diagnosis": "ok",
+    "url_before_open": "about:blank",
+    "url_after_open": "https://jqueryui.com/datepicker/",
+    "url_after_ready": "https://jqueryui.com/datepicker/",
+    "url_settled": "https://jqueryui.com/datepicker/",
+    "url_polls": [
+     {
+      "wait_ms": 120,
+      "url": "https://jqueryui.com/datepicker/"
+     }
+    ],
+    "url_changed_during_ready": false,
+    "url_changed_after_ready": false,
+    "stable": true,
+    "ready": true,
+    "ready_method": "waitForReady",
+    "host_matched": true,
+    "path_matched": true,
+    "query_matched": true,
+    "hash_matched": true,
+    "same_host_other_path": false,
+    "attempts": [
+     {
+      "attempt": 1,
+      "url_after_open": "https://jqueryui.com/datepicker/",
+      "host_matched": true
+     }
+    ],
+    "storage": {
+     "target_url": "https://jqueryui.com/datepicker/",
+     "target_origin": "https://jqueryui.com",
+     "current_url_before": "https://jqueryui.com/datepicker/",
+     "current_origin_before": "https://jqueryui.com",
+     "ran": true,
+     "storage_before": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_after": {
+      "local": [],
+      "session": [],
+      "local_count": 0,
+      "session_count": 0
+     },
+     "storage_cleared": true,
+     "storage_clear_result": {
+      "local": true,
+      "session": true
+     },
+     "reloaded": true,
+     "ready_after_reload": true,
+     "url_after_reload": "https://jqueryui.com/datepicker/",
+     "initial_dom": {
+      "url": "https://jqueryui.com/datepicker/",
+      "title": "Datepicker | jQuery UI",
+      "text_head": "jQuery\njQuery UI\njQuery Mobile\nSizzle\nQUnit\nPlugins\nContribute\nEvents\nSupport\nOpenJS Foundation\njQuery UI\nDemos\nDownload\nAPI Documentation\nThemes\nDevelopment\nSupport\nBlog\nAbout\nDatepicker\n\nSelect a date from a popup or inline calendar\n\nExamples\nDefault functionality\nAnimations\nDates in other months\nDisplay button bar\nDisplay inline\nDisplay month & year menus\nDisplay multiple months\nFormat date\nIcon trigger\nLocalize calendar\nPopulate alternate field\nRestrict date range\nSelect a Date Range\nShow week of the year\n\nThe datepicker is tied to a standard form input field. Focus on the input (click, or use the tab key) to open an interactive calendar in a small overlay. Choose a date, click elsewhere on the page (blur the input), or hit the Esc key to close. If a date is chosen, feedback is shown as the input's value.\n\n view source\n\nWant to learn more about the datepicker widget? Check out the API documentation.\n\nInteractions\nDraggable\nDroppable\nResizable\nSelectable\nSortable\nWidgets\nAccordion\nAutocomplete\nButton\nCheckboxradio\nControlgroup\nDatepicker\nDialog\nMenu\nProgressbar\nSelectmenu\nSlider\nSpinner\nTabs\nTooltip\nEffects\nAdd Class\nColor Animation\nEasing\nEffect\nHide\nRemove Class\nShow\nSwitch Class\nToggle\nToggle Class\nUtilities\nPosition\nWidget Factory\nMeta\nAbout jQuery UI\nBrowser Support\nDevelopment Center\njQuery UI Changelogs\njQuery UI Upgrade Guides\nSupport Center\nBOOKS\njQuery UI in Action\n\nTJ VanToll\njQuery UI Themes\nAdam Boduch\njQuery UI Cookbook\nAdam Boduch\nLearning Center\n \nChat\n \nTwitter\n \nGitHub\n\nCopyright 2026 OpenJS Foundation and jQuery contributors. All rights reserved. See jQuery License for more information. The OpenJS Foundation has registered trademarks and uses trademarks. For a list of trademarks of the OpenJS Foundation, please see our Trademark Policy and Trademark List. Trademarks and logos not indicated on the list of OpenJS Foundation trademarks are trademarks™ or registered® trademarks of their respective holders. Use of them does not imply any affiliation",
+      "html_length": 30235,
+      "digest": "2094e01171d1b720"
+     }
+    },
+    "url_before_runTask": "https://jqueryui.com/datepicker/"
+   },
+   "ms": 18783,
+   "calls": 11,
+   "tokens": 23316,
+   "askMs": 4431,
+   "outcome": "evaluated",
+   "completed": true,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": false
+  }
+ ]
+}

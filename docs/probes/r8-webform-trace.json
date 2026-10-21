@@ -1,0 +1,227 @@
+{
+ "summary": {
+  "tasks": 1,
+  "skipped": 0,
+  "network": 0,
+  "correct": 0,
+  "falseDone": 0,
+  "missed": 0,
+  "likelyDone": 1,
+  "calls": 19,
+  "tokens": 22427,
+  "ms": 20057,
+  "askMs": 6521,
+  "statuses": {
+   "needs_verification": 4,
+   "likely_done": 2,
+   "no_progress": 1
+  },
+  "categories": {
+   "form": {
+    "tasks": 1,
+    "correct": 0
+   }
+  }
+ },
+ "describe": "DashScope：https://live-turing.cn.llm.tcljd.com/api/v1/typesafe/v1/systemone · 模型 decision-model-preview · 凭据 72 字符（不回显）",
+ "argv": [
+  "--tier",
+  "base",
+  "--only",
+  "webform-fine",
+  "--session",
+  "dsh-probe",
+  "--trace",
+  "--verbose",
+  "--out",
+  "docs/probes/r8-webform-trace.json"
+ ],
+ "records": [
+  {
+   "id": "webform-fine",
+   "cat": "form",
+   "run": 1,
+   "expect": "pass",
+   "guard": false,
+   "tier": "base",
+   "url": "https://www.selenium.dev/selenium/web/web-form.html",
+   "steps": [
+    {
+     "goal": "Type into the text input",
+     "status": "needs_verification",
+     "reason": "调用方给的值都已生效",
+     "calls": 3,
+     "tokens": 3961,
+     "usd": 0.000166,
+     "askMs": 2743,
+     "ms": 3236,
+     "rounds": 3,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 21 个候选",
+      "第 1 步：goal_done=0.71 stuck=0.04 候选=21 置信=0.99",
+      "第 1 步：按调用方的值填 textbox「Text input」= Jev ✓",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：1 个候选已处于目标状态（Text input）→ 跳过",
+      "第 2 步：goal_done=0.76 stuck=0.02 done_change=0.55 候选=21 置信=0.40",
+      "第 2 步：值是通用 key，字段按目标改选「Disabled input」（判断层选了「Textarea」）",
+      "第 2 步：按调用方的值填 textbox「Disabled input」= Jev ✓",
+      "第 3 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 3 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 3 步：goal_done=0.83 stuck=0.03 done_change=0.83 候选=22 置信=0.99",
+      "第 3 步：调用方给的值都已生效，且目标没有后续动作 → 停，交回宿主校验"
+     ]
+    },
+    {
+     "goal": "Type into the password field",
+     "status": "needs_verification",
+     "reason": "调用方给的值都已生效",
+     "calls": 4,
+     "tokens": 5372,
+     "usd": 0.000226,
+     "askMs": 1059,
+     "ms": 1910,
+     "rounds": 4,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 21 个候选",
+      "第 1 步：goal_done=0.57 stuck=0.02 候选=21 置信=0.99",
+      "第 1 步：按调用方的值填 textbox「Password」= pw123 ✓",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：1 个字段已按调用方的值填过（Password）→ 跳过",
+      "第 2 步：goal_done=0.52 stuck=0.02 done_change=0.52 候选=21 置信=0.77",
+      "第 2 步：「Text input」已有别的值（JevJev）→ 覆盖为调用方给的新值（没有更合适的空字段）",
+      "第 2 步：按调用方的值填 textbox「Text input」= pw123 ✓",
+      "第 3 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 3 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 3 步：1 个候选已处于目标状态（Text input）→ 跳过",
+      "第 3 步：1 个字段已按调用方的值填过（Password）→ 跳过",
+      "第 3 步：10 个候选时分布不合法（候选 10，Σp 1.02，容差 0.02） → 缩到 5 个再采一次",
+      "第 3 步：goal_done=0.70 stuck=0.02 done_change=0.70 候选=20 置信=0.61",
+      "第 3 步：按调用方的值填 textbox「Textarea」= pw123 ✓",
+      "第 4 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 4 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 4 步：2 个候选已处于目标状态（Text input、Textarea）→ 跳过",
+      "第 4 步：1 个字段已按调用方的值填过（Password）→ 跳过",
+      "第 4 步：goal_done=0.66 stuck=0.02 done_change=0.66 候选=19 置信=0.34",
+      "第 4 步：调用方给的值都已生效，且目标没有后续动作 → 停，交回宿主校验"
+     ]
+    },
+    {
+     "goal": "Type into the textarea",
+     "status": "needs_verification",
+     "reason": "调用方给的值都已生效",
+     "calls": 2,
+     "tokens": 2649,
+     "usd": 0.000111,
+     "askMs": 757,
+     "ms": 1170,
+     "rounds": 2,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 21 个候选",
+      "第 1 步：goal_done=0.80 stuck=0.01 候选=21 置信=1.00",
+      "第 1 步：「Textarea」已有别的值（pw123）→ 覆盖为调用方给的新值（没有更合适的空字段）",
+      "第 1 步：按调用方的值填 textbox「Textarea」= hello world ✓",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 22 个候选",
+      "第 2 步：1 个候选已处于目标状态（Textarea）→ 跳过",
+      "第 2 步：goal_done=0.85 stuck=0.01 done_change=0.73 候选=21 置信=0.65",
+      "第 2 步：调用方给的值都已生效，且目标没有后续动作 → 停，交回宿主校验"
+     ]
+    },
+    {
+     "goal": "Choose 'Two' in the dropdown select",
+     "status": "needs_verification",
+     "reason": "已选择「Two」",
+     "calls": 1,
+     "tokens": 1250,
+     "usd": 0.000053,
+     "askMs": 333,
+     "ms": 670,
+     "rounds": 1,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 21 个候选",
+      "第 1 步：goal_done=0.16 stuck=0.03 候选=21 置信=0.97",
+      "第 1 步：按调用方的值填 combobox「Dropdown (select) Open this select menu One Two Three」= Two ✓",
+      "第 1 步：选中的「Two」就是目标要求的选择 → 停，交回宿主校验"
+     ]
+    },
+    {
+     "goal": "Type the date into the date picker field",
+     "status": "likely_done",
+     "reason": "goal_done=0.62，确认 p=0.74：看起来完成，需验证",
+     "calls": 3,
+     "tokens": 3598,
+     "usd": 0.000151,
+     "askMs": 714,
+     "ms": 1746,
+     "rounds": 2,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 0 个）→ 21 个候选",
+      "第 1 步：goal_done=0.08 stuck=0.03 候选=21 置信=1.00",
+      "第 1 步：按调用方的值填 textbox「Date picker」= 09/16/2026 ✓",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 21 个候选",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 21 个候选",
+      "第 2 步：1 个字段已按调用方的值填过（Date picker）→ 跳过",
+      "第 2 步：goal_done=0.62 stuck=0.03 done_change=0.53 候选=20 置信=0.09",
+      "第 2 步：goal_done=0.62（中间带）且确认 p=0.74 → likely_done，交回宿主验证"
+     ]
+    },
+    {
+     "goal": "Select the second radio button",
+     "status": "likely_done",
+     "reason": "goal_done=0.63，确认 p=0.67：看起来完成，需验证",
+     "calls": 4,
+     "tokens": 3622,
+     "usd": 0.000152,
+     "askMs": 544,
+     "ms": 1446,
+     "rounds": 2,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 20 个候选",
+      "第 1 步：goal_done=0.74 stuck=0.06 候选=20 置信=0.46",
+      "第 1 步：判断层在「Dropdown (select) Open this select menu One Two Three」的选项里选了「Two」",
+      "第 1 步：按调用方的值填 combobox「Dropdown (select) Open this select menu One Two Three」= 2 ✓",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 20 个候选",
+      "第 2 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 20 个候选",
+      "第 2 步：1 个字段已按调用方的值填过（Dropdown (select) Open this select menu One Two Three）→ 跳过",
+      "第 2 步：goal_done=0.63 stuck=0.05 候选=19 置信=0.84",
+      "第 2 步：goal_done=0.63（中间带）且确认 p=0.67 → likely_done，交回宿主验证"
+     ]
+    },
+    {
+     "goal": "Submit the form",
+     "status": "no_progress",
+     "reason": "页面上没有可操作的元素",
+     "truth": false,
+     "calls": 2,
+     "tokens": 1975,
+     "usd": 0.000083,
+     "askMs": 371,
+     "ms": 1748,
+     "rounds": 1,
+     "trace": [
+      "第 1 步：页面内抽取 17 个元素（跳过被遮挡 1 个）→ 20 个候选",
+      "第 1 步：goal_done=0.41 stuck=0.03 候选=20 置信=0.99",
+      "第 1 步：点击「Submit」（button，附近: Dropdown (select) Open this select menu One Two Three  Dropd） ✓",
+      "第 2 步：页面内抽取没有可用元素（0 个元素）→ 退回整树观察",
+      "第 2 步：页面内抽取没有可用元素（0 个元素）→ 退回整树观察",
+      "第 2 步：点击后页面在跳转 → 事件驱动等待到变化再观察",
+      "第 2 步：页面内抽取没有可用元素（0 个元素）→ 退回整树观察",
+      "第 2 步：页面上没有可操作的元素（独立确认 p=0.99，不作为完成依据）→ 停"
+     ]
+    }
+   ],
+   "ms": 20057,
+   "calls": 19,
+   "tokens": 22427,
+   "askMs": 6521,
+   "outcome": "evaluated",
+   "completed": true,
+   "correct": false,
+   "falseDone": false,
+   "missed": false,
+   "likelyDone": true
+  }
+ ]
+}

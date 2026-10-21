@@ -1,0 +1,397 @@
+[open] exit=0
+=== 建议下拉在抽取脚本里的可见性（输入后 0/150/400/800ms） ===
+[
+ {
+  "label": "t0",
+  "dt": 5,
+  "items": 267,
+  "covered": 2,
+  "truncated": false,
+  "alanHits": [],
+  "exactArticle": false,
+  "enigmaTrap": false,
+  "dom": {
+   "listboxes": [],
+   "suggestionNodes": [],
+   "inputValue": "Alan Turing"
+  }
+ },
+ {
+  "label": "t150",
+  "dt": 155,
+  "items": 279,
+  "covered": 15,
+  "truncated": false,
+  "alanHits": [
+   [
+    3,
+    "a",
+    "Alan Turing English computer scientist (1912–1954)",
+    0
+   ],
+   [
+    4,
+    "a",
+    "Alan Turing Institute Research institute in Britain",
+    0
+   ],
+   [
+    5,
+    "a",
+    "Alan Turing law 2017 British law pardoning formerly illegal ",
+    0
+   ],
+   [
+    6,
+    "a",
+    "Alan Turing: The Enigma Biography by Andrew Hodges",
+    0
+   ],
+   [
+    7,
+    "a",
+    "Alan Turing Memorial Memorial in Manchester, England",
+    0
+   ],
+   [
+    8,
+    "a",
+    "Alan Turing Building Building at the University of Mancheste",
+    0
+   ],
+   [
+    9,
+    "a",
+    "Alan Turing Year International observance",
+    0
+   ],
+   [
+    10,
+    "a",
+    "Alan Turing Centenary Conference Computer Science Conference",
+    0
+   ],
+   [
+    11,
+    "a",
+    "Alan Turing (sculpture) 1988 sculpture of Alan Turing",
+    0
+   ],
+   [
+    12,
+    "a",
+    "Turing Award (Redirected from Alan turing award) American an",
+    0
+   ],
+   [
+    13,
+    "a",
+    "Search for pages containing Alan Turing",
+    0
+   ]
+  ],
+  "exactArticle": true,
+  "enigmaTrap": true,
+  "dom": {
+   "listboxes": [
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": true,
+     "text": "Alan Turing English computer scientist (1912–1954) Alan Turing Institute Research institute in Brita"
+    },
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": false,
+     "text": ""
+    }
+   ],
+   "suggestionNodes": [
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing English computer scientist (1912–1954)"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing Institute Research institute in Britain"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing law 2017 British law pardoning formerly illegal sex acts"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing: The Enigma Biography by Andrew Hodges"
+    }
+   ],
+   "inputValue": "Alan Turing"
+  }
+ },
+ {
+  "label": "t400",
+  "dt": 419,
+  "items": 279,
+  "covered": 15,
+  "truncated": false,
+  "alanHits": [
+   [
+    3,
+    "a",
+    "Alan Turing English computer scientist (1912–1954)",
+    0
+   ],
+   [
+    4,
+    "a",
+    "Alan Turing Institute Research institute in Britain",
+    0
+   ],
+   [
+    5,
+    "a",
+    "Alan Turing law 2017 British law pardoning formerly illegal ",
+    0
+   ],
+   [
+    6,
+    "a",
+    "Alan Turing: The Enigma Biography by Andrew Hodges",
+    0
+   ],
+   [
+    7,
+    "a",
+    "Alan Turing Memorial Memorial in Manchester, England",
+    0
+   ],
+   [
+    8,
+    "a",
+    "Alan Turing Building Building at the University of Mancheste",
+    0
+   ],
+   [
+    9,
+    "a",
+    "Alan Turing Year International observance",
+    0
+   ],
+   [
+    10,
+    "a",
+    "Alan Turing Centenary Conference Computer Science Conference",
+    0
+   ],
+   [
+    11,
+    "a",
+    "Alan Turing (sculpture) 1988 sculpture of Alan Turing",
+    0
+   ],
+   [
+    12,
+    "a",
+    "Turing Award (Redirected from Alan turing award) American an",
+    0
+   ],
+   [
+    13,
+    "a",
+    "Search for pages containing Alan Turing",
+    0
+   ]
+  ],
+  "exactArticle": true,
+  "enigmaTrap": true,
+  "dom": {
+   "listboxes": [
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": true,
+     "text": "Alan Turing English computer scientist (1912–1954) Alan Turing Institute Research institute in Brita"
+    },
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": false,
+     "text": ""
+    }
+   ],
+   "suggestionNodes": [
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing English computer scientist (1912–1954)"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing Institute Research institute in Britain"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing law 2017 British law pardoning formerly illegal sex acts"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing: The Enigma Biography by Andrew Hodges"
+    }
+   ],
+   "inputValue": "Alan Turing"
+  }
+ },
+ {
+  "label": "t800",
+  "dt": 806,
+  "items": 279,
+  "covered": 15,
+  "truncated": false,
+  "alanHits": [
+   [
+    3,
+    "a",
+    "Alan Turing English computer scientist (1912–1954)",
+    0
+   ],
+   [
+    4,
+    "a",
+    "Alan Turing Institute Research institute in Britain",
+    0
+   ],
+   [
+    5,
+    "a",
+    "Alan Turing law 2017 British law pardoning formerly illegal ",
+    0
+   ],
+   [
+    6,
+    "a",
+    "Alan Turing: The Enigma Biography by Andrew Hodges",
+    0
+   ],
+   [
+    7,
+    "a",
+    "Alan Turing Memorial Memorial in Manchester, England",
+    0
+   ],
+   [
+    8,
+    "a",
+    "Alan Turing Building Building at the University of Mancheste",
+    0
+   ],
+   [
+    9,
+    "a",
+    "Alan Turing Year International observance",
+    0
+   ],
+   [
+    10,
+    "a",
+    "Alan Turing Centenary Conference Computer Science Conference",
+    0
+   ],
+   [
+    11,
+    "a",
+    "Alan Turing (sculpture) 1988 sculpture of Alan Turing",
+    0
+   ],
+   [
+    12,
+    "a",
+    "Turing Award (Redirected from Alan turing award) American an",
+    0
+   ],
+   [
+    13,
+    "a",
+    "Search for pages containing Alan Turing",
+    0
+   ]
+  ],
+  "exactArticle": true,
+  "enigmaTrap": true,
+  "dom": {
+   "listboxes": [
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": true,
+     "text": "Alan Turing English computer scientist (1912–1954) Alan Turing Institute Research institute in Brita"
+    },
+    {
+     "tag": "UL",
+     "role": "listbox",
+     "cls": "cdx-menu__listbox",
+     "visible": false,
+     "text": ""
+    }
+   ],
+   "suggestionNodes": [
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing English computer scientist (1912–1954)"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing Institute Research institute in Britain"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing law 2017 British law pardoning formerly illegal sex acts"
+    },
+    {
+     "tag": "LI",
+     "role": "option",
+     "cls": "cdx-menu-item cdx-menu-item--enabled cdx-menu-item--bold-lab",
+     "inSelector": false,
+     "text": "Alan Turing: The Enigma Biography by Andrew Hodges"
+    }
+   ],
+   "inputValue": "Alan Turing"
+  }
+ }
+]
