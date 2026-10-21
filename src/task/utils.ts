@@ -111,7 +111,75 @@ export function goalTokensOf(goal: string): string[] {
   return [...new Set([...(goal.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []), ...cjk])]
 }
 
-const STOP_TOKENS = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'that', 'this', 'only', 'then', 'your', 'their'])
+const STOP_TOKENS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'into', 'that', 'this', 'only', 'then', 'your', 'their',
+  'page', 'button', 'link', 'item', 'items', 'field', 'fields', 'form', 'given', 'values', 'value',
+  'click', 'open', '点击', '按钮', '链接', '附近',
+])
+
+/** 高频跨语言 UI 意图词同义映射（零成本打通中文目标操作英文站 / 英文目标操作中文站）。 */
+const UI_SYNONYM_GROUPS: readonly (readonly string[])[] = [
+  ['搜索', '查询', '检索', '查找', 'search', 'query', 'find'],
+  ['登录', '登陆', 'login', 'signin', 'sign'],
+  ['注册', 'register', 'signup'],
+  ['购物车', '加购', 'cart', 'basket', 'bag'],
+  ['结账', '结算', '买单', 'checkout', 'pay'],
+  ['评论', '讨论', 'comment', 'comments', 'discuss'],
+  ['删除', '移除', 'delete', 'remove'],
+  ['清空', '清除', '重置', 'clear', 'reset'],
+  ['提交', '确认', '保存', 'submit', 'save', 'confirm', 'continue'],
+  ['关闭', '取消', '关掉', 'close', 'dismiss', 'cancel'],
+  ['设置', '偏好', 'settings', 'setting', 'preferences'],
+  ['编辑', '修改', 'edit', 'modify', 'update'],
+  ['添加', '新建', '创建', 'add', 'create', 'new'],
+  ['下载', 'download'],
+  ['上传', 'upload'],
+]
+
+/** 轻量英文词干归一（复数/时态还原），不引入外部依赖。 */
+export function stemToken(token: string): string[] {
+  if (!/^[a-z]+$/.test(token) || token.length < 4) return [token]
+  const stems = new Set<string>([token])
+  if (token.endsWith('ies') && token.length >= 5) stems.add(`${token.slice(0, -3)}y`)
+  if (token.endsWith('es') && token.length >= 5) {
+    stems.add(token.slice(0, -2))
+    stems.add(token.slice(0, -1))
+  } else if (token.endsWith('s') && !token.endsWith('ss')) {
+    stems.add(token.slice(0, -1))
+  }
+  if (token.endsWith('ing') && token.length >= 6) stems.add(token.slice(0, -3))
+  if (token.endsWith('ed') && token.length >= 5) {
+    stems.add(token.slice(0, -2))
+    stems.add(token.slice(0, -1))
+  }
+  return [...stems]
+}
+
+/**
+ * 用于候选相关性排序的扩展目标词（过滤虚词 + 英文词干 + 跨语言 UI 同义词）。
+ */
+export function expandedGoalTokensOf(goal: string): string[] {
+  const base = goalTokensOf(goal).filter((token) => !STOP_TOKENS.has(token))
+  const out = new Set<string>()
+  for (const token of base) {
+    for (const stem of stemToken(token)) out.add(stem)
+    for (const group of UI_SYNONYM_GROUPS) {
+      if (group.includes(token)) {
+        for (const syn of group) out.add(syn)
+      }
+    }
+  }
+  return [...out]
+}
+
+/** ASCII 词按词边界匹配（`text` 不命中 `Textarea`），中文按子串匹配。 */
+export function hasTokenBoundary(haystack: string, token: string): boolean {
+  const lower = haystack.toLowerCase()
+  if (lower === '' || token === '') return false
+  if (/[\u4e00-\u9fa5]/.test(token)) return lower.includes(token)
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`).test(lower)
+}
 
 /**
  * goal 是否点名了这个字段名：ASCII 词按词边界匹配（`text` 不命中 `Textarea`），
@@ -122,11 +190,7 @@ export function goalMentions(name: string, goal: string): boolean {
   if (lower === '') return false
   return goalTokensOf(goal)
     .filter((token) => !STOP_TOKENS.has(token))
-    .some((token) => {
-      if (/[\u4e00-\u9fa5]/.test(token)) return lower.includes(token)
-      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`).test(lower)
-    })
+    .some((token) => hasTokenBoundary(lower, token))
 }
 
 /** 目标里点名要按的键（press Escape / 按 Enter / 按 Control+a）。 */
