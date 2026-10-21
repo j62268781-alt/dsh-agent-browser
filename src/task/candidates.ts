@@ -152,7 +152,8 @@ export function rankByGoal<T extends TaskCandidate>(list: readonly T[], goal: st
         total += 1
       }
       // 通用动作按钮（如 Add to cart / Edit / comments）名字本身外，所在行 near 命中具体条目词额外协同加分
-      if (name !== '' && !name.includes(token) && near !== '') {
+      // 但 near 对同一 token 只计一次，避免上面的上下文层与协同项重复抬分。
+      if (name !== '' && hasTokenBoundary(name, token) && near !== '') {
         if (hasTokenBoundary(near, token)) total += 2
         else if (near.includes(token)) total += 1
       }

@@ -33,7 +33,7 @@ const SCRIPT_LINES = [
   '  const out = []',
   '  let idx = 0',
   '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
-  '  const nodes = Array.from(new Set(document.querySelectorAll(selector)))',
+  '  let nodes = Array.from(new Set(document.querySelectorAll(selector)))',
   // **可排序表头**：jQuery tablesorter 这类插件把点击事件**委托**在 <th> 上
   // （没有 onclick 属性、没有 role/tabindex），只按标签/属性抓会整列漏掉。
   // 真机 ti-sort-table：18 个候选全是 edit/delete 链接，判断层根本看不到"排序"这个动作
@@ -77,6 +77,20 @@ const SCRIPT_LINES = [
   '    }',
   '  }',
   '  for (const leaf of pointerLeaves) nodes.push(leaf)',
+  // **超上限时先保主内容区**：抽取只保留前 300 个元素，而门户/后台页面的页头导航动辄几十上百个链接。
+  // 按 DOM 顺序截断会让导航把主内容区的目标控件挤出候选（目标"看不见"，判断层只能盲选）。
+  // 只在**确实超上限**时把导航/页脚/页头元素排到后面，普通页面顺序完全不变。
+  '  if (nodes.length > 300) {',
+  '    const primary = []',
+  '    const secondary = []',
+  '    for (const node of nodes) {',
+  '      let isNav = false',
+  "      try { isNav = Boolean(node.closest && node.closest('nav,header,footer,[role=\"navigation\"],[role=\"banner\"],[role=\"contentinfo\"]')) } catch (err) { isNav = false }",
+  '      if (isNav) secondary.push(node)',
+  '      else primary.push(node)',
+  '    }',
+  '    nodes = primary.concat(secondary)',
+  '  }',
   '  for (const el of nodes) {',
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
