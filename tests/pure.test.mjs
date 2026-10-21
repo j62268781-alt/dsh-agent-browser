@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -399,6 +399,29 @@ test('字段名归一：下划线/连字符/大小写都算同一个字段', () 
   assert.equal(matchInputValue(candidate, { postal_code: '10001' }), undefined)
 })
 
+test('候选排序：near 上下文对同一 token 只贡献一次，精确名称保持优先', () => {
+  const generic = { id: 'click:generic', description: '', kind: 'click', role: 'button', name: 'View', near: 'top story' }
+  const exact = { id: 'click:exact', description: '', kind: 'click', role: 'button', name: 'top' }
+  assert.equal(rankByGoal([generic, exact], 'top')[0]?.id, 'click:exact')
+})
+
+test('字段匹配：精确名优先，宽松词组匹配唯一时才绑定', () => {
+  const fields = [
+    { id: 'input:text', description: '', kind: 'input', role: 'textbox', name: 'Text input' },
+    { id: 'input:textarea', description: '', kind: 'input', role: 'textbox', name: 'Textarea' },
+  ]
+  const matches = inputMatchesOf(fields, { text: 'hello' })
+  assert.equal(matches.get('input:text')?.value, 'hello')
+  assert.equal(matches.has('input:textarea'), false)
+
+  const ambiguous = [
+    { id: 'input:first', description: '', kind: 'input', role: 'textbox', name: 'First Name' },
+    { id: 'input:billing', description: '', kind: 'input', role: 'textbox', name: 'First Name Billing' },
+  ]
+  assert.equal(inputMatchesOf(ambiguous, { first: 'Ada' }).size, 0)
+  assert.equal(pendingFieldOf(ambiguous, { first: 'Ada' }), undefined)
+})
+
 test('抽取：可排序表头（th.header / role=columnheader / cursor:pointer）进候选池', async () => {
   const { JSDOM } = await import('jsdom')
   const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
@@ -421,6 +444,27 @@ test('抽取：可排序表头（th.header / role=columnheader / cursor:pointer�
   assert.ok(headers.some((item) => item.name === 'Last Name'), `表头应进候选，实际：${JSON.stringify(page.items)}`)
   assert.ok(headers.some((item) => item.name === 'Amount'), 'role=columnheader 的表头也要进')
   assert.ok(!headers.some((item) => item.name === 'First Name'), '没有排序迹象的普通表头不该进（噪声）')
+})
+
+test('抽取：超过 300 上限时先保主内容区，导航链接不挤掉目标控件', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const navLinks = Array.from({ length: 320 }, (_, index) => `<a href="/nav${index}">Nav ${index}</a>`).join('')
+  const dom = new JSDOM(
+    `<nav>${navLinks}</nav><main><button>Checkout</button></main>`,
+    { url: 'https://a.test/dense', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 100, height: 20, top: 10, left: 10, right: 110, bottom: 30, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  assert.equal(page.truncated, true)
+  assert.ok(
+    page.items.some((item) => item.name === 'Checkout'),
+    `主内容区控件不能被导航挤掉，实际候选数：${page.items.length}`,
+  )
 })
 
 test('抽取：可见弹层里 cursor:pointer 的叶子控件（<p>Close</p>）进候选池', async () => {
@@ -502,6 +546,31 @@ test('candidatesFromExtracted：稠密页（>40 个点击项）在 choose/dropdo
   const combo = candidates.find((c) => c.role === 'combobox')
   assert.ok(combo !== undefined, 'combobox 不应被前 40 个普通点击项截丢')
   assert.equal(candidates[0]?.role, 'combobox', `combobox 应排在第一位（高于 Remove Purple），实际首位：${JSON.stringify(candidates[0])}`)
+})
+
+test('inputsApplied：读回为空的原生字段不算生效；目标点名禁用控件时也不许收尾', () => {
+  // 写入没有生效（原生 input 读回仍为空）→ 不能因为"调用过 fill"就宣布完成。
+  const emptyField = [{ id: 'input:0', description: 'x', kind: 'input', role: 'textbox', name: 'Text input', tag: 'input' }]
+  assert.equal(inputsApplied(emptyField, { text: 'x' }, new Map([['input:0', 'x']])), false)
+  // 真的读回了值才算生效。
+  const filledField = [{ ...emptyField[0], state: '已有内容: x' }]
+  assert.equal(inputsApplied(filledField, { text: 'x' }, new Map([['input:0', 'x']])), true)
+  // 目标要往禁用控件里输入，而它仍然是禁用的 → 不声称完成。
+  const disabled = [{ id: 'input:1', description: 'x', kind: 'input', role: 'textbox', name: 'Text input', tag: 'input', state: '已有内容: x' },
+    { id: 'input:2', description: 'x', kind: 'input', role: 'textbox', name: 'Disabled input', tag: 'input', state: '已禁用' }]
+  assert.equal(inputsApplied(disabled, { text: 'x' }, new Map([['input:1', 'x']]), 'Type into the disabled input field'), false)
+  assert.equal(inputsApplied(disabled, { text: 'x' }, new Map([['input:1', 'x']]), 'Fill in the text input'), true)
+})
+
+test('urlChangeMatchesGoal：导航证据要求完整词，导航条里的近似链接不算命中', () => {
+  const start = 'https://news.ycombinator.com/'
+  // 真机 hn-comments：点到页头的 /newcomments 时，不能把 "comments" 当成目标页。
+  assert.equal(urlChangeMatchesGoal('Open the comments page of the top story', start, `${start}newcomments`), undefined)
+  // 真正的目标页仍然命中。
+  assert.equal(urlChangeMatchesGoal('Open the comments page', start, `${start}comments`), 'comments')
+  // 连字符/点/问号都是词边界，正常的真实命中不受影响。
+  assert.equal(urlChangeMatchesGoal('Go to checkout', 'https://shop.test/inventory.html', 'https://shop.test/checkout-step-one.html'), 'checkout')
+  assert.equal(urlChangeMatchesGoal('Open the cart', 'https://shop.test/', 'https://shop.test/cart.html'), 'cart')
 })
 
 test('urlChangeMatchesGoal：两跳纯导航目标只认末跳目的地词（不在第一跳提前收尾）', () => {

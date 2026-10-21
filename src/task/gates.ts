@@ -11,7 +11,7 @@ import {
   TEXT_ENTRY_ROLES,
   type TaskCandidate,
 } from './types.js'
-import { fieldName, goalMentions, goalTokensOf } from './utils.js'
+import { fieldName, goalMentions, goalTokensOf, stemToken } from './utils.js'
 
 /** 从抽取的 `state` 文本里读出"当前状态"。 */
 export function stateOf(candidate: TaskCandidate): { checked?: boolean; value?: string; redacted?: boolean } {
@@ -41,17 +41,60 @@ export function valueMatchesCandidate(candidate: TaskCandidate, currentValue: st
   }
   return false
 }
-/** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
+/** 调用方给的字段值 → 候选。模糊匹配只接受完整词组前缀，且必须唯一。 */
 export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Record<string, string>>): string | undefined {
   if (inputs === undefined) return undefined
   const name = fieldName(candidate.name ?? '')
   if (name === '') return undefined
-  for (const [key, value] of Object.entries(inputs)) {
-    const normalized = fieldName(key)
-    if (normalized === '') continue
-    if (normalized === name || name.includes(normalized) || normalized.includes(name)) return value
+  const entries = Object.entries(inputs).map(([key, value]) => ({ key: fieldName(key), value }))
+  const exact = entries.filter((entry) => entry.key !== '' && entry.key === name)
+  if (exact.length === 1) return exact[0]?.value
+  if (exact.length > 1) return undefined
+  const fuzzy = entries.filter(
+    (entry) => entry.key !== '' && (name.startsWith(`${entry.key} `) || entry.key.startsWith(`${name} `)),
+  )
+  return fuzzy.length === 1 ? fuzzy[0]?.value : undefined
+}
+
+/** 在当前页面候选中建立无歧义的 key→字段映射；任何多对一或一对多都不自动绑定。 */
+export function inputMatchesOf(
+  candidates: readonly TaskCandidate[],
+  inputs?: Readonly<Record<string, string>>,
+): ReadonlyMap<string, { key: string; value: string }> {
+  const result = new Map<string, { key: string; value: string }>()
+  if (inputs === undefined) return result
+  const fields = candidates.filter((candidate) => candidate.kind === 'input' || ['checkbox', 'radio', 'switch'].includes(candidate.role ?? ''))
+  const entries = Object.entries(inputs).map(([key, value]) => ({ key, normalized: fieldName(key), value }))
+  const exactKeys = new Set<string>()
+  for (const entry of entries) {
+    const exact = fields.filter((candidate) => fieldName(candidate.name ?? '') === entry.normalized)
+    if (exact.length === 1) {
+      const candidate = exact[0]!
+      if (!result.has(candidate.id)) {
+        result.set(candidate.id, { key: entry.key, value: entry.value })
+        exactKeys.add(entry.key)
+      }
+    }
   }
-  return undefined
+  const fuzzyByField = new Map<string, Array<{ key: string; value: string }>>()
+  for (const entry of entries) {
+    if (exactKeys.has(entry.key) || entry.normalized === '') continue
+    const matches = fields.filter((candidate) => {
+      if (result.has(candidate.id)) return false
+      const name = fieldName(candidate.name ?? '')
+      return name !== '' && (name.startsWith(`${entry.normalized} `) || entry.normalized.startsWith(`${name} `))
+    })
+    if (matches.length === 1) {
+      const candidate = matches[0]!
+      const list = fuzzyByField.get(candidate.id) ?? []
+      list.push({ key: entry.key, value: entry.value })
+      fuzzyByField.set(candidate.id, list)
+    }
+  }
+  for (const [id, matches] of fuzzyByField) {
+    if (matches.length === 1) result.set(id, matches[0]!)
+  }
+  return result
 }
 
 /**
@@ -165,10 +208,11 @@ export function pendingFieldOf(
   consumedValues?: ReadonlySet<string>,
 ): TaskCandidate | undefined {
   if (inputs === undefined) return undefined
+  const inputMatches = inputMatchesOf(candidates, inputs)
   for (const candidate of candidates) {
     if (candidate.kind !== 'input' && candidate.role !== 'checkbox' && candidate.role !== 'radio' && candidate.role !== 'switch') continue
     if ((candidate.state ?? '').includes('已禁用')) continue
-    const wanted = matchInputValue(candidate, inputs)
+    const wanted = inputMatches.get(candidate.id)?.value
     if (wanted === undefined) continue
     const state = stateOf(candidate)
     if (state.redacted === true) continue
@@ -277,7 +321,20 @@ export function urlChangeMatchesGoal(goal: string, startUrl: string, currentUrl:
   const tokens = goalTokensOf(targetScope).filter(
     (token) => /[a-z0-9]/.test(token) && token.length >= 4 && !stopWords.has(token),
   )
-  return tokens.find((token) => delta.includes(token))
+  return tokens.find((token) => hasUrlWordBoundary(delta, token))
+}
+
+/**
+ * 目标词是否以**完整词**出现在地址增量里。
+ *
+ * 真机 hn-comments：目标 "...comments page of the top story"，点到了页头的 `newcomments` 链接，
+ * 旧实现用 `delta.includes('comments')` 直接把 `/newcomments` 当成目标页 → 假完成。
+ * 现在按非字母数字切成词再比对，并允许词干相等（`shakespeares` ↔ `shakespeare`）；
+ * `/checkout-step-one.html`、`/cart.html`、`/item?id=1` 这类真实命中照旧成立。
+ */
+function hasUrlWordBoundary(delta: string, token: string): boolean {
+  const words = delta.split(/[^a-z0-9]+/).filter((word) => word !== '')
+  return words.some((word) => word === token || stemToken(word).includes(token))
 }
 
 /** 控件名里的提交类动词（没有就是 undefined）。 */
@@ -298,6 +355,37 @@ export function namedSubmitGoal(goal: string): boolean {
   return true
 }
 
+/** 原生表单控件：抽取一定能读回它的值（读回空 = 写入没生效，不能算已生效）。 */
+function isReadableField(candidate: TaskCandidate): boolean {
+  const tag = (candidate.tag ?? '').toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
+  // 整树路径的候选没有 tag：无法读回，不做"未生效"判定。
+  return false
+}
+
+/** 这个字段当前是否**读回**了期望值（正向证据，不看"调用过什么动作"）。 */
+function readsBackValue(candidate: TaskCandidate, value: string): boolean {
+  const st = stateOf(candidate)
+  if (st.redacted === true) return true
+  if (st.checked !== undefined) return st.checked === /^(1|true|yes|on|y|是)$/i.test(value)
+  if (st.value === undefined) return false
+  return valueMatchesCandidate(candidate, st.value, value)
+}
+
+/** 本轮刚填过的字段：读回空串说明这次写入**没生效**（禁用/只读/被站点清空），不能当已完成。 */
+function filledAndHolds(
+  candidate: TaskCandidate,
+  value: string,
+  filled?: ReadonlyMap<string, string>,
+): boolean {
+  if (filled?.get(candidate.id) !== value) return false
+  const st = stateOf(candidate)
+  if (st.redacted === true || st.checked !== undefined) return true
+  if (st.value === undefined) return !isReadableField(candidate)
+  // 读到的是旧值 = 站点还没回写（异步更新）→ 信任本轮填值记账。
+  return true
+}
+
 /** 调用方给的值是否全部已经在页面上生效（纯确定性，不看判断层）。 */
 export function inputsApplied(
   candidates: readonly TaskCandidate[],
@@ -309,33 +397,32 @@ export function inputsApplied(
   if (inputs === undefined) return false
   const entries = Object.entries(inputs)
   if (entries.length === 0) return false
+  // 目标点名要往**禁用**控件里输入，而那个控件现在仍然禁用：值不可能写进去，
+  // 不能因为"别的字段填上了"就宣布完成（真机 neg-disabled 假完成归因）。
+  if (/\bdisabled\b|禁用/i.test(goal) && candidates.some((candidate) => (candidate.state ?? '').includes('已禁用'))) {
+    return false
+  }
+  const inputMatches = inputMatchesOf(candidates, inputs)
   for (const [key, value] of entries) {
     if (verified?.has(key) === true) continue
     // 若本轮已将 value 填入某个候选字段，且该字段当前仍保持该值（或为已打码密码框），直接视为已生效
     // （防止 webform-fine 中通用 key `{text: '09/16/2026'}` 在填完 Date picker 后又去检查 Text input 导致覆写）。
-    const filledAndPresent = candidates.some((candidate) => {
-      if (filled?.get(candidate.id) !== value) return false
-      const st = stateOf(candidate)
-      return st.redacted === true || st.checked !== undefined || st.value === undefined || valueMatchesCandidate(candidate, st.value, value)
-    })
+    const filledAndPresent = candidates.some((candidate) => filledAndHolds(candidate, value, filled))
     if (filledAndPresent) continue
     const single = { [key]: value }
-    const matched = candidates.filter((candidate) => matchInputValue(candidate, single) !== undefined)
+    const matched = candidates.filter((candidate) => inputMatches.get(candidate.id)?.key === key)
     if (matched.length === 0) {
       // 唯一值 + 页面上已存在填入该值的输入框（如 ti-dynamic-controls 的匿名 textbox）：也算已生效
-      const soleApplied =
-        entries.length === 1 &&
-        candidates.some(
-          (candidate) =>
-            candidate.kind === 'input' &&
-            (filled?.get(candidate.id) === value ||
-              (stateOf(candidate).value !== undefined && valueMatchesCandidate(candidate, stateOf(candidate).value!, value))),
-        )
+      const soleApplied = entries.length === 1 && candidates.some(
+        (candidate) =>
+          candidate.kind === 'input' &&
+          (readsBackValue(candidate, value) || filledAndHolds(candidate, value, filled)),
+      )
       if (soleApplied) continue
       return false
     }
     const applied = matched.some(
-      (candidate) => filled?.get(candidate.id) === value || isAlreadySatisfied(candidate, goal, single),
+      (candidate) => readsBackValue(candidate, value) || isAlreadySatisfied(candidate, goal, single),
     )
     if (!applied) return false
   }

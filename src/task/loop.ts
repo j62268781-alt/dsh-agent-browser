@@ -25,10 +25,10 @@ import {
   finalNavigationClauseOf,
   FOLLOW_UP_VERBS,
   inputsApplied,
+  inputMatchesOf,
   isAlreadySatisfied,
   isTextEntry,
   looksLikeErrorPage,
-  matchInputValue,
   namedSubmitGoal,
   pendingFieldOf,
   pickAlternate,
@@ -713,7 +713,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       snapshot_chars: snapshot.snapshot.length,
       snapshot_truncated: truncated,
       ...(extractionTruncated ? { extraction_truncated: true } : {}),
-      page_text: clipHeadTail(pageText, CONFIRM_TEXT_CAP),
+      page_text: clipHeadTail(
+        extractionTruncated
+          ? `${pageText}\n（候选已达 300 个元素上限：页面上还有更多可操作元素没列出来，目标控件可能不在候选里）`
+          : pageText,
+        CONFIRM_TEXT_CAP,
+      ),
       page_title: String(pageTitle).slice(0, 300),
       ...(lastChange === undefined ? {} : { last_change: lastChange }),
       ...(batchAskTargetMatch && lastExecutedStep !== undefined ? { last_action: lastExecutedStep.action, last_action_description: lastDescription } : {}),
@@ -840,7 +845,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (chosenForGate === undefined || chosenForGate.kind !== 'input') return undefined
       if (consumedByEnter.has(chosenForGate.id)) return undefined
       const wanted =
-        matchInputValue(chosenForGate, deps.inputs) ??
+        inputMatchesOf(candidates, deps.inputs).get(chosenForGate.id)?.value ??
         (selectedValueKeyForGate === undefined ? undefined : deps.inputs?.[selectedValueKeyForGate])
       if (wanted === undefined) return undefined
       const stateVal = stateOf(chosenForGate)
@@ -1080,7 +1085,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           chosen = better
         }
       }
-      let given = matchInputValue(chosen, deps.inputs) ?? soleValueFor(candidates, deps.inputs)
+      let given = inputMatchesOf(candidates, deps.inputs).get(chosen.id)?.value ?? soleValueFor(candidates, deps.inputs)
       if (given === undefined) {
         const valueAnswer = answers.value
         if (valueAnswer?.kind === 'choice' && valueAnswer.optionId.startsWith('value:')) {
@@ -1168,11 +1173,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           // 把当前页上名字确定性匹配、尚未填写的其余字段在同一步内顺手填完，省去 N-1 步重新抽取与 N-1 次 Jev 调用。
           let lastBatchCandidate = chosen
           if (observedPage.mode === 'extract' && fillMismatches === 0 && deps.inputs !== undefined && Object.keys(deps.inputs).length > 1) {
+            const batchInputMatches = inputMatchesOf(candidates, deps.inputs)
             for (const other of candidates) {
               if (other.id === chosen.id || filledFields.has(other.id)) continue
               if ((other.state ?? '').includes('已禁用')) continue
               if (other.kind !== 'input' && other.role !== 'checkbox' && other.role !== 'radio' && other.role !== 'switch') continue
-              const otherVal = matchInputValue(other, deps.inputs)
+              const otherVal = batchInputMatches.get(other.id)?.value
               if (otherVal === undefined || consumedValues.has(otherVal) || [...filledFields.values()].includes(otherVal)) continue
               if (isAlreadySatisfied(other, goal, deps.inputs)) continue
               try {
@@ -1344,7 +1350,13 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     // 7) 执行一个动作
     try {
       const actStarted = now()
-      const executed = await execute(deps.browser, chosen, deps.signal, deps.inputs)
+      const chosenInputMatch = inputMatchesOf(candidates, deps.inputs).get(chosen.id)
+      const executed = await execute(
+        deps.browser,
+        chosen,
+        deps.signal,
+        chosenInputMatch === undefined ? undefined : { [chosenInputMatch.key]: chosenInputMatch.value },
+      )
       lastJsClick = executed.jsClicked
       // 关键修复：非输入动作执行成功后必须重置 lastActionWasText = false，
       // 否则 wiki-search / todomvc 在第 1 步打完字后会在第 2..10 步永远重复按 Enter。
