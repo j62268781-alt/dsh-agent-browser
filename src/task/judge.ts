@@ -76,7 +76,7 @@ export function questionsOf(
   goal: string,
   candidates: readonly TaskCandidate[],
   inputs?: Readonly<Record<string, string>>,
-  options: { hasLastChange?: boolean } = {},
+  options: { hasLastChange?: boolean; askTargetMatch?: boolean } = {},
 ): JudgmentQuestions {
   const valueQuestion = candidates.some((candidate) => candidate.kind === 'input') ? valueQuestionOf(inputs) : undefined
   return {
@@ -122,6 +122,18 @@ export function questionsOf(
               true: 'last_change 里能直接看到目标要求的那个变化',
               false: 'last_change 里没有目标要求的那个变化，或只是无关变化',
             },
+          },
+        }
+      : {}),
+    ...(options.askTargetMatch === true
+      ? {
+          target_match: {
+            kind: 'noul' as const,
+            prompt:
+              `state.last_action_description 是上一步实际点的控件。用户的目标是：「${truncate(goal, 200)}」。` +
+              '这个控件是否就是目标所指的那个对象？如果只是**同名的导航/全局链接**、' +
+              '或者目标要的是某个**具体条目**而点的是它的全局入口，判否。',
+            criteria: { true: '点的正是目标指的那个对象', false: '点的是同名导航/全局入口，不是目标对象' },
           },
         }
       : {}),
@@ -226,10 +238,22 @@ export async function confirmGoal(
   goal: string,
   usage: { calls: number; inputTokens: number; outputTokens: number },
   trace: string[],
-  context: { lastAction?: string; lastActionDescription?: string; lastChange?: LastChange } = {},
+  context: {
+    lastAction?: string
+    lastActionDescription?: string
+    lastChange?: LastChange
+    existingPageText?: string
+    existingPageTitle?: string
+  } = {},
 ): Promise<{ confirmed: boolean; probability: number }> {
-  const pageText = await visibleText(deps, snapshot, trace, undefined)
-  const pageTitle = await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
+  const pageText =
+    context.existingPageText !== undefined && context.existingPageText.length >= 40
+      ? context.existingPageText
+      : await visibleText(deps, snapshot, trace, undefined)
+  const pageTitle =
+    context.existingPageTitle !== undefined && context.existingPageTitle !== ''
+      ? context.existingPageTitle
+      : await deps.browser.get('title', undefined, undefined, { signal: deps.signal }).catch(() => '')
   const resultShaped = /(until|appears?|appeared|visible|shown|shows?|load(?:ed|s|ing)?|结果|出现|显示|看到|可见|加载完成)/i.test(goal)
   const isControlAction = (context.lastAction ?? '').startsWith('control:')
   const askTargetMatch = context.lastActionDescription !== undefined && !isControlAction

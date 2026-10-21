@@ -29,7 +29,11 @@ export async function fillFromInputs(
     candidate.options !== undefined ||
     (role === 'combobox' && (candidate.state ?? '').startsWith('当前值:'))
   if (isNativeSelect) {
-    await browser.act('select', ref, { value }, { signal })
+    const matchedOption = candidate.options?.find(
+      (opt) => opt.value === value || opt.label.trim().toLowerCase() === value.trim().toLowerCase(),
+    )
+    const selectVal = matchedOption !== undefined && matchedOption.value !== '' ? matchedOption.value : value
+    await browser.act('select', ref, { value: selectVal }, { signal })
     return
   }
   if (role === 'checkbox' || role === 'radio' || role === 'switch') {

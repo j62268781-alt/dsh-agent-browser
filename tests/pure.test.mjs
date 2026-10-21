@@ -509,3 +509,68 @@ test('urlChangeMatchesGoal：两跳纯导航目标只认末跳目的地词（不
   assert.equal(urlChangeMatchesGoal(goal, 'https://www.saucedemo.com/inventory.html', 'https://www.saucedemo.com/cart.html'), undefined)
   assert.equal(urlChangeMatchesGoal(goal, 'https://www.saucedemo.com/inventory.html', 'https://www.saucedemo.com/checkout-step-one.html'), 'checkout')
 })
+
+test('抽取：通用 ARIA 状态（expanded/selected/pressed/disabled）、主内容区 inMain 标记与孪生父壳去重', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<nav><a href="/home">Home</a></nav>' +
+      '<main>' +
+      '  <button aria-expanded="false">Menu</button>' +
+      '  <button role="tab" aria-selected="true">Issues</button>' +
+      '  <button aria-pressed="true">Star</button>' +
+      '  <input type="text" placeholder=" LockedField " disabled>' +
+      '  <div role="button" onclick="noop()"><button>Checkout</button></div>' +
+      '</main>',
+    { url: 'https://a.test/app', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 80, height: 24, top: 10, left: 10, right: 90, bottom: 34, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+
+  const home = page.items.find((item) => item.name === 'Home')
+  const menu = page.items.find((item) => item.name === 'Menu')
+  const issues = page.items.find((item) => item.name === 'Issues')
+  const star = page.items.find((item) => item.name === 'Star')
+  const locked = page.items.find((item) => item.name === 'LockedField')
+  const checkouts = page.items.filter((item) => item.name === 'Checkout')
+
+  assert.equal(home?.inMain, false, 'nav 内链接应标记 inMain=false')
+  assert.equal(menu?.inMain, true, 'main 内按钮应标记 inMain=true')
+  assert.equal(menu?.state, '已收起')
+  assert.equal(issues?.state, '已选中')
+  assert.equal(star?.state, '已按下')
+  assert.equal(locked?.state, '已禁用')
+  assert.equal(checkouts.length, 1, `外层 div[role=button] 与内层 <button> 同名孪生节点应去重为 1 个，实际：${JSON.stringify(checkouts)}`)
+})
+
+test('rankByGoal：分层打分、同名序号 #1/#2、主内容区优先与重复项多样性封顶（Top-10 不被同名按钮塞满）', () => {
+  // 1) 同名或同角色控件自动标注 #1 / #2，且 second radio 精准命中 #2
+  const radios = candidatesFromExtracted(
+    [
+      { index: 0, role: 'radio', name: 'Checked radio', covered: false, state: '已勾选' },
+      { index: 1, role: 'radio', name: 'Default radio', covered: false, state: '未勾选' },
+    ],
+    'Select the second radio button',
+  )
+  assert.match(radios[0].description, /radio #2/, `第 2 个 radio 应排第一且带 #2 标注：${radios[0].description}`)
+  assert.equal(radios[0].name, 'Default radio')
+
+  // 2) 列表页 15 个未命中目标的同名 View Details 按钮最多保留 2 个在第一梯队，把名额让给底部的唯一业务按钮且主内容区优先于导航栏
+  const listItems = [
+    { index: 0, role: 'a', name: 'Global Nav', covered: false, inMain: false },
+    ...Array.from({ length: 15 }, (_, i) => ({ index: i + 1, role: 'button', name: 'View Details', covered: false, inMain: true })),
+    { index: 16, role: 'button', name: 'Publish Post', covered: false, inMain: true },
+  ]
+  const ranked = candidatesFromExtracted(listItems, '点击底部按钮')
+  const top4Names = ranked.slice(0, 4).map((c) => c.name)
+  assert.deepEqual(
+    top4Names,
+    ['View Details', 'View Details', 'Publish Post', 'Global Nav'],
+    `未命中的同名 View Details 只保留前 2 个在第一梯队，底部 Publish Post 应跃升至第 3 位（高于 View Details #3..#15 与导航栏）：${JSON.stringify(top4Names)}`,
+  )
+  assert.equal(ranked[0]?.inMain, true, '字面无重合时主内容区控件应排在页头导航链接之前')
+})

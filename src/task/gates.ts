@@ -23,6 +23,24 @@ export function stateOf(candidate: TaskCandidate): { checked?: boolean; value?: 
   return value === undefined ? {} : { value: value.trim() }
 }
 
+/** 候选当前值是否已等于期望值（含原生 `<select>` 的 label ↔ value 映射，如 `Two` ↔ `2`）。 */
+export function valueMatchesCandidate(candidate: TaskCandidate, currentValue: string, wanted: string): boolean {
+  const cur = currentValue.trim()
+  const target = wanted.trim()
+  if (cur === target || cur.toLowerCase() === target.toLowerCase()) return true
+  if (candidate.options !== undefined) {
+    const matchedOpt = candidate.options.find(
+      (opt) => opt.value.trim() === cur || opt.label.trim().toLowerCase() === cur.toLowerCase(),
+    )
+    if (
+      matchedOpt !== undefined &&
+      (matchedOpt.label.trim().toLowerCase() === target.toLowerCase() || matchedOpt.value.trim() === target)
+    ) {
+      return true
+    }
+  }
+  return false
+}
 /** 调用方给的字段值 → 候选（按名字匹配：完全相等 → 包含）。 */
 export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Record<string, string>>): string | undefined {
   if (inputs === undefined) return undefined
@@ -49,26 +67,47 @@ export function isAlreadySatisfied(
 ): boolean {
   const state = stateOf(candidate)
   if (state.checked !== undefined) {
-    const clauses = goal.split(/[,，;；]|\band\b/i).map((clause) => clause.trim()).filter(Boolean)
+    const role = (candidate.role ?? '').toLowerCase()
+    const desc = candidate.description.toLowerCase()
+    const clauses = goal.split(/[,，;；]|\band\b|\bthen\b/i).map((clause) => clause.trim()).filter(Boolean)
     const candidateKey = fieldName(candidate.name ?? '')
+    const matchesOrdinalClause = (clause: string): boolean => {
+      if (role !== '' && !clause.toLowerCase().includes(role)) return false
+      if (desc.includes(' #1') && /\b(first|1st)\b|第一|首个/i.test(clause)) return true
+      if (desc.includes(' #2') && /\b(second|2nd)\b|第二/i.test(clause)) return true
+      if (desc.includes(' #3') && /\b(third|3rd)\b|第三/i.test(clause)) return true
+      return false
+    }
     const matchedClause =
-      candidateKey !== '' && clauses.length > 1
-        ? clauses.find((clause) => fieldName(clause).includes(candidateKey)) ??
-          clauses.find((clause) => goalMentions(candidate.name ?? '', clause))
+      clauses.length > 1
+        ? (candidateKey !== '' ? clauses.find((clause) => fieldName(clause).includes(candidateKey)) : undefined) ??
+          (candidateKey !== '' ? clauses.find((clause) => goalMentions(candidate.name ?? '', clause)) : undefined) ??
+          clauses.find(matchesOrdinalClause)
         : undefined
+    // 若目标明确指定了第 N 个同角色控件（如 "Select the second radio button"），而当前候选是其它序号（如 radio #1），
+    // 则当前候选不是目标要选的那一个，不能算"已满足目标"。
+    const checkScope = matchedClause ?? goal
+    if (
+      (/\b(first|1st)\b|第一|首个/i.test(checkScope) && desc.includes(' #') && !desc.includes(' #1')) ||
+      (/\b(second|2nd)\b|第二/i.test(checkScope) && desc.includes(' #') && !desc.includes(' #2')) ||
+      (/\b(third|3rd)\b|第三/i.test(checkScope) && desc.includes(' #') && !desc.includes(' #3'))
+    ) {
+      return false
+    }
     // 多子句时若某个框名字没对上任何子句，不做全局判断，避免把"别的框要勾选"套到当前框上。
     if (clauses.length > 1 && matchedClause === undefined && ENABLE_VERBS.test(goal) && DISABLE_VERBS.test(goal)) {
       return false
     }
     const scope = matchedClause ?? goal
-    if (ENABLE_VERBS.test(scope) && !DISABLE_VERBS.test(scope)) return state.checked
+    const radioSelectVerb = role === 'radio' && /\b(select|choose|pick)\b|选择|选/i.test(scope)
+    if ((ENABLE_VERBS.test(scope) || radioSelectVerb) && !DISABLE_VERBS.test(scope)) return state.checked
     if (DISABLE_VERBS.test(scope) && !ENABLE_VERBS.test(scope)) return !state.checked
     return false
   }
   if (state.redacted === true) return matchInputValue(candidate, inputs) !== undefined
   if (state.value !== undefined) {
     const wanted = matchInputValue(candidate, inputs)
-    if (wanted !== undefined) return wanted.trim() === state.value.trim()
+    if (wanted !== undefined) return valueMatchesCandidate(candidate, state.value, wanted)
   }
   return false
 }
@@ -128,6 +167,7 @@ export function pendingFieldOf(
   if (inputs === undefined) return undefined
   for (const candidate of candidates) {
     if (candidate.kind !== 'input' && candidate.role !== 'checkbox' && candidate.role !== 'radio' && candidate.role !== 'switch') continue
+    if ((candidate.state ?? '').includes('已禁用')) continue
     const wanted = matchInputValue(candidate, inputs)
     if (wanted === undefined) continue
     const state = stateOf(candidate)
@@ -137,19 +177,47 @@ export function pendingFieldOf(
       if (state.checked !== wantChecked) return candidate
       continue
     }
-    if (state.value !== undefined && state.value.trim() !== wanted.trim()) {
+    if (state.value !== undefined && !valueMatchesCandidate(candidate, state.value, wanted)) {
       if (!specificallyNamed(candidate, inputs)) continue
       return candidate
     }
     if (state.value === undefined) {
       if (exhausted?.has(candidate.id) === true) continue
       if (consumedByEnter?.has(candidate.id) === true) continue
-      if (specificallyNamed(candidate, inputs)) return candidate
       if (filled?.has(candidate.id) === true) return candidate
+      if (filled !== undefined && [...filled.values()].includes(wanted)) continue
+      if (specificallyNamed(candidate, inputs)) return candidate
       if (goal !== undefined && goalMentions(candidate.name ?? '', goal)) return candidate
     }
   }
-  // 页面上只有唯一一个文本输入框（如 TodoMVC 的新建框）、当前为空，且调用方给的值还有未通过 Enter 消费的项（如 first/second 里的 second）
+  // 页面上只有唯一一个可用文本输入框（如 ti-dynamic-controls 解禁后的 input，或 TodoMVC 的新建框）、当前为空，
+  // 且调用方给的值还有未生效的项 → 确定性绑定到该唯一输入框。
+  const entries = Object.entries(inputs)
+  if (entries.length === 1 && goal !== undefined && /\b(type|fill|enter|input)\b|输入|填写/i.test(goal)) {
+    const [onlyKey, onlyVal] = entries[0]
+    const alreadyFilled =
+      consumedValues?.has(onlyVal) === true ||
+      [...(filled?.values() ?? [])].includes(onlyVal) ||
+      candidates.some((c) => isAlreadySatisfied(c, goal, { [onlyKey]: onlyVal }))
+    if (!alreadyFilled) {
+      const enabledTextInputs = candidates.filter(
+        (candidate) =>
+          candidate.kind === 'input' &&
+          isTextEntry(candidate) &&
+          !(candidate.state ?? '').includes('已禁用'),
+      )
+      if (enabledTextInputs.length === 1) {
+        const only = enabledTextInputs[0]
+        if (
+          exhausted?.has(only.id) !== true &&
+          consumedByEnter?.has(only.id) !== true &&
+          stateOf(only).value === undefined
+        ) {
+          return only
+        }
+      }
+    }
+  }
   if (consumedValues !== undefined && consumedValues.size > 0) {
     const hasUnconsumed = Object.values(inputs).some((val) => !consumedValues.has(val))
     const textInputs = candidates.filter((candidate) => candidate.kind === 'input' && isTextEntry(candidate))
@@ -243,9 +311,29 @@ export function inputsApplied(
   if (entries.length === 0) return false
   for (const [key, value] of entries) {
     if (verified?.has(key) === true) continue
+    // 若本轮已将 value 填入某个候选字段，且该字段当前仍保持该值（或为已打码密码框），直接视为已生效
+    // （防止 webform-fine 中通用 key `{text: '09/16/2026'}` 在填完 Date picker 后又去检查 Text input 导致覆写）。
+    const filledAndPresent = candidates.some((candidate) => {
+      if (filled?.get(candidate.id) !== value) return false
+      const st = stateOf(candidate)
+      return st.redacted === true || st.checked !== undefined || st.value === undefined || valueMatchesCandidate(candidate, st.value, value)
+    })
+    if (filledAndPresent) continue
     const single = { [key]: value }
     const matched = candidates.filter((candidate) => matchInputValue(candidate, single) !== undefined)
-    if (matched.length === 0) return false
+    if (matched.length === 0) {
+      // 唯一值 + 页面上已存在填入该值的输入框（如 ti-dynamic-controls 的匿名 textbox）：也算已生效
+      const soleApplied =
+        entries.length === 1 &&
+        candidates.some(
+          (candidate) =>
+            candidate.kind === 'input' &&
+            (filled?.get(candidate.id) === value ||
+              (stateOf(candidate).value !== undefined && valueMatchesCandidate(candidate, stateOf(candidate).value!, value))),
+        )
+      if (soleApplied) continue
+      return false
+    }
     const applied = matched.some(
       (candidate) => filled?.get(candidate.id) === value || isAlreadySatisfied(candidate, goal, single),
     )

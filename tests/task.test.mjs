@@ -1292,3 +1292,96 @@ test('按 Enter 提交后输入框变空（TodoMVC 模式）视为已消费，�
   assert.deepEqual(state.todos, ['buy milk'], '只应添加一次 buy milk，不能在清空后重填第二次')
   assert.equal(browser.acts.filter((a) => a.startsWith('fill ')).length, 1, 'fill 只应执行 1 次')
 })
+
+test('多字段表单单步批量填充：同一页的多个匹配字段在 1 个 step / 1 次 Jev 调用内一次性填完', async () => {
+  const state = { first: '', last: '', zip: '', submitted: false }
+  const browser = {
+    acts: [],
+    async extract() {
+      return {
+        items: [
+          { index: 0, role: 'textbox', name: 'First Name', covered: false, state: state.first ? `已有内容: ${state.first}` : '' },
+          { index: 1, role: 'textbox', name: 'Last Name', covered: false, state: state.last ? `已有内容: ${state.last}` : '' },
+          { index: 2, role: 'textbox', name: 'Postal Code', covered: false, state: state.zip ? `已有内容: ${state.zip}` : '' },
+          { index: 3, role: 'button', name: 'Continue', covered: false, state: '' },
+        ],
+        text: (state.submitted ? 'Checkout: Overview' : 'Checkout: Your Information').padEnd(50, ' '),
+        title: 'Swag Labs',
+        url: state.submitted ? 'https://www.saucedemo.com/checkout-step-two.html' : 'https://www.saucedemo.com/checkout-step-one.html',
+      }
+    },
+    async snapshot() { throw new Error('不该退回整树') },
+    async read() { return 'Checkout'.padEnd(50, ' ') },
+    async get() { return 'Swag Labs' },
+    async act(action, target, payload) {
+      this.acts.push(`${action} ${target} ${payload?.value ?? ''}`.trim())
+      if (action === 'fill' && target === '[data-dsh-idx="0"]') state.first = payload.value
+      if (action === 'fill' && target === '[data-dsh-idx="1"]') state.last = payload.value
+      if (action === 'fill' && target === '[data-dsh-idx="2"]') state.zip = payload.value
+      if (action === 'click' && target === '[data-dsh-idx="3"]') state.submitted = true
+    },
+    async run() {},
+  }
+  const judge = fakeJudge([
+    { action: 'input:0', goalDone: 0.1 },
+    { action: 'click:3', goalDone: 0.2 },
+  ])
+  const result = await runTask('Fill in the checkout information and continue', deps(browser, judge, {
+    inputs: { first_name: 'Ada', last_name: 'Lovelace', postal_code: '10001' },
+  }))
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(state.first, 'Ada')
+  assert.equal(state.last, 'Lovelace')
+  assert.equal(state.zip, '10001')
+  assert.equal(state.submitted, true)
+  assert.equal(judge.asked.length, 2, `3 个字段批填 + 点 Continue 只需 2 次 Jev 调用（省掉 2 次），实际：${judge.asked.length}`)
+})
+
+test('已禁用的输入框（已禁用）不抢先填值：先点 Enable 解禁再填（ti-dynamic-controls 模式）', async () => {
+  const state = { enabled: false, val: '' }
+  const browser = {
+    acts: [],
+    async extract() {
+      return {
+        items: [
+          {
+            index: 0,
+            role: 'textbox',
+            name: 'Text input',
+            covered: false,
+            state: !state.enabled ? '已禁用' : state.val ? `已有内容: ${state.val}` : '',
+          },
+          { index: 1, role: 'button', name: state.enabled ? 'Disable' : 'Enable', covered: false, state: '' },
+        ],
+        text: (state.enabled ? "It's enabled!" : 'Enable the input').padEnd(50, ' '),
+        title: 'Dynamic Controls',
+        url: 'https://the-internet.herokuapp.com/dynamic_controls',
+      }
+    },
+    async snapshot() { throw new Error('不该退回整树') },
+    async read() { return 'Dynamic Controls'.padEnd(50, ' ') },
+    async get() { return 'Dynamic Controls' },
+    async act(action, target, payload) {
+      this.acts.push(`${action} ${target}`)
+      if (action === 'fill' && !state.enabled) throw new Error('Element is disabled')
+      if (action === 'fill') state.val = payload.value
+      if (action === 'click' && target === '[data-dsh-idx="1"]') state.enabled = true
+    },
+    async run() {},
+  }
+  const judge = fakeJudge([
+    { action: 'click:1', goalDone: 0.1 },
+    { action: 'input:0', goalDone: 0.2 },
+    { action: 'control:wait', goalDone: 0.95 },
+  ])
+  const result = await runTask('Enable the text field, then type into it', deps(browser, judge, {
+    inputs: { text: 'hello' },
+  }))
+  assert.equal(result.status, 'needs_verification')
+  assert.deepEqual(
+    browser.acts.filter((a) => !a.startsWith('scrollintoview')),
+    ['click [data-dsh-idx="1"]', 'fill [data-dsh-idx="0"]'],
+    '必须先点 Enable 再填值',
+  )
+  assert.equal(state.val, 'hello')
+})
