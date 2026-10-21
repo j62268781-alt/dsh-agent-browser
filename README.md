@@ -34,8 +34,7 @@
 ## 安装
 
 ```bash
-# 本地路径（开发用；profile 名见 ~/.dsh/profiles）
-dsh plugin --profile desktop add /Users/joeson/Documents/dsh-plugins/dsh-agent-browser
+dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
 ```
 
 装完在 **设置 → 浏览器** 里配置。本插件**零 MCP**：只在 `enabled` 为真时注册工具；

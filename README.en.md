@@ -48,7 +48,7 @@ that a **stale ref is rejected** rather than silently clicking a different eleme
 ## Install
 
 ```bash
-dsh plugin --profile desktop add /Users/joeson/Documents/dsh-plugins/dsh-agent-browser
+dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
 brew install agent-browser      # must be in [0.38.0, 0.39.0)
 ```
 
