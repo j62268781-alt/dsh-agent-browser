@@ -22,17 +22,24 @@ import {
 } from './candidates.js'
 import {
   bestEmptyInputForGoal,
+  disabledTargetWithoutUnlock,
+  filterModeOfGoal,
+  filterRouteMatchesGoal,
+  filterStateMatchesGoal,
   fillThenSubmitGoal,
   finalNavigationClauseOf,
   FOLLOW_UP_VERBS,
   inputsApplied,
   inputMatchesOf,
   isAlreadySatisfied,
+  isListFilterGoal,
   isTextEntry,
   looksLikeErrorPage,
   namedSubmitGoal,
   pendingFieldOf,
   pickAlternate,
+  requiresPrimaryContentTarget,
+  scopeCandidatesOf,
   selectionMatchesGoal,
   singleStepGoal,
   soleValueFor,
@@ -169,6 +176,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
   let lastSelectedOption: { id: string; name: string } | undefined
   let lastEnterAddedValue: string | undefined
   let lastFilterLinkClick: { id: string; name: string } | undefined
+  let primaryContentTargetNavigation: { id: string; name: string; fromUrl: string } | undefined
   let lastSortHeaderClick: { id: string; name: string } | undefined
   let lastKeyPressAction: string | undefined
   let awaitedLoading: { text: string } | undefined
@@ -248,7 +256,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const snapshot: Snapshot = { ...observed, textDigest: stableHash(visible.replace(/\s+/g, ' ').trim()) }
         return {
           snapshot,
-          candidates: withActionCandidates(candidatesOf(snapshot, goal), goal, step, trace),
+          candidates: withActionCandidates(scopeCandidatesOf(goal, candidatesOf(snapshot, goal)), goal, step, trace),
           text: visible,
           prose: trimmed === '' ? observed.snapshot : observed.text,
           title: observed.title,
@@ -266,7 +274,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const controls = lastActionWasText
           ? CONTROL_CANDIDATES
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
-        const candidates = withActionCandidates([...candidatesFromExtracted(page.items, goal), ...controls], goal, step, trace)
+        const candidates = withActionCandidates(
+          scopeCandidatesOf(goal, [...candidatesFromExtracted(page.items, goal), ...controls]),
+          goal,
+          step,
+          trace,
+        )
         const pageCandidates = candidates.filter((candidate) => candidate.kind !== 'control')
         if (pageCandidates.length === 0) {
           trace.push(`第 ${step} 步：页面内抽取没有可用元素（${page.items.length} 个元素）→ 退回整树观察`)
@@ -351,6 +364,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     lastPageText = pageText
     lastCandidates = observedPage.candidates
 
+    const disabledTarget = disabledTargetWithoutUnlock(goal, observedPage.candidates)
+    if (disabledTarget !== undefined) {
+      const field = disabledTarget.name ?? disabledTarget.id
+      trace.push(`第 ${step} 步：目标字段「${field}」仍禁用，且页面没有启用/解锁入口 → 立即交回宿主`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: disabledTarget.id, executed: false, reason: 'disabled_target_no_unlock' })
+      return finish('blocked', `目标字段「${field}」仍禁用，页面没有启用入口`, snapshot)
+    }
+
     // 登录/表单已翻页的确定性判定
     const textFieldStillOpen = observedPage.candidates.some(
       (candidate) =>
@@ -380,6 +401,19 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         : undefined
     previousObservation = { candidates: observedPage.candidates, text: pageText, origin: snapshot.origin }
 
+    if (
+      primaryContentTargetNavigation !== undefined &&
+      singleStepGoal(goal) &&
+      lastChange?.url_changed === true &&
+      !looksLikeErrorPage(pageText, pageTitle)
+    ) {
+      trace.push(
+        `第 ${step} 步：目标匹配的主内容链接「${primaryContentTargetNavigation.name}」已从 ${primaryContentTargetNavigation.fromUrl} 导航到 ${snapshot.origin} → 停，交回宿主校验`,
+      )
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: primaryContentTargetNavigation.id, executed: false, reason: 'scoped_content_navigation' })
+      return finish('needs_verification', `已打开目标条目「${primaryContentTargetNavigation.name}」`, snapshot)
+    }
+
     // 加载中就先等（含 ti-dynamic-controls 的 "Wait for it..."）
     if (
       waits < WAIT_BUDGET &&
@@ -398,7 +432,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       // 只有在目标不需要后续填值（如 dynamic-loading）时才直接按加载完成收尾；
       // 若目标还要填值（如 ti-dynamic-controls "Enable the text field, then type into it"），继续往下走填值。
       const stillNeedsInput = deps.inputs !== undefined && Object.keys(deps.inputs).length > 0 && !steps.some((item) => item.reason === 'filled_from_inputs')
-      if (changedAfterLoading && !errorAfterLoading && !stillNeedsInput) {
+      if (changedAfterLoading && !errorAfterLoading && !stillNeedsInput && !requiresPrimaryContentTarget(goal)) {
         trace.push(`第 ${step} 步：加载结束且正文出现新内容（${observedPage.prose.replace(/\s+/g, ' ').trim().slice(0, 80)}）→ 停，交回宿主校验`)
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:loading_finished', executed: false, reason: 'loading_finished' })
         return finish('needs_verification', '加载完成且页面出现了新内容', snapshot)
@@ -418,7 +452,18 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
 
     // 导航类目标的确定性证据（支持单步导航以及 "Open the cart and go to checkout" 这类纯多跳导航的末跳）
     const navEligible = singleStepGoal(goal) || finalNavigationClauseOf(goal) !== undefined
-    if (navEligible && pageText.length >= MIN_PAGE_TEXT && !looksLikeErrorPage(pageText, pageTitle)) {
+    const primaryContentScopeSatisfied =
+      !requiresPrimaryContentTarget(goal) || primaryContentTargetNavigation !== undefined
+    const filterState = filterStateMatchesGoal(goal, observedPage.candidates, snapshot.origin)
+    if (filterState === false && lastChange?.url_changed === true) {
+      trace.push(`第 ${step} 步：筛选路由已变化，但页面条目状态尚未匹配目标`)
+    }
+    if (filterState === true) {
+      trace.push(`第 ${step} 步：地址与可见条目状态都符合筛选目标「${goal}」→ 停，交回宿主校验`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:filter_state_verified', executed: false, reason: 'filter_state_verified' })
+      return finish('needs_verification', `筛选路由与可见条目状态符合目标`, snapshot)
+    }
+    if (navEligible && primaryContentScopeSatisfied && pageText.length >= MIN_PAGE_TEXT && !looksLikeErrorPage(pageText, pageTitle)) {
       const urlHit = urlChangeMatchesGoal(goal, initialOrigin ?? snapshot.origin, snapshot.origin)
       if (urlHit !== undefined) {
         trace.push(`第 ${step} 步：地址新增段命中目标词「${urlHit}」（${snapshot.origin.slice(0, 240)} · mode=${observedPage.mode} · 正文 ${pageText.length} 字）→ 停，交回宿主校验`)
@@ -467,16 +512,28 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     lastEnterAddedValue = undefined
 
-    // 筛选/标签切换链接（如 TodoMVC "Show only the completed todos" 点击 Completed 跳到 #/completed）：
-    // 要求页面上仍有当前视图对应的条目控件（避免前序步骤没勾上、跳到空列表却假完成）。
+    const filterRouteMatches = filterRouteMatchesGoal(goal, snapshot.origin)
+    if (
+      isListFilterGoal(goal) &&
+      filterRouteMatches === true &&
+      filterState === false &&
+      lastFilterLinkClick !== undefined
+    ) {
+      trace.push(`第 ${step} 步：筛选路由已到达，但没有可核验的匹配条目状态 → 停止重试，交回宿主`)
+      steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastFilterLinkClick.id, executed: false, reason: 'filter_state_unverified' })
+      return finish('no_progress', `筛选路由已到达，但可见条目状态不支持完成判定`, snapshot)
+    }
+
+    // 对无法从路由与可见复选框状态共同确认的筛选，不接受弱的"点过同名链接"证据。
     if (
       lastFilterLinkClick !== undefined &&
+      filterState === undefined &&
       singleStepGoal(goal) &&
       lastChange?.url_changed === true &&
       snapshot.origin.toLowerCase().includes(lastFilterLinkClick.name.toLowerCase()) &&
       observedPage.candidates.some((candidate) => candidate.role === 'checkbox')
     ) {
-      trace.push(`第 ${step} 步：已点击「${lastFilterLinkClick.name}」且地址变为 ${snapshot.origin} → 停，交回宿主校验`)
+      trace.push(`第 ${step} 步：已点击「${lastFilterLinkClick.name}」且地址变化、页面仍有复选框 → 停，交回宿主校验`)
       steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastFilterLinkClick.id, executed: false, reason: 'filter_link_applied' })
       return finish('needs_verification', `已切换到「${lastFilterLinkClick.name}」`, snapshot)
     }
@@ -561,7 +618,21 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         ...(observedPage.mode === 'extract' ? { existingPageText: pageText, existingPageTitle: pageTitle } : {}),
       })
 
-    let candidates = observedPage.candidates
+    let candidates = [...observedPage.candidates]
+    if (isListFilterGoal(goal)) {
+      const mode = filterModeOfGoal(goal)
+      const filterOption = mode === 'completed' ? /\bcompleted\b|已完成|完成项/i : /\bactive\b|\bpending\b|未完成|进行中/i
+      const filtered = candidates.filter(
+        (candidate) =>
+          candidate.kind !== 'click' ||
+          (candidate.role ?? '').toLowerCase() !== 'checkbox' ||
+          filterOption.test(candidate.name ?? ''),
+      )
+      if (filtered.length !== candidates.length) {
+        trace.push(`第 ${step} 步：筛选目标下忽略 ${candidates.length - filtered.length} 个条目 checkbox，避免更改条目状态`)
+        candidates = filtered
+      }
+    }
     if (waits >= WAIT_BUDGET) candidates = candidates.filter((candidate) => candidate.id !== 'control:wait')
     const allCandidates = candidates
 
@@ -636,7 +707,10 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         return finish('page_error', '页面是浏览器错误页（导航失败）', snapshot)
       }
       const confirmed = await confirmWithContext()
-      const navigatedToTerminal = lastChange?.url_changed === true && NAVIGATION_GOALS.test(goal)
+      const navigatedToTerminal =
+        lastChange?.url_changed === true &&
+        NAVIGATION_GOALS.test(goal) &&
+        (!requiresPrimaryContentTarget(goal) || primaryContentTargetNavigation !== undefined)
       if (navigatedToTerminal && confirmed.probability >= 0.8) {
         trace.push(`第 ${step} 步：已跳到没有可操作元素的终态页（跳转证据 + 独立确认 p=${confirmed.probability.toFixed(2)}）→ 停，交回宿主校验`)
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:terminal_page', executed: false, reason: 'terminal_page' })
@@ -742,10 +816,25 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       !(singleInput.state ?? '').includes('已禁用') &&
       (deps.inputs === undefined || Object.keys(deps.inputs).length === 1) &&
       (typingGoal || singleInputNamed)
+    const scopedTargetLinks =
+      requiresPrimaryContentTarget(goal) && NAVIGATION_GOALS.test(goal) && singleStepGoal(goal)
+        ? candidates.filter(
+            (candidate) =>
+              candidate.kind === 'click' &&
+              candidate.groupId !== undefined &&
+              ['a', 'link', 'tab', 'menuitem'].includes((candidate.role ?? '').toLowerCase()) &&
+              goalMentions(candidate.name ?? '', goal),
+          )
+        : []
+    const scopedTargetBypass = scopedTargetLinks.length === 1
     if (singleInputBypass) {
       const only = actionable[0]
       trace.push(`第 ${step} 步：页面上只有一个输入框（${only.id}）→ 免判断，交回宿主填内容`)
       answers = { action: { kind: 'choice', optionId: only.id, probabilities: { [only.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
+    } else if (scopedTargetBypass) {
+      const target = scopedTargetLinks[0]!
+      trace.push(`第 ${step} 步：目标范围与行分组只留下一个匹配链接（${target.name ?? target.id}）→ 确定性导航`)
+      answers = { action: { kind: 'choice', optionId: target.id, probabilities: { [target.id]: 1 }, confidence: 1 } } as Readonly<Record<string, JudgmentAnswer>>
     } else {
       try {
         offered = candidates.filter((candidate) => !useless.has(candidate.id))
@@ -854,7 +943,25 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
 
     const effectiveGoalThreshold = singleStepGoal(goal) ? deps.goalThreshold : Math.max(deps.goalThreshold, 0.95)
-    if (goalDone !== undefined && goalDone >= effectiveGoalThreshold && pendingField === undefined && !followUpPending) {
+    const completionEvidenceAllowed = primaryContentScopeSatisfied && filterState !== false
+    if (
+      goalDone !== undefined &&
+      goalDone >= effectiveGoalThreshold &&
+      pendingField === undefined &&
+      !followUpPending &&
+      !completionEvidenceAllowed
+    ) {
+      trace.push(
+        `第 ${step} 步：goal_done=${goalDone.toFixed(2)}，但目标范围或筛选状态缺少确定性证据 → 不允许收尾`,
+      )
+    }
+    if (
+      goalDone !== undefined &&
+      goalDone >= effectiveGoalThreshold &&
+      pendingField === undefined &&
+      !followUpPending &&
+      completionEvidenceAllowed
+    ) {
       const batchTargetMatchProb = answers.target_match?.kind === 'noul' ? answers.target_match.probability : undefined
       const batchTargetMatched = batchTargetMatchProb === undefined || batchTargetMatchProb >= 0.6
       const highConfidenceBatchConfirm =
@@ -887,6 +994,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       goalDone < deps.goalThreshold &&
       pendingField === undefined &&
       !followUpPending &&
+      completionEvidenceAllowed &&
       steps.some((item) => item.executed)
     ) {
       const confirm = await confirmWithContext()
@@ -1352,6 +1460,17 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
       lastActionWasText = false
       const finalClause = goal.split(/[,，;；]|\bthen\b/i).map((c) => c.trim()).filter(Boolean).pop() ?? goal
+      if (
+        requiresPrimaryContentTarget(goal) &&
+        chosen.kind === 'click' &&
+        chosen.inMain === true &&
+        chosen.groupId !== undefined &&
+        ['a', 'link', 'tab', 'menuitem'].includes((chosen.role ?? '').toLowerCase()) &&
+        ((chosen.name ?? '') !== '' && goalMentions(chosen.name ?? '', goal) ||
+          (chosen.near ?? '') !== '' && goalMentions(chosen.near ?? '', goal))
+      ) {
+        primaryContentTargetNavigation = { id: chosen.id, name: chosen.name ?? chosen.id, fromUrl: snapshot.origin }
+      }
       const allInputsUsed =
         deps.inputs === undefined || Object.values(deps.inputs).every((val) => consumedValues.has(val) || [...filledFields.values()].includes(val))
       lastSubmitAction =

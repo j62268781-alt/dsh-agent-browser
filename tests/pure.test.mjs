@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, fieldName, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, disabledTargetWithoutUnlock, fieldName, filterStateMatchesGoal, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, requiresPrimaryContentTarget, scopeCandidatesOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -643,6 +643,34 @@ test('inputsApplied：读回为空的原生字段不算生效；目标点名禁�
     { id: 'input:2', description: 'x', kind: 'input', role: 'textbox', name: 'Disabled input', tag: 'input', state: '已禁用' }]
   assert.equal(inputsApplied(disabled, { text: 'x' }, new Map([['input:1', 'x']]), 'Type into the disabled input field'), false)
   assert.equal(inputsApplied(disabled, { text: 'x' }, new Map([['input:1', 'x']]), 'Fill in the text input'), true)
+})
+
+test('范围限定目标只暴露主内容链接；筛选收尾要求路由与可见条目状态一致', () => {
+  const goal = 'Open the comments page of the top story'
+  const header = { id: 'click:0', description: 'header comments', kind: 'click', role: 'a', name: 'comments', inMain: false }
+  const tableHeader = { ...header, id: 'click:2', inMain: true }
+  const story = { id: 'click:1', description: 'story comments', kind: 'click', role: 'a', name: '42 comments', near: 'Top story title 42 comments', inMain: true, groupId: 'row:1' }
+  const laterStory = { ...story, id: 'click:4', name: '53 comments', groupId: 'row:2', near: 'Second story title 53 comments' }
+  assert.equal(requiresPrimaryContentTarget(goal), true)
+  assert.deepEqual(scopeCandidatesOf(goal, [header, story, laterStory]), [story])
+  assert.deepEqual(scopeCandidatesOf(goal, [tableHeader, story]), [story])
+  assert.deepEqual(scopeCandidatesOf('Open the comments page', [header, story]), [header, story])
+
+  const filterGoal = 'Show only the completed todos'
+  const visibleCompleted = [{ id: 'click:0', description: 'todo', kind: 'click', role: 'checkbox', name: 'buy milk', state: '已勾选', inMain: true }]
+  assert.equal(filterStateMatchesGoal(filterGoal, visibleCompleted, 'https://todo.test/#/completed'), true)
+  assert.equal(filterStateMatchesGoal(filterGoal, [{ ...visibleCompleted[0], state: '未勾选' }], 'https://todo.test/#/completed'), false)
+  assert.equal(filterStateMatchesGoal(filterGoal, visibleCompleted, 'https://todo.test/#/active'), false)
+  assert.equal(filterStateMatchesGoal('Open the completed guide', visibleCompleted, 'https://todo.test/#/completed'), undefined)
+})
+
+test('禁用目标：没有解锁控件时可判阻塞，有解锁入口时继续决策', () => {
+  const target = { id: 'input:0', description: 'disabled input', kind: 'input', role: 'textbox', name: 'My disabled input', state: '已禁用' }
+  assert.equal(disabledTargetWithoutUnlock('Type into the disabled input field', [target]), target)
+  assert.equal(disabledTargetWithoutUnlock('Type into the disabled input field', [target, {
+    id: 'click:1', description: 'enable', kind: 'click', role: 'button', name: 'Enable input',
+  }]), undefined)
+  assert.equal(disabledTargetWithoutUnlock('Type into the text input field', [target]), undefined)
 })
 
 test('urlChangeMatchesGoal：导航证据要求完整词，导航条里的近似链接不算命中', () => {

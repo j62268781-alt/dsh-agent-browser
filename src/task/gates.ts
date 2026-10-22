@@ -322,6 +322,116 @@ export function pendingFieldOf(
   return undefined
 }
 
+const ORDERED_CONTENT_TARGET = /\b(?:top|first|1st|second|2nd|third|3rd|latest|last|best|highest[- ]ranked)\s+(?:story|stories|article|result|item|post|entry|record|row|table)\b/i
+const CONTENT_LINK_ROLES = new Set(['a', 'link', 'tab', 'menuitem'])
+
+/** 目标明确限定到列表/文章中的某条目时，不能把全局导航里的同名链接当作目标。 */
+export function requiresPrimaryContentTarget(goal: string): boolean {
+  return ORDERED_CONTENT_TARGET.test(goal)
+}
+
+export function filterModeOfGoal(goal: string): 'completed' | 'active' | undefined {
+  return /\bcompleted\b|\bcomplete\b|已完成|完成项/i.test(goal)
+    ? 'completed'
+    : /\bactive\b|\bpending\b|未完成|进行中/i.test(goal)
+      ? 'active'
+      : undefined
+}
+
+export function isListFilterGoal(goal: string): boolean {
+  return filterModeOfGoal(goal) !== undefined && /\b(?:show|display|view|filter)\b|\bonly\b|显示|筛选|只看/i.test(goal)
+}
+
+export function filterRouteMatchesGoal(goal: string, currentUrl: string): boolean | undefined {
+  const mode = filterModeOfGoal(goal)
+  if (!isListFilterGoal(goal) || mode === undefined) return undefined
+  let route: string
+  try {
+    const url = new URL(currentUrl)
+    route = `${url.pathname}${url.search}${url.hash}`.toLowerCase()
+  } catch {
+    return false
+  }
+  return new RegExp(`(?:^|[/#?&=_-])${mode}(?:$|[/#?&=_-])`).test(route)
+}
+
+/** 限定内容条目的目标排除已识别的全局导航链接；筛选目标保留匹配筛选选项。 */
+export function scopeCandidatesOf<T extends TaskCandidate>(goal: string, candidates: readonly T[]): T[] {
+  if (!requiresPrimaryContentTarget(goal)) return [...candidates]
+  const contentLinks = candidates.filter(
+    (candidate) =>
+      candidate.kind === 'click' &&
+      CONTENT_LINK_ROLES.has((candidate.role ?? '').toLowerCase()) &&
+      candidate.inMain !== false,
+  )
+  const hasGroupedContentLink = contentLinks.some((candidate) => candidate.groupId !== undefined)
+  const groupedMatches = new Map<string, number>()
+  for (const candidate of contentLinks) {
+    if (candidate.groupId === undefined || !goalMentions(candidate.name ?? '', goal)) continue
+    const index = Number(/:(\d+)$/.exec(candidate.id)?.[1] ?? Number.MAX_SAFE_INTEGER)
+    groupedMatches.set(candidate.groupId, Math.min(groupedMatches.get(candidate.groupId) ?? Number.MAX_SAFE_INTEGER, index))
+  }
+  const orderedGroups = [...groupedMatches].sort((left, right) => left[1] - right[1])
+  const ordinal = /\b(?:second|2nd)\b|第二/i.test(goal) ? 2 : /\b(?:third|3rd)\b|第三/i.test(goal) ? 3 : 1
+  const targetGroup = orderedGroups[ordinal - 1]?.[0]
+
+  return candidates.filter((candidate) => {
+    if (candidate.kind === 'control') return true
+    if (targetGroup !== undefined) {
+      return candidate.kind === 'click' &&
+        CONTENT_LINK_ROLES.has((candidate.role ?? '').toLowerCase()) &&
+        candidate.groupId === targetGroup &&
+        goalMentions(candidate.name ?? '', goal)
+    }
+    if (candidate.kind !== 'click' || !CONTENT_LINK_ROLES.has((candidate.role ?? '').toLowerCase())) return true
+    if (candidate.inMain === false) return false
+    // Some table-based pages wrap the page header in the same <table> as content.
+    // A row-grouped content link is stronger scope evidence than an ungrouped global/header link.
+    if (hasGroupedContentLink && candidate.inMain === true && candidate.groupId === undefined) return false
+    return true
+  })
+}
+
+/** 可识别列表筛选目标时，要求路由与当前可见 checkbox 状态一致。 */
+export function filterStateMatchesGoal(
+  goal: string,
+  candidates: readonly TaskCandidate[],
+  currentUrl: string,
+): boolean | undefined {
+  const mode = filterModeOfGoal(goal)
+  const routeMatches = filterRouteMatchesGoal(goal, currentUrl)
+  if (!isListFilterGoal(goal) || mode === undefined || routeMatches === undefined) return undefined
+  if (!routeMatches) return false
+
+  const visibleToggles = candidates.filter(
+    (candidate) => candidate.kind === 'click' && (candidate.role ?? '').toLowerCase() === 'checkbox' && candidate.inMain !== false,
+  )
+  if (visibleToggles.length === 0) return false
+  const expectedChecked = mode === 'completed'
+  return visibleToggles.every((candidate) => (candidate.state ?? '').includes(expectedChecked ? '已勾选' : '未勾选'))
+}
+
+/** 目标点名的禁用输入框仍不可用，且页面没有启用入口时可直接交回宿主。 */
+export function disabledTargetWithoutUnlock(
+  goal: string,
+  candidates: readonly TaskCandidate[],
+): TaskCandidate | undefined {
+  if (!/\bdisabled\b|禁用/i.test(goal)) return undefined
+  const disabledTargets = candidates.filter(
+    (candidate) =>
+      candidate.kind === 'input' &&
+      (candidate.state ?? '').includes('已禁用') &&
+      goalMentions(candidate.name ?? '', goal),
+  )
+  if (disabledTargets.length !== 1) return undefined
+  const canUnlock = candidates.some(
+    (candidate) =>
+      candidate.kind === 'click' &&
+      /\b(enable|unlock|activate)\b|启用|解锁|激活/i.test(candidate.name ?? ''),
+  )
+  return canUnlock ? undefined : disabledTargets[0]
+}
+
 /**
  * 多跳纯导航目标（如 "Open the cart and go to checkout"）：
  * 每个子句都是导航动作时，返回最后一个子句（即最终目的地 "go to checkout"）。

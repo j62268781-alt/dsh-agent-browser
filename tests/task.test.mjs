@@ -73,7 +73,16 @@ function fakePage(elements, { withExtract = false } = {}) {
       ? {
           // 走页面内抽取路径（mode='extract'）——「命名提交控件」收尾只在这条路径上生效。
           extract: async () => ({
-            items: state.elements.map((element, index) => ({ index, role: element.role, name: element.name, covered: false })),
+            items: state.elements.map((element, index) => ({
+              index,
+              role: element.role,
+              name: element.name,
+              covered: false,
+              ...(element.state === undefined ? {} : { state: element.state }),
+              ...(element.inMain === undefined ? {} : { inMain: element.inMain }),
+              ...(element.near === undefined ? {} : { near: element.near }),
+              ...(element.groupId === undefined ? {} : { groupId: element.groupId }),
+            })),
             text: state.text,
             title: state.title,
             url: state.origin,
@@ -166,6 +175,22 @@ test('goal_done 假阳性：独立确认没通过 → **不停**，继续推进'
   assert.equal(page.state.acts.length, 1, '假阳性不该让循环空转结束，应该真的执行动作')
   assert.match(result.trace.join('\n'), /独立确认没通过/)
   assert.equal(result.steps.find((step) => step.action === 'stop:goal_done')?.confirm, 0.95)
+})
+
+test('受范围限定的内容导航首轮排除页头同名链接并在目标链接导航后收尾', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'a', name: 'comments', inMain: false },
+    {
+      ref: 'e2', role: 'a', name: '42 comments', near: 'Top story 42 comments', groupId: 'row:1', inMain: true,
+      onClick: (state) => { state.origin = 'https://example.test/item?id=1' },
+    },
+  ], { withExtract: true })
+  const judge = fakeJudge([{ action: 'click:1', goalDone: 0.1 }])
+  const result = await runTask('Open the comments page of the top story', deps(page.browser, judge))
+  assert.equal(judge.asked.length, 0, '唯一且精确匹配的故事评论链接不需要模型重排')
+  assert.deepEqual(page.state.acts.filter((action) => !action.startsWith('scrollintoview')), ['click [data-dsh-idx="1"]'])
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(result.steps.at(-1)?.reason, 'scoped_content_navigation')
 })
 
 test('stuck 达标 → blocked，同样不执行动作', async () => {
@@ -1418,4 +1443,43 @@ test('已禁用的输入框（已禁用）不抢先填值：先点 Enable 解禁
     '必须先点 Enable 再填值',
   )
   assert.equal(state.val, 'hello')
+})
+
+test('Completed 筛选只有路由和可见复选框状态一致时才确定性收尾', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'a', name: 'Completed', inMain: true, onClick: (state) => { state.origin = 'https://todo.test/#/completed' } },
+    { ref: 'e2', role: 'checkbox', name: 'buy milk', state: '已勾选', inMain: true },
+  ], { withExtract: true })
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.1 }])
+  const result = await runTask('Show only the completed todos', deps(page.browser, judge))
+  const actionOptions = judge.asked[0]?.questions.action.options ?? {}
+  assert.ok(actionOptions['click:0'], 'Completed 筛选项应保留')
+  assert.equal(actionOptions['click:1'], undefined, '不应把已完成的 todo 条目 checkbox 当成筛选动作')
+  assert.equal(result.status, 'needs_verification')
+  assert.equal(result.steps.at(-1)?.reason, 'filter_state_verified')
+  assert.match(result.reason, /筛选路由与可见条目状态/)
+})
+
+test('Completed 路由没有可见匹配条目时停止重试且不声称完成', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'a', name: 'Completed', inMain: true, onClick: (state) => { state.origin = 'https://todo.test/#/completed' } },
+  ], { withExtract: true })
+  const judge = fakeJudge([{ action: 'click:0', goalDone: 0.99 }])
+  const result = await runTask('Show only the completed todos', deps(page.browser, judge))
+  assert.equal(result.status, 'no_progress')
+  assert.equal(result.steps.at(-1)?.reason, 'filter_state_unverified')
+  assert.equal(judge.asked.length, 1, '筛选路由已到达后不应重复点击筛选项')
+})
+
+test('明确要求向禁用字段输入、且没有启用入口时首轮直接 blocked', async () => {
+  const page = fakePage([
+    { ref: 'e1', role: 'textbox', name: 'My disabled input', state: '已禁用' },
+  ], { withExtract: true })
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])
+  const result = await runTask('Type into the disabled input field', deps(page.browser, judge, {
+    inputs: { text: 'x' },
+  }))
+  assert.equal(result.status, 'blocked')
+  assert.equal(judge.asked.length, 0, '存在确定性阻塞时不应浪费一次 Jev 调用')
+  assert.equal(result.steps[0]?.reason, 'disabled_target_no_unlock')
 })
