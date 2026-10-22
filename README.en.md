@@ -20,7 +20,7 @@ goal loop judged by [`dsh-judgment`](../dsh-judgment/README.en.md).
 | `browser_snapshot` / `browser_act` / `browser_read` / `browser_session` / `browser_screenshot` | ✅ |
 | `browser_raw` escape hatch (allowlist), default off | ✅ |
 | `browser_run` goal loop with `ctx.judgment` | ✅ (verified on 39-task live benchmark: in-page DOM extraction, `inputs` batching, `subgoals`, and low-cost **Jev + upstream LLM handoff closed-loop**) |
-| CLI version lock `>=0.38 <0.39` | ✅ (measured on 0.38.2) |
+| CLI requirement `>=0.38.2` (no upper bound) | ✅ (measured on 0.38.2; re-verified on 0.39.1) |
 | Ledger / quota UI | ⏳ see DESIGN.md §8 |
 
 ### Install self-check
@@ -28,7 +28,7 @@ goal loop judged by [`dsh-judgment`](../dsh-judgment/README.en.md).
 Opening **Settings → Browser** runs the check automatically. The button has two states: **environment
 ready → a disabled grey "已安装"**, **environment unusable (or not checked yet) → an enabled "检查安装"**.
 Exactly **two items**
-(no paths, no wrapper/doctor noise): **agent-browser** (`已安装 0.38.2`, or `本机没安装` plus an
+(no paths, no wrapper/doctor noise): **agent-browser** (`已安装 0.39.1` — any version ≥ 0.38.2, or `本机没安装` plus an
 **[安装]** button that runs `brew install agent-browser` / `npm i -g agent-browser` on click) and
 **Chrome** (`已就绪`, or `没找到` with a download link — Chrome is mandatory). Both pass → green card;
 otherwise red with the reason and the fix. Chrome is deliberately **not** auto-installed:
@@ -42,14 +42,15 @@ on-demand references). It is registered as a runtime skill at plugin start; the 
 verbatim and a short plugin-specific note is appended (tool names, `browser_run`, absolute reference
 paths). `ctx.skills` is optional — without `dsh-skill` the registration is skipped and nothing else breaks.
 
-`pnpm probe` spawns a real browser to verify the version lock, ref parsing, ref-based clicking, and
-that a **stale ref is rejected** rather than silently clicking a different element.
+`pnpm probe` spawns a real browser to verify the version floor, ref parsing, ref-based clicking, and
+that a stale ref pointing at a deleted element is rejected instead of clicking something else
+(the same-name ordinal fallback documented in DESIGN §1.1 is a known CLI caveat, not covered by the probe).
 
 ## Install
 
 ```bash
 dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
-brew install agent-browser      # must be in [0.38.0, 0.39.0)
+brew install agent-browser      # requires >= 0.38.2; newer versions work too
 ```
 
 Configure in **Settings → Browser**. No MCP server is configured: tools only exist while
@@ -67,9 +68,13 @@ Configure in **Settings → Browser**. No MCP server is configured: tools only e
 | `browser_raw` | Allowlisted other subcommands; `mcp`/`chat`/`install`/`plugin`/`connect`/`auth`/`--cdp`/`--profile` are refused. Off by default. |
 | `browser_run` | Registered only when Decision is on: one goal → bounded in-plugin loop → trace + handoff. |
 
-Refs are element-identity bound on 0.38.2 (measured): a stale ref fails with `Unknown ref` or
-`Could not locate element with role=… name=…` instead of clicking something else. That is why this
-plugin does **not** impose a mandatory `snapshot_id` gate.
+Refs are mostly element-identity bound (measured on 0.38.2 and 0.39.1): a stale ref usually fails
+with `Unknown ref` or `Could not locate element with role=… name=…`. **There is one exception**:
+when the target element is gone but a **same-named** element remains, resolution falls back to
+role+name ordinal matching and silently clicks the neighbour (e.g. a list of identical `Delete`
+buttons). That is why this plugin does **not** impose a mandatory `snapshot_id` gate, but instead
+re-snapshots every step; for same-named lists / bulk actions pass `expectUrl` / `expectName` on
+`browser_act` as an explicit freshness assertion.
 
 ## Performance (measured, agent-browser 0.38.2)
 

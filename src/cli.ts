@@ -1,11 +1,12 @@
 /**
- * `agent-browser` CLI 的薄封装：spawn + JSON 信封解析 + 版本锁。
+ * `agent-browser` CLI 的薄封装：spawn + JSON 信封解析 + 版本下限校验。
  *
  * 纪律（DESIGN v2 §3）：
  * - **不碰 CDP、不引 Playwright**：引擎永远是 CLI，这里只负责拼参数、收输出、判错误。
  * - **只用有结构输出的命令**：`--json` 是全局开关，但不是每个子命令都真有结构化结果；
  *   解析失败**明确报错**，绝不猜（`parsed.data` 缺失 = `CliError('bad-output')`）。
- * - **版本锁**：v0.38.2 上实测过 refs 的身份绑定行为（DESIGN §1.1）；越界版本拒绝启动。
+ * - **版本闸门**：只要求不低于 0.38.2（陈旧 ref 行为在 0.38.2 实测，DESIGN §1.1）；
+ *   更新版本放行，不写上限——上限只会把可用的新版本误判成故障。
  */
 
 import { spawn } from 'node:child_process'
@@ -113,9 +114,18 @@ export interface Snapshot {
   readonly textDigest?: string
 }
 
-/** 支持的版本区间（含）。 */
-export const SUPPORTED_MIN = '0.38.0'
-export const SUPPORTED_MAX_EXCLUSIVE = '0.39.0'
+/**
+ * 支持的最低 CLI 版本。
+ *
+ * **只锁下限，不锁上限**：DESIGN §1.1 的实测（陈旧 ref 的两种措辞、同名顺位回退）是在 0.38.2 上做的，
+ * 因此 0.38.2 以下不承诺；而向上没有证据表明会破坏——0.39.1 上已复验本插件实际用到的
+ * 全部命令（`--version` / `snapshot -i --json` / `batch --json` / `get title` / `eval -b` /
+ * `click @ref`，以及陈旧 ref 仍返回 `Unknown ref`），输出结构与 0.38.2 一致。
+ *
+ * 早先的 `[0.38.0, 0.39.0)` 会在用户升到 0.39.x 后把**可用的环境**判成失败，
+ * 这是纯粹的误报：拒绝一个能用的 CLI，比"少验证一个次版本"代价大得多。
+ */
+export const SUPPORTED_MIN = '0.38.2'
 
 export class CliError extends Error {
   readonly code: string
@@ -270,11 +280,18 @@ function compare(a: readonly [number, number, number], b: readonly [number, numb
   return 0
 }
 
-/** 版本是否落在支持区间 `[SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE)`。 */
+/**
+ * 版本是否可用：**只要求不低于下限**，向上不设上限。
+ *
+ * 为什么不设上限：上限一旦写死，用户 `brew upgrade` 之后插件会把一个能正常工作的 CLI
+ * 判成"环境失败"——这正是 `>=0.38 <0.39` 在 0.39.1 上造成的误报。CLI 的 JSON 信封与
+ * ref 语义是它的公开契约，升级不该被当成故障；真出现不兼容，`bad-output` / `cli-error`
+ * 会在第一次调用时如实报出来，而不是提前猜。
+ */
 export function isSupportedVersion(version: string): boolean {
   const parsed = parseVersion(version)
   if (parsed === undefined) return false
-  return compare(parsed, parseVersion(SUPPORTED_MIN)!) >= 0 && compare(parsed, parseVersion(SUPPORTED_MAX_EXCLUSIVE)!) < 0
+  return compare(parsed, parseVersion(SUPPORTED_MIN)!) >= 0
 }
 
 export class AgentBrowser {
@@ -424,16 +441,19 @@ export class AgentBrowser {
   }
 
   /**
-   * 版本锁。**越界即拒**：DESIGN §1.1 的实测结论只对 0.38.x 成立，
-   * 换了版本就该重新验证，而不是继续假设 refs 还是身份绑定的。
+   * 版本闸门：**只拦低于下限的**，比下限新的版本一律放行。
+   *
+   * 设计意图（DESIGN §1.1）：陈旧 ref 的行为是在 0.38.2 上实测的，所以不低于它才承诺行为；
+   * 但"更新 = 更危险"没有依据，反过来把可用环境判失败才是真故障（0.39.1 误报即此类）。
+   * 真遇到不兼容，第一次调用的 JSON 信封解析会给出 `bad-output` / `cli-error`，比版本号猜更准。
    */
   async assertSupported(options: CliRunOptions = {}): Promise<string> {
     const raw = await this.version(options)
     if (!isSupportedVersion(raw)) {
       throw new CliError(
         'unsupported-version',
-        `agent-browser ${raw} 不在支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})：` +
-        '本插件的 ref 陈旧性结论是在 0.38.2 上实测的，升级后请重跑 DESIGN §1.1 的实验再放宽版本锁',
+        `agent-browser ${raw} 低于最低支持版本 ${SUPPORTED_MIN}：` +
+        '本插件的 ref 陈旧性结论是在 0.38.2 上实测的，更旧的版本不在承诺范围内。请升级：brew upgrade agent-browser',
       )
     }
     return raw

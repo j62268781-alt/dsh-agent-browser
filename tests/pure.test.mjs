@@ -102,10 +102,15 @@ test('原生二进制的同目录规则：按 platform-arch 命名，覆盖 npm 
   assert.equal(nativeBinaryName('/tmp/x', 'darwin', 'ia32'), undefined)
 })
 
-test('版本区间判断与 --version 输出解耦（越界即拒）', () => {
-  assert.equal(isSupportedVersion('0.38.0'), true)
+test('版本判断只锁下限：低于 0.38.2 拒绝，更新版本一律放行', () => {
   assert.equal(isSupportedVersion('0.38.2'), true)
-  assert.equal(isSupportedVersion('0.39.0'), false)
+  assert.equal(isSupportedVersion('0.38.9'), true)
+  // 关键回归：0.39.x 曾被写死的上限判成「环境失败」。
+  assert.equal(isSupportedVersion('0.39.0'), true)
+  assert.equal(isSupportedVersion('0.39.1'), true)
+  assert.equal(isSupportedVersion('0.40.0'), true)
+  assert.equal(isSupportedVersion('1.0.0'), true)
+  assert.equal(isSupportedVersion('0.38.1'), false)
   assert.equal(isSupportedVersion('0.37.9'), false)
   assert.equal(isSupportedVersion('garbage'), false)
 })

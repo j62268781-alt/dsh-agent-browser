@@ -4,7 +4,7 @@
 > 本文记录方式：结论 + **证据（文件/命令/行号）** + 明确标注的未验证项。不写"应该没问题"。
 >
 > **v1 → v2 改了三件事**（都在 §1，有实测证据）：
-> 1. v1 的立身之本「refs 陈旧门控」**实测不成立**，撤下；
+> 1. v1 的立身之本「refs 陈旧门控能兜住一切」**实测只有部分成立**（同名元素 + DOM 变动会顺位点到隔壁，§1.1 #8/#9），撤下"靠 CLI 兜住"的假设，改由每步重取快照 + 可选断言兜；
 > 2. 「不用 MCP」的论证从「token 开销」换成「形态取舍」；
 > 3. 定位从"薄封装工具面"改成"**一个 delegate 工具 + 插件内部有界循环**"。
 >
@@ -20,7 +20,7 @@
 | 形态 | DSH 插件（不是 skills 仓库、不是 MCP 配置） |
 | 引擎 | **仍是 `agent-browser` CLI**（Rust + CDP），不碰 CDP、不引 Playwright |
 | 工具面 | 窄核心（4 个常驻）+ 逃生舱 1 个；**决策开**才多注册 1 个 `browser_run` |
-| 陈旧风险 | 由 CLI 的 **ref 身份绑定** 兜住（§1.1 实测）；我们**额外**提供**可选**的新鲜度断言，不做强制门控 |
+| 陈旧风险 | **每步重取 snapshot** 消除决策窗口；CLI 的 ref 大部分时候能拒绝陈旧（§1.1 表格 #2/#5/#6），但**同名元素 + DOM 变动时会顺位点到隔壁**（#8/#9），所以另有**可选**新鲜度断言 |
 | 决策 | **`ctx.judgment`（可选依赖，用途名 `browser.action`）**；缺失/未配置 → **显式报错**，不静默降级 |
 | 设置页 | `settings.section` 一页：2 行开关 + 进阶项 + 「打开配置文件」；视觉照**通用设置面板**（标题 + 子标题） |
 | 技能 | **内置** `skills/agent-browser/`（SKILL.md + references），用 `ctx.skills.register()` 注册 | 装插件即得 |
@@ -30,27 +30,35 @@
 
 ## 1. v1 哪三条是错的（附实测）
 
-### 1.1 ❌「旧 ref 会默默点到别的元素」——**实测不成立**（本机 v0.38.2）
+### 1.1 ❌「旧 ref 会默默点到别的元素」——**原判有误，复测后修正**（v0.38.2 / v0.39.1 同）
 
 DESIGN v1 §2① 把"refs 可跨快照复用 → 旧 ref 指向另一个元素 → 唯一不可逆损害"当作**立身之本**。
-本项目实测（headless、本地页、跑完 `agent-browser close --all`）：
+第二轮实测（headless、本地页、跑完 `agent-browser close --all`）拿到两组结论，前一组被 v1 采纳，
+后一组推翻了它：
 
 | # | 操作 | 实测输出 |
 |---|---|---|
 | 1 | `snapshot`：Alpha `@e2` / Bravo `@e3` | 按树序分配 |
 | 2 | 删掉 Alpha 后 `click @e2` | `✗ Unknown ref: e2`（**拒绝**） |
 | 3 | 整页 `innerHTML` 替换后 `click @e3` | `✗ Could not locate element with role=button name=Bravo` |
-| 4 | 三行**同名** `Delete` 把 Row3 置顶后 `click @e7` | `✓ Done`，log = `deleted row1` —— **仍指向原元素，不是位置** |
-| 5 | 同名重复：删掉第一个 `Delete` 后 `click @e2` | `✗ Unknown ref: e2` —— **没有落到幸存的同名按钮** |
+| 4 | 三行**同名** `Delete` 把 Row3 置顶后 `click @e7` | `✓ Done`，log = `deleted row1` —— 仍指向原元素，不是位置 |
+| 5 | 同名重复：删掉第一个 `Delete` 后 `click @e2` | `✗ Unknown ref: e2` —— 没有落到幸存的同名按钮 |
 | 6 | `open` 另一页后 `click @e7` | `✗ Unknown ref: e7` |
 | 7 | ref 编号 | **单调递增、永不复用**（e1–e3 → e4,e5 → e7–e9 → e10–e12） |
+| 8 | 唯一 `Pay`：删掉它、**插入一个新的同名 `Pay`**，再 `click @e1`（不重新快照） | `✓ 成功`，log = `NEW` —— **点到了新元素** |
+| 9 | 三行同名 `Delete`（@e2 指 row2）：**删掉 row2** 后 `click @e2` | `✓ 成功`，log = `row3` —— **按同名序号顺位落到了下一个** |
 
-**结论**：refs 是**元素身份绑定**的；失效得到**类型化错误**，不存在"默默点到别的元素"这一类。
-CLI 文档那句 `Refs can be reused across snapshots` 的语义是「同一元素在新快照里仍是同一个 ref」，**不是**「旧编号会被重新分配给别的元素」。
+**结论（修正版）**：ref 在**元素还在、且没有同名歧义**时确实是身份绑定的（#4、#5、#6）；
+但**当目标元素消失而页面上还有同名元素时，解析会退回 role+name 的序位匹配，静默点到别的元素**（#8、#9）。
+所以「不存在默默点到别的元素这一类」是错的：这一类存在，只是需要"同名元素 + DOM 变动"两个条件同时成立。
+v1 当初只测了「删掉后没有任何同名幸存者」（#2、#5）和「排序变化」（#4），恰好绕开了这个组合。
 
-> 因此：`snapshot_id` **强制门控不是立身之本**，撤。
-> 仍然剩下的唯一陈旧风险是**决策级**的：*模型 10 秒前看到的树，与此刻要执行的动作之间页面变了*（元素同一个，语义变了）。
-> 对策见 §5：**每步重取 snapshot**（参考项目三家一致做法），并给 `browser_act` 一个**可选**新鲜度断言（断言不匹配 → `stale_page`，执行前拒绝）。
+> 因此：`snapshot_id` **强制门控仍不是立身之本**（ref 大多数时候够用），但**"CLI 兜住一切陈旧风险"也不成立**。
+> 真正的保险是：**每步重取 snapshot**（§5，决策与执行之间不留窗口）+ `browser_act` 的**可选**新鲜度断言
+> `expectUrl` / `expectName`（不匹配 → `stale_page`，执行前拒绝）。批量删除/同名列表这类场景，
+> 调用方应显式给断言，或改用 `find` + 文本定位。
+> 另一处连带修正：CLI 有两种"指不到元素"的措辞（`Unknown ref` / `Could not locate element with role=… name=…`），
+> 任务循环必须**都**当 stale 处理——只认前者时，元素被删会被误判成动作失败（`src/task/loop.ts` 已修）。
 
 复现命令（无需 DSH 开启任何东西）：
 
@@ -60,7 +68,17 @@ agent-browser eval "document.getElementById('btnA').remove()" && agent-browser c
 agent-browser close --all
 ```
 
-**版本边界**：以上结论只对 `agent-browser 0.38.2` 成立（`/opt/homebrew/bin/agent-browser`）。所以插件对 CLI **版本加锁** `>=0.38 <0.39`，并在启动时校验版本，越界就明确报错而不是猜。
+复现"静默点到同名元素"（#9）：
+
+```bash
+# 页面上三行同名 Delete → snapshot → 删掉目标那行 → click 旧 ref → 会点到下一行
+agent-browser eval "document.querySelectorAll('#list > div')[1].remove()" && agent-browser click "@e2"
+agent-browser close --all
+```
+
+**版本边界**：以上结论在 `agent-browser 0.38.2` 实测，并在 **0.39.1 上复验行为一致**（两种 stale 措辞、同名顺位回退都相同），所以插件要求 CLI **不低于 0.38.2**（`>=0.38.2`），启动时校验；低于下限就明确报错而不是猜。
+
+**为什么不设上限**（初版写的是 `>=0.38 <0.39`，即 0.39.x 会被拒）：这个上限在 0.39.1 上把**可用的环境**判成了"环境失败"，是纯误报——拒绝一个能正常工作的 CLI，比"少验证一个次版本"代价大得多。放宽前已在 0.39.1（隔离安装）上复验本插件实际用到的全部命令：`--version`、`snapshot -i --json`、`batch --json`、`get title`、`eval -b`、`click @ref`，以及陈旧 ref 仍返回 `Unknown ref`；输出结构与 0.38.2 一致。真出现不兼容，第一次调用就会以 `bad-output` / `cli-error` 如实暴露，而不是靠版本号提前猜。
 
 ### 1.2 ❌「MCP 很吃 token」——方向对，但不是参考项目的结论
 
@@ -107,7 +125,7 @@ MCP 的形态是"把 N 个原子动作交给模型，然后等服务端返回"�
 
 | 层 | 用什么 | 说明 |
 |---|---|---|
-| 引擎 | **仍是 CLI** | 薄封装：`spawn` + `--json` 解析 + 版本锁；不碰 CDP |
+| 引擎 | **仍是 CLI** | 薄封装：`spawn` + `--json` 解析 + 版本下限校验；不碰 CDP |
 | 主面 | `defineTool` + `ctx.tools.register`（`@deepseek-ai/dsh-tools`） | 与 dsh-judgment 相反：那个**零工具**，这个**工具为主** |
 | 开关 | 配置 gate 注册：`enabled` 为假时**不注册**任何工具 | 注册/dispose 会改变 schema 前缀 → 关掉即 **prompt 零成本**（`dsh-tools` README:173） |
 | 门控 | **CLI 自己的 `--allowed-domains`**（fail-closed：设了它就关掉 CDP / profile / 状态回放）+ `browser_raw` 的**子命令/参数拒绝表** | `ctx.tools.guard()`（单调 deny）留到 M3，把白名单从"这个工具内部"提到"整条工具流水线" |
@@ -364,7 +382,7 @@ dsh --profile ab-debug headless --help 2>&1 | grep -i "skipping\|incompatible"
   - `@Remote async probe()` —— **零实参**。返回 `{ ok, title, checks[2], checkedAt }`，
     两项各是 `{ id:'cli'|'chrome', label, status:'pass'|'fail', message, fix?, installable? }`。
     - `cli`：没装 → fail + `fix`（`brew install agent-browser` 或 `npm i -g agent-browser`）+ `installable`；
-      装了但版本越界 → fail + "重跑 DESIGN §1.1 实验再放宽版本锁"。
+      装了但版本低于 0.38.2 → fail + "升级 CLI（brew upgrade agent-browser）"。
     - `chrome`：**必须项**。CLI 可用时以它自己的 `doctor --quick --json` 为准（它认得环境变量、engine、
       自定义路径）；问不了 CLI 就退回文件系统 / PATH 探测，消息写"没找到"而不是"没有"。
   - `@Remote async installCli(target)` —— 帮忙装 **CLI**（Homebrew 优先，否则 npm 全局）。
@@ -537,7 +555,7 @@ open 2.9–4.3 s（站点本身慢） · snapshot 40–70 ms · click 13–170 m
 
 | # | 优化 | 依据 | 效果 |
 |---|---|---|---|
-| **P1** | **删掉"执行前再取一次树"**：直接 act；CLI 的 `@eN` 是身份绑定的，失效会报 `Unknown ref`（绝不点错元素），按 stale 重观察 | jev-ultrafast `fresh()` 只做 O(1) 的 in-page 守卫，因为它那层协议不绑身份；我们的 CLI 绑，所以全树快照是纯浪费 | 每步快照 **2 → 1**；`stale_state` 误判类消失 |
+| **P1** | **删掉"执行前再取一次树"**：直接 act；CLI 的 `@eN` 绝大多数情况会拒绝陈旧（`Unknown ref` / `Could not locate`），按 stale 重观察 | jev-ultrafast `fresh()` 只做 O(1) 的 in-page 守卫，因为它那层协议不绑身份；我们的 CLI 大体绑，所以全树快照是纯浪费 | 每步快照 **2 → 1**；`stale_state` 误判类消失 |
 | **P2** | 候选按**总数**封顶 40（原为 40 点击 + 20 输入 = 64）；页面上没有可操作元素时**不发请求**；唯一输入框**免判断**直接交回宿主 | dsh-jev-plugin 的 40/12 配比与 "no-request bypass" | 大选项集的不合法分布变少；简单页省整次请求 |
 | **P3** | 快照失败**重试** 3 次（40/80ms 退避）+ 最后降深度 | jev-ultrafast `observe()` 重试 10 次 | 少一类 `action_error` |
 | **P4** | 结果带 `timings`（snapshot/read/title/ask/act/total）与 `usage.estCostUsd`（$0.042/M 输入 tokens，取自 dsh-jev-plugin 冻结费率） | dsh-jev-plugin 的 receipts 纪律 | 优化可被 `pnpm bench` 直接对照，不再靠印象 |
@@ -1525,7 +1543,7 @@ CLI 默认会话**全机共享、跨对话持久**（会劫持别的 agent 或�
 
 ## 7. 风险与未验证项（不粉饰）
 
-1. **版本边界**：§1.1 的实测只对 `0.38.2` 成立 → 锁 `>=0.38 <0.39`，启动即校验；升级要重跑 §1.1 的实验。
+1. **版本边界**：§1.1 的实测做在 `0.38.2`，0.39.1 上已复验一致 → 只锁下限 `>=0.38.2`，启动即校验；不设上限，升级不再误判成故障。**未验证的次版本仍可能改行为**，出问题则以 `bad-output` / `cli-error` 暴露，而不是靠版本号提前猜。
 2. **输出格式**：多数命令是给人看的文本；`--json` 是全局开关但**不是每个子命令都真有结构化输出** → 只用能确认结构的命令（`snapshot --json` 已在本项目验证过 `data.snapshot` + `data.refs`），解析失败**明确报错**而不是猜。
 3. **新鲜度比对的成本**：`diff snapshot` 依赖"上一次快照"，语义可疑 → 我们**不依赖它**，改用"再取一次 snapshot + digest/指纹比对"（贵一点但正确）。
 4. **人机接管**：滑块/验证码需要人上手 → 必须做成一等状态（交回宿主），不能让模型傻等。
@@ -1538,7 +1556,7 @@ CLI 默认会话**全机共享、跨对话持久**（会劫持别的 agent 或�
 
 ## 8. 里程碑
 
-- **M1（✅ 已完成）**：DESIGN v2 定稿；host（Service 类 + 5 个原子工具）+ client 设置页（summary + 2 开关 + 工具面 + 进阶 + 配置文件入口）；CLI 封装 + 版本锁 + 会话命名；`pnpm build` / `pnpm test`（23 项）/ `pnpm probe`（真 CLI）/ `pnpm verify:remote`（16 项）全绿。
+- **M1（✅ 已完成）**：DESIGN v2 定稿；host（Service 类 + 5 个原子工具）+ client 设置页（summary + 2 开关 + 工具面 + 进阶 + 配置文件入口）；CLI 封装 + 版本下限 + 会话命名；`pnpm build` / `pnpm test`（23 项）/ `pnpm probe`（真 CLI）/ `pnpm verify:remote`（16 项）全绿。
 - **M2（代码已就位，待真机联调）**：`ctx.judgment` 接入 + `browser_run` 有界循环（每步重取快照、停止门在动作前、digest 新鲜度、`input_required` / `needs_verification` handoff）；`browser_raw` + 白名单。**待办**：在「设置 → 决策」配一条 Jev 连接 + 用途 `browser.action`，跑一次真 goal。
 - **M3**：动作审计（落盘 ledger）、配额可视化、Electron/云浏览器评估、`ctx.tools.guard()`（把白名单从工具内部提到整条流水线）。
 

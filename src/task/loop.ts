@@ -1554,7 +1554,12 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     } catch (error) {
       attempted.add(chosen.id)
       const detail = message(error)
-      const stale = /Unknown ref|未知的 ref|stale|no longer exists|不存在/i.test(detail)
+      // CLI 对"ref 已经指不到元素"有两种措辞，都必须算 stale：
+      //   `Unknown ref: e5`                              —— ref 不在当前快照里（快照后页面又变了）
+      //   `Could not locate element with role=… name=…`  —— ref 还在，但元素已从 DOM 消失
+      // 只认前一种是真机踩到过的 bug：后者被当成普通动作失败，连续两次就 action_error 收尾，
+      // 而它其实是"页面在重建"，正确反应是重新观察而不是放弃。
+      const stale = /Unknown ref|未知的 ref|Could not locate|stale|no longer exists|不存在/i.test(detail)
       if (stale) {
         staleStreak += 1
         trace.push(`第 ${step} 步：${chosen.id} 的 ref 已失效（stale_state，连续 ${staleStreak} 次）→ 重新观察`)

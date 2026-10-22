@@ -6,6 +6,9 @@
  * 形状照 dsh-judgment 的 tests/service.test.mjs。
  */
 import assert from 'node:assert/strict'
+import { mkdtemp, writeFile, chmod } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { Context, Service } from '@deepseek-ai/cordis'
 import AgentBrowserService, { Config } from '../lib/index.js'
@@ -154,6 +157,52 @@ test('ctx.skills 不在：跳过并继续（可选服务，绝不拖垮插件）
 })
 
 /* ─────────────────────────── 安装自检 ─────────────────────────── */
+
+/**
+ * 造一个假的 `agent-browser`：只认得 `--version`（和 `doctor`），用于验证**版本判断**本身。
+ *
+ * 真机回归的由来：初版把版本写成区间 `>=0.38 <0.39`，用户升到 0.39.1 之后设置页直接报
+ * 「环境不完整」——一个能正常工作的 CLI 被判成了故障。这条测试钉住的就是"更新版本要放行"。
+ */
+async function fakeCli(version, { doctor } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'fake-ab-'))
+  const file = join(dir, 'agent-browser')
+  // 参数里夹着全局的 `--session <name>`，所以逐个别扫，不能假设 `$1` 就是子命令。
+  await writeFile(file, [
+    '#!/bin/sh',
+    'for arg in "$@"; do',
+    '  if [ "$arg" = "--version" ]; then echo "agent-browser ' + version + '"; exit 0; fi',
+    '  if [ "$arg" = "doctor" ]; then echo \'' + JSON.stringify(doctor ?? { checks: [] }) + '\'; exit 0; fi',
+    'done',
+    'echo \'{"success":true,"data":null}\'',
+    'exit 0',
+    '',
+  ].join('\n'))
+  await chmod(file, 0o755)
+  return file
+}
+
+const CHROME_INSTALLED = {
+  checks: [{ id: 'chrome.installed', status: 'pass', message: 'Google Chrome 155.0.8059.84 at /Applications/Google Chrome.app' }],
+}
+
+test('自检：CLI 版本比最低支持版本新（0.39.1）→ 通过，不能误报环境失败', async () => {
+  const ctx = await boot({ browser: { executablePath: await fakeCli('0.39.1', { doctor: CHROME_INSTALLED }) } })
+  const result = await ctx.get('browser').probe()
+  const cli = result.checks.find((entry) => entry.id === 'cli')
+  assert.equal(cli?.status, 'pass', `0.39.1 应该通过，实际：${cli?.message ?? ''}`)
+  assert.equal(cli?.message, '已安装 0.39.1')
+  assert.equal(result.ok, true, '两项都过时整体应该是就绪')
+})
+
+test('自检：CLI 版本低于下限（0.38.1）→ 红，并给出升级修法', async () => {
+  const ctx = await boot({ browser: { executablePath: await fakeCli('0.38.1') } })
+  const result = await ctx.get('browser').probe()
+  const cli = result.checks.find((entry) => entry.id === 'cli')
+  assert.equal(cli?.status, 'fail')
+  assert.match(String(cli?.message), /0\.38\.1.*0\.38\.2/)
+  assert.match(String(cli?.fix), /brew upgrade/)
+})
 
 test('自检：**就两项**（cli / chrome），且不含路径这类噪音', async () => {
   const ctx = await boot()

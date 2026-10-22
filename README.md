@@ -23,11 +23,12 @@
 | `browser_snapshot` / `browser_act` / `browser_read` / `browser_session` / `browser_screenshot` | ✅ 已实现 |
 | `browser_raw` 逃生舱（白名单） | ✅ 已实现，默认关 |
 | `browser_run`（决策循环，judge = `ctx.judgment`） | ✅ 已实现并完成 39 任务真机基准验证（支持页面内抽取、`inputs` 一次填全、`subgoals` 阶段编排，以及 **Jev + 上游 LLM 低成本早停交回闭环**） |
-| CLI 版本锁 `>=0.38 <0.39` | ✅ 已实现（实测基准 0.38.2） |
+| CLI 版本要求 `>=0.38.2`（不设上限） | ✅ 已实现（0.38.2 实测基准；0.39.1 复验通过） |
 | 动作审计落盘 / 配额可视化 | ⏳ 见 DESIGN.md §8（M3） |
 
-**实测**：`pnpm probe` 会 spawn 真浏览器跑一遍（版本锁 → snapshot refs → 按 ref 点击 → 陈旧 ref 被拒）。
-陈旧 ref 的实测结论（**不会**静默点到别的元素）是 DESIGN v2 §1.1 的立身证据。
+**实测**：`pnpm probe` 会 spawn 真浏览器跑一遍（版本下限 → snapshot refs → 按 ref 点击 → 陈旧 ref 被拒）。
+注意探针只覆盖"元素被删除且没有同名幸存"这一类；**同名顺位回退**是 CLI 的已知行为
+（DESIGN §1.1 表格 #9），探针不假装测它。
 
 ---
 
@@ -44,7 +45,7 @@ dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-brow
 
 ```bash
 brew install agent-browser        # 或 npm i -g agent-browser
-agent-browser --version           # 必须在 [0.38.0, 0.39.0)
+agent-browser --version           # 需要 >= 0.38.2（更新版本也可用）
 ```
 
 ---
@@ -63,10 +64,12 @@ agent-browser --version           # 必须在 [0.38.0, 0.39.0)
 
 ### 关于 ref
 
-ref 是**元素身份绑定**的（0.38.2 实测）：页面变了、元素没了、换页了，旧 ref 会给
-`Unknown ref` / `Could not locate element with role=… name=…` —— **不会**点到别的元素。
-所以本插件**不设** `snapshot_id` 强制门控；`browser_act` 的 `expectUrl` / `expectName`
-是**可选**的额外保险。详见 [DESIGN.md](DESIGN.md) §1.1（含复现命令）。
+ref **大部分时候**是元素身份绑定的（0.38.2 与 0.39.1 实测）：页面变了、元素没了、换页了，旧 ref 会给
+`Unknown ref` / `Could not locate element with role=… name=…`。
+**但有一个例外**：目标元素消失、页面上还有**同名**元素时，解析会退回 role+name 的序位匹配，
+**静默点到隔壁那个同名元素**（如列表里连排的 `Delete`）。所以本插件**不设** `snapshot_id` 强制门控，
+而是靠**每步重取 snapshot** 消除决策窗口；`browser_act` 的 `expectUrl` / `expectName`
+是额外保险——**同名列表/批量操作用得上，建议显式给**。详见 [DESIGN.md](DESIGN.md) §1.1（含复现命令）。
 
 ---
 
@@ -97,7 +100,7 @@ dogfood …）很全，但不适合作为常驻目录；需要时仍可用 `agen
 
 | 项 | 通过 | 不通过 |
 |---|---|---|
-| **agent-browser** | `已安装 0.38.2` | `本机没安装` + 修法，并出现 **[安装]** 按钮（Homebrew 优先，否则 `npm i -g`；**点了才跑**） |
+| **agent-browser** | `已安装 0.39.1`（任何 ≥ 0.38.2 的版本） | `本机没安装` + 修法，并出现 **[安装]** 按钮（Homebrew 优先，否则 `npm i -g`；**点了才跑**） |
 | **Chrome** | `已就绪（Google Chrome 155）` | `没找到` + 下载入口（Chrome 是必须项：没有它页面根本驱动不了） |
 
 两项都过 → 卡片是绿的（`浏览器环境就绪`）；任一项不过 → 红，直接摊开原因与修法。
@@ -174,7 +177,7 @@ pnpm bench:tasks      # 真机任务集基准（支持 --tier offline,base,hard,
 ```
 src/
 ├── config.ts         配置（schemastery；开关决定工具注册）
-├── cli.ts            agent-browser CLI 薄封装：spawn · JSON 信封 · 版本锁 · 原生二进制解析
+├── cli.ts            agent-browser CLI 薄封装：spawn · JSON 信封 · 版本下限 · 原生二进制解析
 ├── extract.ts        页面内 DOM 候选抽取（一次 eval 拿候选 + 状态 + 上下文 near + 正文/标题/URL）
 ├── env.ts            环境探测（Chrome / 安装计划 / 跑命令）——自检那两项的本机侧
 ├── skill.ts          内置 skill 的加载与注册

@@ -72,7 +72,7 @@ export function pluginNote(options: { readonly tools: boolean; readonly decision
     '## DSH 插件补充（由 dsh-agent-browser 注入，不属于 CLI 原文）',
     '',
     options.tools
-      ? '本插件已把常用操作封成**工具**（有 schema、版本锁、命名会话隔离），优先用工具；工具覆盖不到的子命令再用 bash 调 CLI：'
+      ? '本插件已把常用操作封成**工具**（有 schema、版本校验、命名会话隔离），优先用工具；工具覆盖不到的子命令再用 bash 调 CLI：'
       : '本插件的工具面当前**关闭**，请用 bash 直接调 CLI：',
   ]
   if (options.tools) {

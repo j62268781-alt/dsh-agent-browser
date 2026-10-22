@@ -426,6 +426,39 @@ test('动作因 ref 失效失败（页面在重建）→ 连续 3 次后熔断�
   assert.ok(result.steps.length <= 4, `不该烧完 10 步，实际 ${result.steps.length} 步`)
 })
 
+/**
+ * CLI 有两个"ref 指不到元素"的措辞，只认前一个是真机踩到过的 bug：
+ *   `Unknown ref: e5`                               —— ref 不在当前快照里
+ *   `Could not locate element with role=… name=…`   —— ref 还在，但元素已从 DOM 消失
+ * 后一种被当成普通动作失败时，连错两次就 `action_error` 收尾——明明只是页面在重建。
+ */
+test('元素被删（CLI 报 Could not locate …）也归为 stale，而不是动作失败', async () => {
+  let snapshots = 0
+  const browser = {
+    snapshot: async () => {
+      snapshots += 1
+      return {
+        origin: 'https://a.test/',
+        digest: `digest-${snapshots}`,
+        snapshot: 'button "继续" @e1\nbutton "取消" @e2',
+        refs: { e1: { role: 'button', name: '继续' }, e2: { role: 'button', name: '取消' } },
+      }
+    },
+    read: async () => '页面正文',
+    get: async () => '标题',
+    act: async () => { throw new Error('agent-browser click 退出码 1：{"error":"Could not locate element with role=button name=继续"}') },
+    run: async () => {},
+  }
+  const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.1, confirmProbability: 0.1 }])
+  const result = await runTask('目标', deps(browser, judge, { maxSteps: 10 }))
+  assert.equal(result.status, 'no_progress', `应该是页面重建后的熔断，而不是 action_error：${result.summary}`)
+  const trace = result.trace.join('\n')
+  assert.match(trace, /stale_state，连续 1 次/, `第一步就该归为 stale：${trace}`)
+  assert.match(trace, /stale_state，连续 2 次/, `第二步仍在累加 stale，而不是动作失败计数：${trace}`)
+  assert.doesNotMatch(trace, /action_error/)
+  assert.equal(result.steps.filter((s) => s.executed).length, 0, '一次都没真执行成功，不该记 executed')
+})
+
 test('P1：每一步只取一次快照（不再有"执行前再取一次树"）', async () => {
   const page = fakePage([{ ref: 'e1', role: 'button', name: '完成', onClick: (state) => { state.text = '完成了' } }])
   const judge = fakeJudge([{ action: 'click:e1', goalDone: 0.99 }])

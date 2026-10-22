@@ -2,10 +2,11 @@
 /**
  * 真 CLI 探针：不靠"我觉得好了"，用可复跑的命令证明四件事。
  *
- *   1. 版本锁生效（`assertSupported`）；
+ *   1. 版本闸门生效（`assertSupported`：不低于下限即通过）；
  *   2. `snapshot --json` 的 `data.refs` 能被解析成 `@eN` 引用；
  *   3. 按 ref 点击真的生效；
- *   4. **陈旧 ref 被拒绝**——它是 DESIGN v2 §1.1 的立身证据（撤掉了 v1 的 snapshot_id 门控）。
+ *   4. **陈旧 ref 被拒绝**——DESIGN §1.1 的证据之一（撤掉了 v1 的 snapshot_id 门控）。
+ *      仅覆盖"元素删除且无同名幸存"；同名顺位回退是 CLI 已知行为，见 DESIGN §1.1 表格 #9。
  *
  * 用法：`pnpm probe`（会 spawn 真浏览器，结束前 `close --all` 清理自己的会话）。
  */
@@ -46,7 +47,7 @@ async function timed(label, run) {
 
 try {
   const version = await browser.assertSupported()
-  check('版本在支持区间内', true, version)
+  check('版本不低于最低支持版本', true, version)
   console.log(`  · 实际命令              ${browser.commandDetail}`)
 
   const dir = await mkdtemp(join(tmpdir(), 'dsh-agent-browser-probe-'))
@@ -66,6 +67,8 @@ try {
   check('按 ref 点击生效', text.includes('clicked go'), JSON.stringify(text))
 
   // 把被点掉的元素删掉，再用同一个 ref：必须是**类型化失败**，不是静默点到别处。
+  // 注意这只覆盖"元素没了、也没有同名幸存者"这一类；同名顺位回退是 CLI 的已知行为
+  // （DESIGN §1.1 表格 #9），探针测不了，也不该在这里假装测了。
   await browser.run(['eval', "document.getElementById('go').remove(); 'removed'"])
   let stale = ''
   try {
@@ -73,7 +76,7 @@ try {
   } catch (error) {
     stale = error instanceof Error ? error.message : String(error)
   }
-  check('陈旧 ref 被拒（不会静默点到别的元素）', /Unknown ref|Could not locate/.test(stale), stale)
+  check('陈旧 ref 被拒（元素已删除且无同名幸存者）', /Unknown ref|Could not locate/.test(stale), stale)
 } catch (error) {
   failed += 1
   console.log(`✗ 探针异常：${error instanceof Error ? error.message : String(error)}`)

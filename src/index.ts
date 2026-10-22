@@ -9,7 +9,7 @@
  * **一个工具都不注册**（模型面前零成本），「决策」开启时多一个 `browser_run`。配置一改，loader
  * 重新应用 entry，工具随之增减。
  *
- * CLI 不可用（没装 / 版本越界）**不影响注册**：工具照常可见，调用时以结构化错误说明原因；
+ * CLI 不可用（没装 / 版本低于下限）**不影响注册**：工具照常可见，调用时以结构化错误说明原因；
  * 设置页的自检也会把这件事说清楚（`probe()`）。
  */
 
@@ -19,7 +19,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Judge } from 'dsh-judgment/contract'
-import { AgentBrowser, CliError, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, isSupportedVersion } from './cli.js'
+import { AgentBrowser, CliError, SUPPORTED_MIN, isSupportedVersion } from './cli.js'
 import { Config, type AgentBrowserConfig, type ResolvedConfig } from './config.js'
 import { chromeCandidates, chromeFromDoctor, chromePathNames, installPlan, runCommand, whichOnPath } from './env.js'
 import { loadBundledSkill, pluginNote } from './skill.js'
@@ -238,7 +238,7 @@ export class AgentBrowserService extends TypertRemoteService {
     }
   }
 
-  /** 版本锁：懒执行 + 只跑一次，越界给明确文案。 */
+  /** 版本闸门：懒执行 + 只跑一次；只拦低于下限的版本。 */
   private ensureVersion(signal?: AbortSignal): Promise<string> {
     this.versionChecked ??= this.browser.assertSupported(signal === undefined ? {} : { signal })
     return this.versionChecked
@@ -311,7 +311,7 @@ export class AgentBrowserService extends TypertRemoteService {
     return { ok: true, message: `安装完成：${plan.label}`, log }
   }
 
-  /** CLI：装了没、版本在不在支持区间。 */
+  /** CLI：装了没、版本是否不低于最低支持版本。 */
   private async checkCli(): Promise<ProbeCheck> {
     if (this.browser.commandKind === 'name') {
       const plan = installPlan(whichOnPath('brew'), whichOnPath('npm'))
@@ -333,8 +333,8 @@ export class AgentBrowserService extends TypertRemoteService {
         id: 'cli',
         label: 'agent-browser',
         status: 'fail',
-        message: `版本 ${version} 不在支持区间 [${SUPPORTED_MIN}, ${SUPPORTED_MAX_EXCLUSIVE})`,
-        fix: '装回 0.38.x，或重跑 DESIGN §1.1 的实验后放宽版本锁',
+        message: `版本 ${version} 低于最低支持版本 ${SUPPORTED_MIN}`,
+        fix: '升级：brew upgrade agent-browser（或 npm i -g agent-browser@latest）',
       }
     } catch (error) {
       return {
@@ -432,8 +432,9 @@ export class AgentBrowserService extends TypertRemoteService {
     this.registrations.push(ctx.tools.register(defineTool({
       name: 'browser_snapshot',
       description:
-        '取当前页面的无障碍树（带 @eN ref）。**先快照再动作**：ref 是元素身份绑定的，页面变了旧的 ref 会以 ' +
-        '`Unknown ref` 失败（不会点到别的元素）。返回 origin、refs、digest。' +
+        '取当前页面的无障碍树（带 @eN ref）。**先快照再动作**：页面变了旧的 ref 通常会以 ' +
+        '`Unknown ref` 失败；但若目标消失且页面上有**同名**元素，可能顺位点到隔壁那个——' +
+        '同名列表/批量删除时用 browser_act 的 expectName 加一道断言。返回 origin、refs、digest。' +
         '**需要正文/标题时用 includeText / includeTitle**：这三样在同一次 `batch` 里取回（一次进程启动），' +
         '比分别调 browser_read / browser_get 快约 120ms，也少两次模型回合。' + UNTRUSTED,
       parameters: {
