@@ -33,8 +33,10 @@ import {
   inputMatchesOf,
   isAlreadySatisfied,
   isListFilterGoal,
+  isTargetToggleCandidate,
   isTextEntry,
   looksLikeErrorPage,
+  looksLikeInlineValidationError,
   namedSubmitGoal,
   pendingFieldOf,
   pickAlternate,
@@ -82,6 +84,7 @@ import {
   SEARCH_GOALS,
   SECRET_KEY,
   SNAPSHOT_STATE_CAP,
+  SUBMIT_CONTROL_VERBS,
   WAIT_BUDGET,
   type LastChange,
   type TaskCandidate,
@@ -332,6 +335,18 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
 
     let observedPage = await observePage()
+    if (
+      step === 1 &&
+      typeof deps.browser.extract === 'function' &&
+      /\b(modal|dialog|popup|overlay)\b|弹窗|弹层|对话框/i.test(goal) &&
+      /\b(close|dismiss|hide)\b|关闭|关掉/i.test(goal) &&
+      !observedPage.candidates.some((candidate) =>
+        /\b(close|dismiss|cancel|ok|accept|got it)\b|关闭|取消|知道了/i.test(candidate.name ?? ''),
+      )
+    ) {
+      await sleep(450)
+      observedPage = await observePage()
+    }
     initialOrigin ??= observedPage.snapshot.origin
     if (delivered !== undefined) {
       await sleep(40)
@@ -560,10 +575,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         lastChange.added !== undefined ||
         lastChange.removed !== undefined ||
         lastChange.changed !== undefined
-      const treeSubmitAllowed = observedPage.mode === 'tree' && filledThisRun && pageText.length >= MIN_PAGE_TEXT
-      if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle) && evidenceNeedsFill) {
+      const treeSubmitAllowed =
+        observedPage.mode === 'tree' &&
+        ((filledThisRun && pageText.length >= MIN_PAGE_TEXT) ||
+          (lastChange.url_changed === true && pageText.trim().length > 0))
+      const noValidationBlocker = lastChange.url_changed === true || !looksLikeInlineValidationError(pageText)
+      if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle) && noValidationBlocker && evidenceNeedsFill) {
         trace.push(`第 ${step} 步：「${lastSubmitAction.name}」是目标点名的提交控件且页面已变化，但目标要求填值且还没填过 → 不按完成收尾`)
-      } else if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle)) {
+      } else if (applied && (observedPage.mode === 'extract' || treeSubmitAllowed) && !looksLikeErrorPage(pageText, pageTitle) && noValidationBlocker) {
         trace.push(`第 ${step} 步：「${lastSubmitAction.name}」是目标点名的提交控件且页面已变化 → 停，交回宿主校验`)
         steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: lastSubmitAction.id, executed: false, reason: 'named_submit_applied' })
         return finish('needs_verification', `已执行目标点名的提交控件「${lastSubmitAction.name}」且页面已变化`, snapshot)
@@ -646,43 +665,31 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         trace.push(`第 ${step} 步：可操作元素都已满足目标状态 → 停在待验证（交回宿主复核）`)
         return finish('needs_verification', '目标涉及的元素已处于目标状态', snapshot)
       }
-      // 勾选/单选类目标确定性收尾：本轮已执行过动作、无后续动作待办、且目标点名的所有 checkbox/radio 均已处于满足状态（如 ti-checkboxes / todomvc step3 / webform-fine radio）
-      const checkGoal =
-        (ENABLE_VERBS.test(goal) || DISABLE_VERBS.test(goal) || /\b(select|choose|pick)\b[^.]{0,40}\bradio\b/i.test(goal)) &&
-        !FOLLOW_UP_VERBS.test(goal) &&
-        deps.inputs === undefined
-      if (checkGoal && steps.some((item) => item.executed)) {
-        const allToggles = allCandidates.filter(
-          (candidate) => candidate.role === 'checkbox' || candidate.role === 'radio' || candidate.role === 'switch',
-        )
-        const remainingToggles = candidates.filter(
-          (candidate) => candidate.role === 'checkbox' || candidate.role === 'radio' || candidate.role === 'switch',
-        )
-        const matchesToggleTarget = (candidate: TaskCandidate): boolean => {
-          const role = (candidate.role ?? '').toLowerCase()
-          if (/\bradio\b/i.test(goal) && !/\bcheckbox\b/i.test(goal) && role !== 'radio') return false
-          if (/\bcheckbox\b/i.test(goal) && !/\bradio\b/i.test(goal) && role !== 'checkbox') return false
-          const desc = candidate.description.toLowerCase()
-          if (
-            (/\b(first|1st)\b|第一|首个/i.test(goal) && desc.includes(' #') && !desc.includes(' #1')) ||
-            (/\b(second|2nd)\b|第二/i.test(goal) && desc.includes(' #') && !desc.includes(' #2')) ||
-            (/\b(third|3rd)\b|第三/i.test(goal) && desc.includes(' #') && !desc.includes(' #3'))
-          ) {
-            return false
-          }
-          if ((candidate.name ?? '') !== '' && goalMentions(candidate.name ?? '', goal)) return true
-          if (desc.includes(' #1') && /\b(first|1st)\b|第一|首个/i.test(goal)) return true
-          if (desc.includes(' #2') && /\b(second|2nd)\b|第二/i.test(goal)) return true
-          if (desc.includes(' #3') && /\b(third|3rd)\b|第三/i.test(goal)) return true
-          return false
-        }
-        const satisfiedMatchesGoal = satisfied.some(matchesToggleTarget)
-        const remainingMatchesGoal = remainingToggles.some(matchesToggleTarget)
-        if (allToggles.length > 0 && (remainingToggles.length === 0 || (satisfiedMatchesGoal && !remainingMatchesGoal))) {
-          trace.push(`第 ${step} 步：目标涉及的勾选控件已全部处于目标状态 → 停，交回宿主校验`)
-          steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:toggles_satisfied', executed: false, reason: 'toggles_satisfied' })
-          return finish('needs_verification', '目标涉及的勾选状态已达成', snapshot)
-        }
+    }
+
+    const unsatisfiedTargetToggles = candidates.filter((candidate) => isTargetToggleCandidate(candidate, goal))
+    const satisfiedTargetToggles = satisfied.filter((candidate) => isTargetToggleCandidate(candidate, goal))
+    const hasUnsatisfiedTargetToggle = unsatisfiedTargetToggles.length > 0
+
+    // 勾选/单选类目标确定性收尾：本轮已执行过动作、无后续动作待办、且目标点名的所有 checkbox/radio 均已处于满足状态（如 ti-checkboxes / todomvc step3 / webform-fine radio）
+    const checkGoal =
+      (ENABLE_VERBS.test(goal) || DISABLE_VERBS.test(goal) || /\b(select|choose|pick)\b[^.]{0,40}\bradio\b/i.test(goal)) &&
+      !FOLLOW_UP_VERBS.test(goal) &&
+      deps.inputs === undefined
+    if (checkGoal && steps.some((item) => item.executed)) {
+      const allToggles = allCandidates.filter(
+        (candidate) => candidate.role === 'checkbox' || candidate.role === 'radio' || candidate.role === 'switch',
+      )
+      const remainingToggles = candidates.filter(
+        (candidate) => candidate.role === 'checkbox' || candidate.role === 'radio' || candidate.role === 'switch',
+      )
+      if (
+        allToggles.length > 0 &&
+        (remainingToggles.length === 0 || (satisfiedTargetToggles.length > 0 && !hasUnsatisfiedTargetToggle))
+      ) {
+        trace.push(`第 ${step} 步：目标涉及的勾选控件已全部处于目标状态 → 停，交回宿主校验`)
+        steps.push({ step, origin: snapshot.origin, digest: snapshot.digest, action: 'stop:toggles_satisfied', executed: false, reason: 'toggles_satisfied' })
+        return finish('needs_verification', '目标涉及的勾选状态已达成', snapshot)
       }
     }
 
@@ -943,7 +950,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
 
     const effectiveGoalThreshold = singleStepGoal(goal) ? deps.goalThreshold : Math.max(deps.goalThreshold, 0.95)
-    const completionEvidenceAllowed = primaryContentScopeSatisfied && filterState !== false
+    const completionEvidenceAllowed =
+      primaryContentScopeSatisfied && filterState !== false && !hasUnsatisfiedTargetToggle
     if (
       goalDone !== undefined &&
       goalDone >= effectiveGoalThreshold &&
@@ -952,7 +960,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       !completionEvidenceAllowed
     ) {
       trace.push(
-        `第 ${step} 步：goal_done=${goalDone.toFixed(2)}，但目标范围或筛选状态缺少确定性证据 → 不允许收尾`,
+        `第 ${step} 步：goal_done=${goalDone.toFixed(2)}，但目标范围、勾选状态或筛选状态缺少确定性证据 → 不允许收尾`,
       )
     }
     if (
@@ -1047,11 +1055,15 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
 
     // 确定性加购
+    let deterministicallyChosen = false
     if (chosen.kind === 'click') {
       const cartTarget = addToCartTarget(goal, candidates)
-      if (cartTarget !== undefined && cartTarget.id !== chosen.id) {
-        trace.push(`第 ${step} 步：目标明确要加购「${cartTarget.name ?? cartTarget.id}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
-        chosen = cartTarget
+      if (cartTarget !== undefined) {
+        if (cartTarget.id !== chosen.id) {
+          trace.push(`第 ${step} 步：目标明确要加购「${cartTarget.name ?? cartTarget.id}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
+          chosen = cartTarget
+        }
+        deterministicallyChosen = true
       }
     }
 
@@ -1069,6 +1081,7 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       if (enter !== undefined) {
         trace.push(`第 ${step} 步：目标要搜索/新建、刚填过输入框 → 按 Enter 提交搜索（判断层选了「${chosen.name ?? chosen.id}」）`)
         chosen = enter
+        deterministicallyChosen = true
       }
     }
 
@@ -1091,40 +1104,18 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           trace.push(`第 ${step} 步：还有没生效的字段「${pending.name ?? pending.id}」→ 先填它`)
         }
         chosen = pending
+        deterministicallyChosen = true
       }
     }
 
     // 勾选目标或含勾选子句的多步目标（如 "Mark the 'buy milk' todo as completed" 或 todomvc-coarse）：
     // 当所有待填值都已用完时，若页面上恰好有一个名字命中目标的未满足 checkbox，直接选它；
-    // 若该 checkbox 已满足且存在命中末尾子句的提交/清空按钮（如 "Clear completed"），直接选该按钮。
+    // 若前置输入/勾选子目标已满足且存在命中末尾子句的提交/清空按钮（如 "Clear completed" / "Submit" / "Continue" / "Finish"），直接选该按钮。
     const allInputsConsumedOrFilled =
       pendingField === undefined &&
       (deps.inputs === undefined ||
         Object.values(deps.inputs).every((val) => consumedValues.has(val) || [...filledFields.values()].includes(val)))
     const hasRadioSelectClause = /\b(select|choose|pick)\b[^.]{0,40}\bradio\b/i.test(goal)
-    const matchesGoalOrOrdinalToggle = (candidate: TaskCandidate): boolean => {
-      if ((candidate.role !== 'checkbox' && candidate.role !== 'radio' && candidate.role !== 'switch') || (candidate.state ?? '').includes('已禁用')) {
-        return false
-      }
-      const role = (candidate.role ?? '').toLowerCase()
-      if (/\bradio\b/i.test(goal) && !/\bcheckbox\b/i.test(goal) && role !== 'radio') return false
-      if (/\bcheckbox\b/i.test(goal) && !/\bradio\b/i.test(goal) && role !== 'checkbox') return false
-      const desc = candidate.description.toLowerCase()
-      if (
-        (/\b(first|1st)\b|第一|首个/i.test(goal) && desc.includes(' #') && !desc.includes(' #1')) ||
-        (/\b(second|2nd)\b|第二/i.test(goal) && desc.includes(' #') && !desc.includes(' #2')) ||
-        (/\b(third|3rd)\b|第三/i.test(goal) && desc.includes(' #') && !desc.includes(' #3'))
-      ) {
-        return false
-      }
-      if ((candidate.name ?? '') !== '' && goalMentions(candidate.name ?? '', goal)) return true
-      if (role !== '' && new RegExp(`\\b${role}\\b`, 'i').test(goal)) {
-        if (desc.includes(' #1') && /\b(first|1st)\b|第一|首个/i.test(goal)) return true
-        if (desc.includes(' #2') && /\b(second|2nd)\b|第二/i.test(goal)) return true
-        if (desc.includes(' #3') && /\b(third|3rd)\b|第三/i.test(goal)) return true
-      }
-      return false
-    }
     if (
       chosen.kind !== 'input' &&
       !lastActionWasText &&
@@ -1132,24 +1123,41 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       (ENABLE_VERBS.test(goal) || DISABLE_VERBS.test(goal) || hasRadioSelectClause) &&
       !/\ball\b|全部|所有/i.test(goal)
     ) {
-      const matchingToggles = candidates.filter(matchesGoalOrOrdinalToggle)
-      if (matchingToggles.length === 1) {
-        if (chosen.id !== matchingToggles[0].id) {
-          trace.push(`第 ${step} 步：目标明确要勾选「${matchingToggles[0].name}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
+      const matchingToggles = candidates.filter((candidate) => isTargetToggleCandidate(candidate, goal))
+      if (matchingToggles.length >= 1) {
+        const chosenId = chosen.id
+        if (!matchingToggles.some((toggle) => toggle.id === chosenId)) {
+          trace.push(`第 ${step} 步：目标明确要勾选「${matchingToggles[0].name}」→ 改选它（判断层选了「${chosen.name ?? chosenId}」）`)
           chosen = matchingToggles[0]
         }
-      } else if (matchingToggles.length === 0 && satisfied.some(matchesGoalOrOrdinalToggle)) {
-        const finalClause = goal.split(/[,，;；]|\bthen\b/i).map((c) => c.trim()).filter(Boolean).pop() ?? ''
-        const finalBtn = candidates.find(
+        deterministicallyChosen = true
+      }
+    }
+    if (
+      allInputsConsumedOrFilled &&
+      !hasUnsatisfiedTargetToggle &&
+      (filledThisRun || satisfiedTargetToggles.length > 0) &&
+      chosen.kind !== 'input' &&
+      !lastActionWasText
+    ) {
+      const finalClause = goal.split(/[,，;；]|\band\b|\bthen\b/i).map((c) => c.trim()).filter(Boolean).pop() ?? ''
+      const soleSubmitCandidates = candidates.filter(
+        (candidate) => candidate.kind === 'click' && submitControlOf(candidate.name ?? '') !== undefined,
+      )
+      const finalBtn =
+        candidates.find(
           (candidate) =>
             candidate.kind === 'click' &&
             submitControlOf(candidate.name ?? '') !== undefined &&
-            goalMentions(candidate.name ?? '', finalClause),
-        )
-        if (finalBtn !== undefined && chosen.id !== finalBtn.id) {
-          trace.push(`第 ${step} 步：勾选子目标已满足，执行末尾子句控件「${finalBtn.name}」（判断层选了「${chosen.name ?? chosen.id}」）`)
+            (goalMentions(candidate.name ?? '', finalClause) || goalMentions(candidate.name ?? '', goal)),
+        ) ??
+        (SUBMIT_CONTROL_VERBS.test(finalClause) && soleSubmitCandidates.length === 1 ? soleSubmitCandidates[0] : undefined)
+      if (finalBtn !== undefined) {
+        if (chosen.id !== finalBtn.id) {
+          trace.push(`第 ${step} 步：前置输入/勾选已满足，执行收尾提交控件「${finalBtn.name}」（判断层选了「${chosen.name ?? chosen.id}」）`)
           chosen = finalBtn
         }
+        deterministicallyChosen = true
       }
     }
 
@@ -1399,8 +1407,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
     }
     attempted.add(chosen.id)
 
-    // ambiguous 门
-    if (chosen.kind === 'click' && confidence !== undefined && confidence < AMBIGUOUS_CONFIDENCE && probabilities !== undefined) {
+    // ambiguous 门（确定性规则直接选中的动作不走模糊熔断，但仍走下方的不可逆门）
+    if (!deterministicallyChosen && chosen.kind === 'click' && confidence !== undefined && confidence < AMBIGUOUS_CONFIDENCE && probabilities !== undefined) {
       const ranked = Object.entries(probabilities).sort((left, right) => right[1] - left[1])
       const gap = (ranked[0]?.[1] ?? 0) - (ranked[1]?.[1] ?? 0)
       if (gap < AMBIGUOUS_GAP) {
@@ -1473,12 +1481,22 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       }
       const allInputsUsed =
         deps.inputs === undefined || Object.values(deps.inputs).every((val) => consumedValues.has(val) || [...filledFields.values()].includes(val))
+      lastDismissAction =
+        chosen.kind === 'click' &&
+        /\b(close|dismiss|hide)\b|关闭|关掉|收起/i.test(goal) &&
+        /close|dismiss|关闭|关掉|got it|i understand/i.test(chosen.name ?? '')
+          ? { id: chosen.id, name: chosen.name ?? '' }
+          : undefined
       lastSubmitAction =
+        lastDismissAction === undefined &&
         chosen.kind === 'click' &&
         namedSubmitGoal(goal) &&
         submitControlOf(chosen.name ?? '') !== undefined &&
         ((singleStepGoal(goal) || fillThenSubmitGoal(goal)) && goalMentions(chosen.name ?? '', goal) ||
-          (allInputsUsed && goalMentions(chosen.name ?? '', finalClause)))
+          (allInputsUsed &&
+            (goalMentions(chosen.name ?? '', finalClause) ||
+              goalMentions(chosen.name ?? '', goal) ||
+              SUBMIT_CONTROL_VERBS.test(finalClause))))
           ? { id: chosen.id, name: chosen.name ?? '' }
           : undefined
       lastFilterLinkClick =
@@ -1493,12 +1511,6 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         singleStepGoal(goal) &&
         /add\b[^.]{0,60}\bcart\b|加入购物车|添加到购物车/i.test(goal) &&
         /add.*cart|加入购物车|添加到购物车/i.test(chosen.name ?? '')
-          ? { id: chosen.id, name: chosen.name ?? '' }
-          : undefined
-      lastDismissAction =
-        chosen.kind === 'click' &&
-        /\b(close|dismiss|hide)\b|关闭|关掉|收起/i.test(goal) &&
-        /close|dismiss|关闭|关掉|got it|i understand/i.test(chosen.name ?? '')
           ? { id: chosen.id, name: chosen.name ?? '' }
           : undefined
       lastSelectedOption =

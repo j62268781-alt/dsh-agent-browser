@@ -98,7 +98,7 @@ export function diffCandidates(
 
 /** 字段名归一：小写 + 下划线/连字符/多余空白都当空格。 */
 export function fieldName(value: string): string {
-  return value.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return value.toLowerCase().replace(/[/()_-]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
 /** goal 里用于相关性的词（ASCII 词 + 中文 2 字 n-gram）。 */

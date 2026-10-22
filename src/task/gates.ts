@@ -51,8 +51,11 @@ export function matchInputValue(candidate: TaskCandidate, inputs?: Readonly<Reco
   const exact = entries.filter((entry) => entry.key !== '' && entry.key === name)
   if (exact.length === 1) return exact[0]?.value
   if (exact.length > 1) return undefined
+  const paddedName = ` ${name} `
   const fuzzy = entries.filter(
-    (entry) => entry.key !== '' && (name.startsWith(`${entry.key} `) || entry.key.startsWith(`${name} `)),
+    (entry) =>
+      entry.key !== '' &&
+      (paddedName.includes(` ${entry.key} `) || ` ${entry.key} `.includes(paddedName)),
   )
   return fuzzy.length === 1 ? fuzzy[0]?.value : undefined
 }
@@ -80,10 +83,13 @@ export function inputMatchesOf(
   const fuzzyByField = new Map<string, Array<{ key: string; value: string }>>()
   for (const entry of entries) {
     if (exactKeys.has(entry.key) || entry.normalized === '') continue
+    const paddedEntry = ` ${entry.normalized} `
     const matches = fields.filter((candidate) => {
       if (result.has(candidate.id)) return false
       const name = fieldName(candidate.name ?? '')
-      return name !== '' && (name.startsWith(`${entry.normalized} `) || entry.normalized.startsWith(`${name} `))
+      if (name === '') return false
+      const paddedName = ` ${name} `
+      return paddedName.includes(paddedEntry) || paddedEntry.includes(paddedName)
     })
     if (matches.length === 1) {
       const candidate = matches[0]!
@@ -126,6 +132,50 @@ export function inputMatchesOf(
   }
 
   return result
+}
+
+/**
+ * 判断候选是否是当前目标点名要切换的勾选/单选控件（支持多子句，如 "Check checkbox 1 and uncheck checkbox 2" 或 "Select the second radio button"）。
+ */
+export function isTargetToggleCandidate(candidate: TaskCandidate, goal: string): boolean {
+  if ((candidate.state ?? '').includes('已禁用')) return false
+  const role = (candidate.role ?? '').toLowerCase()
+  if (role !== 'checkbox' && role !== 'radio' && role !== 'switch') return false
+  if (/\bradio\b/i.test(goal) && !/\bcheckbox\b/i.test(goal) && role !== 'radio') return false
+  if (/\bcheckbox\b/i.test(goal) && !/\bradio\b/i.test(goal) && role !== 'checkbox') return false
+  const desc = candidate.description.toLowerCase()
+  const clauses = goal.split(/[,，;；]|\band\b|\bthen\b/i).map((clause) => clause.trim()).filter(Boolean)
+  const candidateKey = fieldName(candidate.name ?? '')
+  const matchesOrdinalClause = (clause: string): boolean => {
+    if (!clause.toLowerCase().includes(role)) return false
+    if (desc.includes(' #1') && /\b(first|1st)\b|第一|首个/i.test(clause)) return true
+    if (desc.includes(' #2') && /\b(second|2nd)\b|第二/i.test(clause)) return true
+    if (desc.includes(' #3') && /\b(third|3rd)\b|第三/i.test(clause)) return true
+    return false
+  }
+  const matchedClause =
+    clauses.length > 1
+      ? (candidateKey !== '' ? clauses.find((clause) => fieldName(clause).includes(candidateKey)) : undefined) ??
+        (candidateKey !== '' ? clauses.find((clause) => goalMentions(candidate.name ?? '', clause)) : undefined) ??
+        clauses.find(matchesOrdinalClause)
+      : undefined
+  const scope = matchedClause ?? goal
+  if (
+    (/\b(first|1st)\b|第一|首个/i.test(scope) && desc.includes(' #') && !desc.includes(' #1')) ||
+    (/\b(second|2nd)\b|第二/i.test(scope) && desc.includes(' #') && !desc.includes(' #2')) ||
+    (/\b(third|3rd)\b|第三/i.test(scope) && desc.includes(' #') && !desc.includes(' #3'))
+  ) {
+    return false
+  }
+  const namedOrOrdinal =
+    ((candidate.name ?? '') !== '' && ( (candidateKey !== '' && fieldName(scope).includes(candidateKey)) || goalMentions(candidate.name ?? '', scope) )) ||
+    matchesOrdinalClause(scope)
+  if (!namedOrOrdinal) return false
+  const radioSelectVerb = role === 'radio' && /\b(select|choose|pick)\b|选择|选/i.test(scope)
+  return (
+    ((ENABLE_VERBS.test(scope) || radioSelectVerb) && !DISABLE_VERBS.test(scope)) ||
+    (DISABLE_VERBS.test(scope) && !ENABLE_VERBS.test(scope))
+  )
 }
 
 /**
@@ -499,6 +549,12 @@ export function submitControlOf(name: string): string | undefined {
 export function looksLikeErrorPage(text: string, title = ''): boolean {
   const sample = `${title}\n${text}`.slice(0, 4000)
   return /(ERR_[A-Z_]{3,}|net::ERR_|This site can.t be reached|网页无法正常运作|无法访问此网站|该网页无法正常运作|DNS_PROBE)/i.test(sample)
+}
+
+/** 页面内联表单校验报错（如 "Error: Postal Code is required"），提示提交被拦截。 */
+export function looksLikeInlineValidationError(text: string): boolean {
+  const sample = text.slice(0, 2000)
+  return /\b(?:error:\s*\S+[^\n]{0,80}\b(?:is required|cannot be empty|invalid)|\S+\s+is required\b)/i.test(sample)
 }
 
 /** 这一类目标不允许用"提交类控件已点击 + 页面变了"收尾。 */

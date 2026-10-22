@@ -470,7 +470,14 @@ export function candidatesOf(snapshot: Snapshot, goal = ''): TaskCandidate[] {
  * 名字/上下文对得上目标 → 返回它（确定性动作，不猜）。
  */
 export function addToCartTarget(goal: string, candidates: readonly TaskCandidate[]): TaskCandidate | undefined {
-  if (!/\badd\b[^.]{0,60}\bcart\b|加入购物车|添加到购物车/i.test(goal)) return undefined
+  if (!/\badd\b[^.]{0,60}\bcart\b|\b(?:buy|purchase)\b|加入购物车|添加到购物车|购买/i.test(goal)) return undefined
+  if (
+    candidates.some(
+      (candidate) => candidate.kind === 'click' && /^(?:remove|remove from cart)\b|^(?:移除|删除)/i.test(candidate.name ?? ''),
+    )
+  ) {
+    return undefined
+  }
   const controls = candidates.filter(
     (candidate) => candidate.kind === 'click' && /add\s*(?:it\s*)?(?:to\s*(?:the\s*)?cart)|加入购物车|添加到购物车/i.test(candidate.name ?? ''),
   )

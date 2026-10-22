@@ -169,6 +169,13 @@ const SCRIPT_LINES = [
   '        node = node.parentElement',
   '      }',
   '    }',
+  "    if (!isField && (name === '' || /^\\d+$/.test(name))) {",
+  "      const rawHint = String(el.getAttribute('data-test') || el.getAttribute('data-testid') || el.id || '')",
+  "      const hint = rawHint.replace(/[-_]+/g, ' ').trim()",
+  "      if (hint !== '' && /[a-zA-Z]/.test(hint)) {",
+  "        name = (name === '' ? hint : hint + ' (' + name + ')').slice(0, 60)",
+  '      }',
+  '    }',
   "    if (name === '' && !isField) continue",
   // 孪生 DOM 壳去重：外层 div/span/li（因 onclick/tabindex/role 被抓到）若直接包裹了同名 a/button/input/select，
   // 只保留内层真实控件，避免内外两层生成两个同名候选平分 Jev 概率。

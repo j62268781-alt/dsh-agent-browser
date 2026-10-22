@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, disabledTargetWithoutUnlock, fieldName, filterStateMatchesGoal, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, requiresPrimaryContentTarget, scopeCandidatesOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, addToCartTarget, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, disabledTargetWithoutUnlock, fieldName, filterStateMatchesGoal, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, isTargetToggleCandidate, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, requiresPrimaryContentTarget, scopeCandidatesOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -608,14 +608,21 @@ test('抽取：checkbox 不把默认 value="on" 当名字，且能从紧邻文�
 
 test('isAlreadySatisfied：多子句勾选目标按各子句独立判定 checked / unchecked', () => {
   const goal = 'Make checkbox 1 checked and checkbox 2 unchecked'
-  const cb1Checked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '已勾选', description: '' }
-  const cb1Unchecked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '未勾选', description: '' }
-  const cb2Checked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '已勾选', description: '' }
-  const cb2Unchecked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '未勾选', description: '' }
+  const cb1Checked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '已勾选', description: '勾选框（checkbox #1）「checkbox 1」 [已勾选]' }
+  const cb1Unchecked = { id: 'click:0', kind: 'click', role: 'checkbox', name: 'checkbox 1', state: '未勾选', description: '勾选框（checkbox #1）「checkbox 1」 [未勾选]' }
+  const cb2Checked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '已勾选', description: '勾选框（checkbox #2）「checkbox 2」 [已勾选]' }
+  const cb2Unchecked = { id: 'click:1', kind: 'click', role: 'checkbox', name: 'checkbox 2', state: '未勾选', description: '勾选框（checkbox #2）「checkbox 2」 [未勾选]' }
   assert.equal(isAlreadySatisfied(cb1Checked, goal), true)
   assert.equal(isAlreadySatisfied(cb1Unchecked, goal), false)
   assert.equal(isAlreadySatisfied(cb2Unchecked, goal), true)
   assert.equal(isAlreadySatisfied(cb2Checked, goal), false)
+  assert.equal(isTargetToggleCandidate(cb1Unchecked, 'Check checkbox 1 and uncheck checkbox 2'), true)
+  assert.equal(isTargetToggleCandidate(cb2Checked, 'Check checkbox 1 and uncheck checkbox 2'), true)
+
+  const radio1 = { id: 'click:2', kind: 'click', role: 'radio', name: 'Checked radio', state: '已勾选', description: '单选框（radio #1）「Checked radio」 [已勾选]' }
+  const radio2 = { id: 'click:3', kind: 'click', role: 'radio', name: 'Default radio', state: '未勾选', description: '单选框（radio #2）「Default radio」 [未勾选]' }
+  assert.equal(isTargetToggleCandidate(radio1, 'Select the second radio button'), false)
+  assert.equal(isTargetToggleCandidate(radio2, 'Select the second radio button'), true)
 })
 
 test('candidatesFromExtracted：物理 combobox role 即使不识别 goal 动词也进入 Jev 前 10', () => {
@@ -758,4 +765,35 @@ test('rankByGoal：纯词面软排序、结构分数、同名多样性封顶与�
     `未命中的同名 View Details 只保留前 2 个在第一梯队，底部 Publish Post 应跃升至第 3 位（高于 View Details #3..#15 与导航栏）：${JSON.stringify(top4Names)}`,
   )
   assert.equal(ranked[0]?.inMain, true, '字面无重合时主内容区控件应排在页头导航链接之前')
+})
+
+test('inputMatchesOf 与 addToCartTarget：复合标签词边界匹配（postal_code ↔ Zip/Postal Code）及 buy/purchase 加购识别', () => {
+  const checkoutFields = [
+    { id: 'input:0', kind: 'input', role: 'textbox', name: 'First Name', description: '输入框「First Name」' },
+    { id: 'input:1', kind: 'input', role: 'textbox', name: 'Last Name', description: '输入框「Last Name」' },
+    { id: 'input:2', kind: 'input', role: 'textbox', name: 'Zip/Postal Code', description: '输入框「Zip/Postal Code」' },
+  ]
+  const matched = inputMatchesOf(checkoutFields, { first_name: 'Ada', last_name: 'Lovelace', postal_code: '10001' })
+  assert.equal(matched.get('input:0')?.value, 'Ada')
+  assert.equal(matched.get('input:1')?.value, 'Lovelace')
+  assert.equal(matched.get('input:2')?.value, '10001', 'postal_code 应通过词边界匹配 Zip/Postal Code')
+
+  const shopCandidates = [
+    { id: 'click:1', kind: 'click', role: 'button', name: 'Add to cart', near: 'Sauce Labs Backpack $29.99', description: '点击「Add to cart」' },
+    { id: 'click:2', kind: 'click', role: 'button', name: 'Add to cart', near: 'Sauce Labs Bike Light $9.99', description: '点击「Add to cart」' },
+  ]
+  assert.equal(
+    addToCartTarget('Log in, buy the Sauce Labs Backpack and complete the checkout', shopCandidates)?.id,
+    'click:1',
+    'buy 目标在尚未加购时应直接定位目标商品的 Add to cart 按钮',
+  )
+  const afterAdded = [
+    { id: 'click:1', kind: 'click', role: 'button', name: 'Remove', near: 'Sauce Labs Backpack $29.99', description: '点击「Remove」' },
+    { id: 'click:2', kind: 'click', role: 'button', name: 'Add to cart', near: 'Sauce Labs Bike Light $9.99', description: '点击「Add to cart」' },
+  ]
+  assert.equal(
+    addToCartTarget('Log in, buy the Sauce Labs Backpack and complete the checkout', afterAdded),
+    undefined,
+    '商品已加购（出现 Remove）后 buy 目标不再触发加购覆盖',
+  )
 })

@@ -41,6 +41,17 @@ export async function fillFromInputs(
     return
   }
   await browser.act('fill', ref, { value }, { signal })
+  if (typeof browser.json === 'function' && ref.startsWith('[') && /\bdate\b|日期/i.test(candidate.name ?? '')) {
+    await browser
+      .json(
+        [
+          'eval',
+          `(() => { const el = document.querySelector(${JSON.stringify(ref)}); if (!el) return; const v = ${JSON.stringify(value)}; el.blur(); document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); if (el.value !== v) { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } })()`,
+        ],
+        { signal },
+      )
+      .catch(() => {})
+  }
 }
 
 /** `control:wait`：等到页面真的变，而不是固定睡 800ms。 */
