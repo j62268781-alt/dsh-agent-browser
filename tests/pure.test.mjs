@@ -740,6 +740,39 @@ test('抽取：通用 ARIA 状态（expanded/selected/pressed/disabled）、主�
   assert.equal(checkouts.length, 1, `外层 div[role=button] 与内层 <button> 同名孪生节点应去重为 1 个，实际：${JSON.stringify(checkouts)}`)
 })
 
+test('抽取与排序：按钮继承最近卡片标题，页面级标题不污染控件上下文', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<main><h1>Plans</h1>' +
+      '<article><h2>Basic Plan</h2><div><button>Choose</button></div></article>' +
+      '<article><h2>Pro Plan</h2><div><button>Choose</button></div></article>' +
+      '<div><button>Global action</button></div>' +
+      '<section aria-labelledby="section-title"><h2 id="section-title">Enterprise Plan</h2><div><button>Contact</button></div></section>' +
+      '</main>',
+    { url: 'https://a.test/plans', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 80, height: 24, top: 10, left: 10, right: 90, bottom: 34, x: 10, y: 10, toJSON() {} })
+  window.document.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+  const candidates = candidatesFromExtracted(page.items, 'Choose the button in the Pro Plan section')
+  const choices = candidates.filter((candidate) => candidate.name === 'Choose')
+  const pro = choices.find((candidate) => candidate.contextLabel === 'Pro Plan')
+  const basic = choices.find((candidate) => candidate.contextLabel === 'Basic Plan')
+  const global = candidates.find((candidate) => candidate.name === 'Global action')
+  const enterprise = candidates.find((candidate) => candidate.name === 'Contact')
+
+  assert.ok(pro && basic, `同名按钮需各自携带最近标题：${JSON.stringify(choices)}`)
+  assert.match(pro.description, /上下文: Pro Plan/)
+  assert.equal(rankByGoal(choices, 'Choose the button in the Pro Plan section')[0]?.id, pro.id)
+  assert.equal(global?.contextLabel, undefined, 'main 页面标题不应作为通用按钮上下文')
+  assert.equal(enterprise?.contextLabel, 'Enterprise Plan', 'aria-labelledby 可作为容器上下文标题')
+})
+
+
 test('rankByGoal：纯词面软排序、结构分数、同名多样性封顶与主内容区优先', () => {
   // 1) 序号在候选描述中显式呈现；goal 的 second 由 Jev 理解，不由插件规则抢先决定。
   const radios = candidatesFromExtracted(

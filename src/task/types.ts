@@ -143,6 +143,8 @@ export interface TaskCandidate {
   readonly groupId?: string
   /** 容器分组的简短标签（来自 legend / aria-label / 组内标题）。 */
   readonly groupLabel?: string
+  /** 控件附近小型语义容器的标题，用于区分重复操作。 */
+  readonly contextLabel?: string
   /** 所属表单 ID。 */
   readonly formId?: string
   /** 由 DOM 顺序、role 与标准 input 属性生成，不含页面文案。 */

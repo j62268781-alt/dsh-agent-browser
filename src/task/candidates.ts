@@ -187,10 +187,18 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
       !(item.near ?? '').includes(item.groupLabel)
         ? `，组: ${item.groupLabel}`
         : ''
+    const contextNote =
+      item.contextLabel !== undefined &&
+      item.contextLabel !== '' &&
+      item.contextLabel !== item.name &&
+      item.contextLabel !== item.groupLabel &&
+      !(item.near ?? '').includes(item.contextLabel)
+        ? `，上下文: ${item.contextLabel}`
+        : ''
     const label =
       item.name === ''
-        ? `（无名称的 ${roleTag}${ordinalTag}${state}${near}${groupNote}）`
-        : `「${item.name}」（${roleTag}${ordinalTag}${state}${near}${groupNote}）`
+        ? `（无名称的 ${roleTag}${ordinalTag}${state}${near}${groupNote}${contextNote}）`
+        : `「${item.name}」（${roleTag}${ordinalTag}${state}${near}${groupNote}${contextNote}）`
     const candidate: TaskCandidate = {
       id: `click:${item.index}`,
       description: `点击${label}`,
@@ -207,6 +215,7 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
       ...(item.autocomplete === undefined ? {} : { autocomplete: item.autocomplete }),
       ...(item.groupId === undefined ? {} : { groupId: item.groupId }),
       ...(item.groupLabel === undefined ? {} : { groupLabel: item.groupLabel }),
+      ...(item.contextLabel === undefined ? {} : { contextLabel: item.contextLabel }),
       ...(item.formId === undefined ? {} : { formId: item.formId }),
       ...(item.groupId === undefined || groupSignatures.get(item.groupId) === undefined
         ? {}
@@ -329,6 +338,7 @@ export function rankByGoal<T extends TaskCandidate>(list: readonly T[], goal: st
     const state = (candidate.state ?? '').toLowerCase()
     const role = (candidate.role ?? '').toLowerCase()
     const gLabel = (candidate.groupLabel ?? '').toLowerCase()
+    const contextLabel = (candidate.contextLabel ?? '').toLowerCase()
 
     let total = 0
     for (const token of tokens) {
@@ -342,6 +352,10 @@ export function rankByGoal<T extends TaskCandidate>(list: readonly T[], goal: st
         total += 2
       } else if (near !== '' && near.includes(token)) {
         total += 1
+      } else if (contextLabel !== '' && hasTokenBoundary(contextLabel, token)) {
+        total += 1.5
+      } else if (contextLabel !== '' && contextLabel.includes(token)) {
+        total += 0.8
       } else if (gLabel !== '' && gLabel.includes(token)) {
         total += 1.5
       } else if (state.includes(token) || role.includes(token)) {

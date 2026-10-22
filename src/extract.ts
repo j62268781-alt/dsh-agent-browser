@@ -58,6 +58,33 @@ const SCRIPT_LINES = [
   '  const out = []',
   '  let idx = 0',
   '  const parentTextCache = new WeakMap()',
+  '  const contextLabelOf = (el) => {',
+  '    let cur = el.parentElement',
+  '    for (let depth = 0; depth < 6 && cur; depth += 1) {',
+  "      const tag = String(cur.tagName || '').toLowerCase()",
+  "      if (tag === 'body' || tag === 'html' || tag === 'main' || tag === 'nav' || tag === 'header' || tag === 'footer') break",
+  "      let label = String(cur.getAttribute && cur.getAttribute('aria-label') || '').trim()",
+  "      const labelledBy = String(cur.getAttribute && cur.getAttribute('aria-labelledby') || '').trim()",
+  "      if (labelledBy !== '') {",
+  '        try {',
+  '          const root = cur.getRootNode ? cur.getRootNode() : cur.ownerDocument',
+  "          const parts = labelledBy.split(' ').map((id) => { const node = root && root.getElementById ? root.getElementById(id) : null; return String(node && (node.innerText || node.textContent) || '').trim() }).filter((part) => part !== '')",
+  "          if (parts.length > 0) label = parts.join(' ')",
+  '        } catch (err) {}',
+  '      }',
+  "      if (label === '' && cur.querySelector) {",
+  '        const heading = cur.querySelector(\'h1,h2,h3,h4,h5,h6,[role="heading"],legend,caption\')',
+  "        if (heading) label = String(heading.innerText || heading.textContent || '').trim()",
+  '      }',
+  "      const containerText = String(cur.innerText || cur.textContent || '').trim()",
+  "      if (label !== '' && label.length <= 60 && containerText.length <= 240) {",
+  "        label = label.split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim()",
+  '        if (label !== String(el.innerText || el.getAttribute && el.getAttribute(\'aria-label\') || \'\').trim()) return label',
+  '      }',
+  '      cur = cur.parentElement',
+  '    }',
+  "    return ''",
+  '  }',
   '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
   '  let nodes = queryAllRoots(selector)',
   // **可排序表头**：jQuery tablesorter 这类插件把点击事件**委托**在 <th> 上
@@ -294,6 +321,7 @@ const SCRIPT_LINES = [
   "      const btnType = type || 'submit'",
   "      if (btnType === 'submit' && Boolean(el.form || (el.closest && el.closest('form')))) inputType = 'submit'",
   '    }',
+  '    const contextLabel = contextLabelOf(el)',
   '    const ownerForm = el.form || (el.closest ? el.closest(\'form\') : null)',
   "    let formId = ''",
   '    if (ownerForm) {',
@@ -306,7 +334,7 @@ const SCRIPT_LINES = [
   '    }',
   '    keptEls.push(el)',
   '    const isDeep = rootNode !== document ? 1 : 0',
-  "    out.push([idx, role, name, covered, extra, options, near, null, inMain, inputType, autocomplete, '', '', formId, isDeep])",
+  "    out.push([idx, role, name, covered, extra, options, near, null, inMain, inputType, autocomplete, '', '', formId, isDeep, contextLabel])",
   '    idx += 1',
   '    if (out.length >= 300) break',
   '  }',
@@ -410,6 +438,8 @@ export interface ExtractedItem {
   readonly groupLabel?: string
   /** 所属表单 ID；没有 DOM id 时为本次抽取内生成的编号。 */
   readonly formId?: string
+  /** 最近小型容器的 aria-label / 标题，用于消歧上下文控件。 */
+  readonly contextLabel?: string
   /** 是否位于同源 iframe 或 open shadowRoot 内部。 */
   readonly deep?: boolean
 }
@@ -458,8 +488,8 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra, options, near, tag, inMain, inputType, autocomplete, groupId, groupLabel, formId, deep] = entry as [
-      unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?,
+    const [index, role, name, covered, extra, options, near, tag, inMain, inputType, autocomplete, groupId, groupLabel, formId, deep, contextLabel] = entry as [
+      unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?,
     ]
     items.push({
       index: Number(index),
@@ -476,6 +506,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
       ...(typeof groupId === 'string' && groupId !== '' ? { groupId } : {}),
       ...(typeof groupLabel === 'string' && groupLabel !== '' ? { groupLabel } : {}),
       ...(typeof formId === 'string' && formId !== '' ? { formId } : {}),
+      ...(typeof contextLabel === 'string' && contextLabel !== '' ? { contextLabel } : {}),
       ...(Number(deep) === 1 ? { deep: true } : {}),
     })
   }
