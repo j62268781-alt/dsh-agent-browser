@@ -161,15 +161,18 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
     const role = item.role.toLowerCase()
     const nameTrimmed = item.name.trim()
     const nameKey = `${role}\u0000${nameTrimmed.toLowerCase()}`
+    const nextRoleOrd =
+      WIDGET_ORDINAL_ROLES.has(role) && (roleTotals.get(role) ?? 0) >= 2
+        ? (roleSeen.get(role) ?? 0) + 1
+        : undefined
+    if (nextRoleOrd !== undefined) roleSeen.set(role, nextRoleOrd)
     let ordinalTag = ''
     if (nameTrimmed !== '' && (nameClusterTotals.get(nameKey) ?? 0) >= 2) {
       const nextOrd = (nameClusterSeen.get(nameKey) ?? 0) + 1
       nameClusterSeen.set(nameKey, nextOrd)
       ordinalTag = ` #${nextOrd}`
-    } else if (WIDGET_ORDINAL_ROLES.has(role) && (roleTotals.get(role) ?? 0) >= 2) {
-      const nextOrd = (roleSeen.get(role) ?? 0) + 1
-      roleSeen.set(role, nextOrd)
-      ordinalTag = ` #${nextOrd}`
+    } else if (nextRoleOrd !== undefined) {
+      ordinalTag = ` #${nextRoleOrd}`
     }
     if (item.covered) continue
 
@@ -209,6 +212,7 @@ export function candidatesFromExtracted(items: readonly ExtractedItem[], goal = 
         ? {}
         : { groupSignature: groupSignatures.get(item.groupId)! }),
       ...(groupRole === undefined ? {} : { groupRole }),
+      ...(item.deep === true ? { deep: true } : {}),
     }
     if (role === 'textbox' || role === 'searchbox' || role === 'combobox' || role === 'input' || role === 'textarea' || role === 'select') {
       inputs.push({ ...candidate, id: `input:${item.index}`, description: `在${label}里输入/选择`, kind: 'input' })

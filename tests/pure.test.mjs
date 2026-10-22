@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { actionArgs, isSupportedVersion, nativeBinaryName, nativeSiblingPath, resolveCommand } from '../lib/cli.js'
-import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, addToCartTarget, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, disabledTargetWithoutUnlock, fieldName, filterStateMatchesGoal, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, isTargetToggleCandidate, matchInputValue, pendingFieldOf, questionsOf, rankByGoal, requiresPrimaryContentTarget, scopeCandidatesOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
+import { FOLLOW_UP_VERBS, MAX_CLICK_CANDIDATES, SELECT_OPTION_CAP, activeClauseOf, addToCartTarget, bestEmptyInputForGoal, candidatesFromExtracted, candidatesOf, diffCandidates, disabledTargetWithoutUnlock, fieldName, filterStateMatchesGoal, goalMentions, groupOutlineOf, inputMatchesOf, inputsApplied, isAlreadySatisfied, isTargetToggleCandidate, matchInputValue, ordinalWidgetTargetOf, pendingFieldOf, questionsOf, rankByGoal, requiresPrimaryContentTarget, scopeCandidatesOf, selectOptionQuestion, soleValueFor, specificallyNamed, stateOf, urlChangeMatchesGoal } from '../lib/task.js'
 import { parseExtracted, stripBoundaries } from '../lib/extract.js'
 import { parseSkillFile, pluginNote } from '../lib/skill.js'
 import { parseDomains } from '../client/config.js'
@@ -796,4 +796,46 @@ test('inputMatchesOf 与 addToCartTarget：复合标签词边界匹配（postal_
     undefined,
     '商品已加购（出现 Remove）后 buy 目标不再触发加购覆盖',
   )
+})
+
+test('泛化增强：open shadowRoot 穿透抽取、combobox 同控件遮挡豁免、序号下拉框与多子句动态聚焦', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { EXTRACT_SCRIPT } = await import('../lib/extract.js')
+  const dom = new JSDOM(
+    '<div id="host"></div><div class="select-ctrl"><div class="single-val">Ocean</div><input role="combobox" aria-label="Ocean"></div>',
+    { url: 'https://a.test/shadow-and-combo', pretendToBeVisual: true },
+  )
+  const { window } = dom
+  const host = window.document.getElementById('host')
+  const shadow = host.attachShadow({ mode: 'open' })
+  shadow.innerHTML = '<input type="checkbox" aria-label="Shadow Check">'
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 80, height: 24, top: 10, left: 10, right: 90, bottom: 34, x: 10, y: 10, toJSON() {} })
+  const singleVal = window.document.querySelector('.single-val')
+  window.document.elementFromPoint = () => singleVal
+  shadow.elementFromPoint = () => null
+  Object.defineProperty(window.Element.prototype, 'innerText', { get() { return this.textContent }, configurable: true })
+  const run = new Function('document', 'innerWidth', 'innerHeight', 'getComputedStyle', 'location', `return ${EXTRACT_SCRIPT}`)
+  const page = parseExtracted(run(window.document, 1024, 768, window.getComputedStyle.bind(window), window.location))
+
+  const shadowItem = page.items.find((item) => item.name === 'Shadow Check')
+  assert.ok(shadowItem !== undefined, '应穿透 open shadowRoot 抽取出内部 checkbox')
+  assert.equal(shadowItem?.deep, true, 'shadowRoot 内部控件应标记 deep=true')
+
+  const comboItem = page.items.find((item) => item.role === 'combobox')
+  assert.equal(comboItem?.covered, false, 'combobox 被同一控制容器内的 singleValue 覆盖时不应误判为 covered')
+
+  const comboCandidates = candidatesFromExtracted([
+    { index: 0, role: 'combobox', name: 'Ocean', covered: false },
+    { index: 1, role: 'combobox', name: 'Purple, Red', covered: false },
+  ])
+  assert.equal(
+    ordinalWidgetTargetOf('In the first dropdown on the page, choose the colour Purple', comboCandidates)?.id,
+    'input:0',
+    'first dropdown 应精确定位 combobox #1，不被第二个下拉框名字里的 Purple 干扰',
+  )
+
+  const multiGoal = 'Fill in the text input, choose the second radio button, then submit the form'
+  assert.match(activeClauseOf(multiGoal, [], true, true), /Fill in the text input/i)
+  assert.match(activeClauseOf(multiGoal, [], false, true), /choose the second radio button/i)
+  assert.match(activeClauseOf(multiGoal, [], false, false), /submit the form/i)
 })

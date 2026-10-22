@@ -706,3 +706,62 @@ export function pickAlternate(
 }
 
 export { FOLLOW_UP_VERBS }
+
+/**
+ * 目标明确指定了第 N 个下拉框/输入框（如 "In the first dropdown on the page, choose the colour Purple"）：
+ * 在尚未展开 `[role="option"]` 菜单时，直接定位 `combobox #N` / `select #N`。
+ */
+export function ordinalWidgetTargetOf(
+  goal: string,
+  candidates: readonly TaskCandidate[],
+): TaskCandidate | undefined {
+  const match = /\b(first|1st|second|2nd|third|3rd)\b[^.,;]{0,30}\b(dropdown|select|combobox)\b|第\s*([一二三123])\s*个\s*(?:下拉框|选择框)/i.exec(goal)
+  if (match === null) return undefined
+  if (candidates.some((candidate) => (candidate.role ?? '').toLowerCase() === 'option')) return undefined
+  const raw = (match[1] ?? match[3] ?? '').toLowerCase()
+  const ordinal = raw === 'second' || raw === '2nd' || raw === '2' || raw === '二' ? 2 : raw === 'third' || raw === '3rd' || raw === '3' || raw === '三' ? 3 : 1
+  const widgets = candidates.filter((candidate) => {
+    const role = (candidate.role ?? '').toLowerCase()
+    return candidate.kind === 'input' && (role === 'combobox' || role === 'select')
+  })
+  if (widgets.length < ordinal) return undefined
+  return (
+    widgets.find((candidate) => new RegExp(`(?:combobox|select)\\s*#${ordinal}\\b`, 'i').test(candidate.description)) ??
+    widgets[ordinal - 1]
+  )
+}
+
+/**
+ * 粗粒度多子句目标（如 "Fill in ..., choose the second radio button, then submit the form"）
+ * 动态提取当前尚未完成的活动子句（activeClause），供 `rankByGoal` 聚焦当前阶段候选。
+ */
+export function activeClauseOf(
+  goal: string,
+  candidates: readonly TaskCandidate[],
+  hasPendingField: boolean,
+  hasUnsatisfiedTargetToggle: boolean,
+): string {
+  const clauses = goal
+    .split(/[,，;；]|\band\b|\bthen\b|然后|接着|随后/i)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause !== '')
+  if (clauses.length <= 1) return goal
+  if (hasPendingField) {
+    const inputClause = clauses.find((clause) => /\b(fill|type|enter|input|write|log ?in|sign ?in)\b|输入|填写|填入|登录/i.test(clause))
+    if (inputClause !== undefined) return inputClause
+  }
+  if (hasUnsatisfiedTargetToggle) {
+    const toggleClause = clauses.find(
+      (clause) =>
+        ENABLE_VERBS.test(clause) ||
+        DISABLE_VERBS.test(clause) ||
+        /\b(select|choose|pick)\b[^.]{0,40}\bradio\b/i.test(clause),
+    )
+    if (toggleClause !== undefined) return toggleClause
+  }
+  const hasVisibleOptionOrPopup = candidates.some((candidate) => (candidate.role ?? '').toLowerCase() === 'option')
+  if (!hasVisibleOptionOrPopup && clauses.length === 2 && /\b(open|expand)\b|打开|展开/i.test(clauses[0])) {
+    return clauses[0]
+  }
+  return clauses[clauses.length - 1] ?? goal
+}

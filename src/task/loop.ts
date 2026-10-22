@@ -21,6 +21,7 @@ import {
   withActionCandidates,
 } from './candidates.js'
 import {
+  activeClauseOf,
   bestEmptyInputForGoal,
   disabledTargetWithoutUnlock,
   filterModeOfGoal,
@@ -38,6 +39,7 @@ import {
   looksLikeErrorPage,
   looksLikeInlineValidationError,
   namedSubmitGoal,
+  ordinalWidgetTargetOf,
   pendingFieldOf,
   pickAlternate,
   requiresPrimaryContentTarget,
@@ -277,8 +279,14 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const controls = lastActionWasText
           ? CONTROL_CANDIDATES
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
+        const activeGoal = activeClauseOf(
+          goal,
+          observedPage?.candidates ?? [],
+          pendingFieldOf(observedPage?.candidates ?? [], deps.inputs, goal, filledFields, refillExhausted, consumedByEnter, consumedValues) !== undefined,
+          (observedPage?.candidates ?? []).some((candidate) => isTargetToggleCandidate(candidate, goal)),
+        )
         const candidates = withActionCandidates(
-          scopeCandidatesOf(goal, [...candidatesFromExtracted(page.items, goal), ...controls]),
+          scopeCandidatesOf(goal, [...candidatesFromExtracted(page.items, activeGoal), ...controls]),
           goal,
           step,
           trace,
@@ -1054,8 +1062,42 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       return finish('judge_error', `判断选了不存在的候选 "${actionAnswer.optionId}"`, snapshot)
     }
 
-    // 确定性加购
+    // 确定性加购或展开序号下拉框/弹层选项
     let deterministicallyChosen = false
+    const ordinalWidget = ordinalWidgetTargetOf(goal, candidates)
+    if (ordinalWidget !== undefined && chosen.id !== ordinalWidget.id) {
+      trace.push(`第 ${step} 步：目标指定序号下拉框「${ordinalWidget.description}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
+      chosen = ordinalWidget
+      deterministicallyChosen = true
+    }
+    const popupOptionMatch = candidates.find((candidate) => {
+      if (candidate.kind !== 'click') return false
+      const role = (candidate.role ?? '').toLowerCase()
+      const name = (candidate.name ?? '').trim()
+      if (name === '') return false
+      if (role === 'option' && goalMentions(name, goal)) return true
+      if (
+        Array.isArray(lastChange?.added) &&
+        lastChange.added.length > 0 &&
+        /\b(pick|choose|select)\b|选择/i.test(goal) &&
+        goalMentions(name, goal) &&
+        lastChange.added.some((addedText) => addedText.includes(`「${name}」`))
+      ) {
+        return true
+      }
+      return false
+    })
+    if (popupOptionMatch !== undefined) {
+      if (chosen.id !== popupOptionMatch.id) {
+        trace.push(`第 ${step} 步：已展开弹层中出现命中目标的选项「${popupOptionMatch.name}」→ 改选它（判断层选了「${chosen.name ?? chosen.id}」）`)
+        chosen = popupOptionMatch
+      }
+      deterministicallyChosen = true
+    }
+    const hasRemoveButton = observedPage.candidates.some(
+      (candidate) => candidate.kind === 'click' && /^(?:remove|remove from cart)\b|^(?:移除|删除)/i.test(candidate.name ?? ''),
+    )
+    const onCartPage = /\/cart\b/i.test(snapshot.origin)
     if (chosen.kind === 'click') {
       const cartTarget = addToCartTarget(goal, candidates)
       if (cartTarget !== undefined) {
@@ -1064,6 +1106,20 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
           chosen = cartTarget
         }
         deterministicallyChosen = true
+      } else if (hasRemoveButton && !onCartPage && /\bcheckout\b|结账|结算/i.test(goal)) {
+        const cartLink = candidates.find(
+          (candidate) =>
+            candidate.kind === 'click' &&
+            /\b(shopping\s*cart|cart)\b|购物车/i.test(candidate.name ?? '') &&
+            !/add.*cart|remove/i.test(candidate.name ?? ''),
+        )
+        if (cartLink !== undefined) {
+          if (cartLink.id !== chosen.id) {
+            trace.push(`第 ${step} 步：商品已加购，目标要求结账 → 打开购物车「${cartLink.name}」（判断层选了「${chosen.name ?? chosen.id}」）`)
+            chosen = cartLink
+          }
+          deterministicallyChosen = true
+        }
       }
     }
 
@@ -1516,9 +1572,8 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
       lastSelectedOption =
         chosen.kind === 'click' &&
         singleStepGoal(goal) &&
-        (chosen.role ?? '').toLowerCase() === 'option' &&
-        (chosen.name ?? '') !== '' &&
-        goalMentions(chosen.name ?? '', goal)
+        (((chosen.role ?? '').toLowerCase() === 'option' && (chosen.name ?? '') !== '' && goalMentions(chosen.name ?? '', goal)) ||
+          (popupOptionMatch !== undefined && chosen.id === popupOptionMatch.id))
           ? { id: chosen.id, name: chosen.name ?? '' }
           : undefined
       lastSortHeaderClick =

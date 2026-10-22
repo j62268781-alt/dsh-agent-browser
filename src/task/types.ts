@@ -149,6 +149,8 @@ export interface TaskCandidate {
   readonly groupSignature?: string
   /** 由物理属性与组内拓扑自动推导的语义槽位（零文字依赖）。 */
   readonly groupRole?: 'username' | 'password' | 'submit' | 'search' | 'otp'
+  /** 是否位于同源 iframe 或 open shadowRoot 内部。 */
+  readonly deep?: boolean
 }
 
 export interface TaskStep {

@@ -7,6 +7,17 @@ import { matchInputValue } from './gates.js'
 import { LOADING_TEXT_MARK, MIN_PAGE_TEXT, type TaskCandidate, type TaskDeps } from './types.js'
 import { message, sleep, stripContentBoundaries } from './utils.js'
 
+function deepFindSnippet(selectorJson: string): string {
+  return (
+    `const s = ${selectorJson}; let el = document.querySelector(s);` +
+    ' if (!el) { const roots = [document]; for (let i = 0; i < roots.length && roots.length < 15 && !el; i += 1) {' +
+    ' const r = roots[i]; try { el = r.querySelector(s); if (el) break; for (const n of r.querySelectorAll("*")) {' +
+    ' if (n.shadowRoot && roots.indexOf(n.shadowRoot) < 0) roots.push(n.shadowRoot);' +
+    ' if (n.tagName === "IFRAME") { try { if (n.contentDocument && roots.indexOf(n.contentDocument) < 0) roots.push(n.contentDocument) } catch (e) {} }' +
+    ' } } catch (e) {} } }'
+  )
+}
+
 /**
  * 有值时直接执行（不再交回宿主）：
  * - 原生 select（带 `options`、`tag=select` 或状态为 `当前值:`）→ `select`；
@@ -37,7 +48,28 @@ export async function fillFromInputs(
     return
   }
   if (role === 'checkbox' || role === 'radio' || role === 'switch') {
-    await browser.act(/^(1|true|yes|on|y|是)$/i.test(value.trim()) ? 'check' : 'uncheck', ref, {}, { signal })
+    const wantChecked = /^(1|true|yes|on|y|是)$/i.test(value.trim())
+    if (candidate.deep === true && typeof browser.json === 'function' && ref.startsWith('[')) {
+      await browser.json(
+        [
+          'eval',
+          `(() => { ${deepFindSnippet(JSON.stringify(ref))} if (!el) return; if (Boolean(el.checked) !== ${wantChecked}) el.click(); })()`,
+        ],
+        { signal },
+      )
+      return
+    }
+    await browser.act(wantChecked ? 'check' : 'uncheck', ref, {}, { signal })
+    return
+  }
+  if (candidate.deep === true && typeof browser.json === 'function' && ref.startsWith('[')) {
+    await browser.json(
+      [
+        'eval',
+        `(() => { ${deepFindSnippet(JSON.stringify(ref))} if (!el) return; const v = ${JSON.stringify(value)}; const win = (el.ownerDocument && el.ownerDocument.defaultView) || window; const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype; const desc = Object.getOwnPropertyDescriptor(proto, 'value'); el.focus(); if (desc && desc.set) desc.set.call(el, v); else el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()`,
+      ],
+      { signal },
+    )
     return
   }
   await browser.act('fill', ref, { value }, { signal })
@@ -109,6 +141,20 @@ export async function execute(
     if ((candidate.tag === 'a' || candidate.tag === 'button') && candidate.ref.startsWith('[')) {
       await browser.jsClick(candidate.ref, { signal })
       return { jsClicked: { id: candidate.id, ref: candidate.ref } }
+    }
+    if (
+      typeof browser.json === 'function' &&
+      candidate.ref.startsWith('[') &&
+      (role === 'combobox' || candidate.deep === true)
+    ) {
+      await browser.json(
+        [
+          'eval',
+          `(() => { ${deepFindSnippet(JSON.stringify(candidate.ref))} if (!el) return; if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' }); const role = String(el.getAttribute('role') || '').toLowerCase(); if (role === 'combobox') { const ctrl = (el.closest && el.closest('[class*="control"]')) || (el.parentElement && el.parentElement.parentElement) || el; ctrl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })); el.focus(); return; } el.focus(); el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); el.click(); })()`,
+        ],
+        { signal },
+      )
+      return {}
     }
     if (candidate.ref.startsWith('[')) {
       await browser.act('scrollintoview', candidate.ref, {}, { signal }).catch(() => {})

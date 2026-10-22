@@ -671,7 +671,13 @@ export class AgentBrowser {
    */
   async jsClick(ref: string, run: CliRunOptions = {}): Promise<void> {
     const selector = JSON.stringify(ref)
-    const script = `document.querySelector(${selector})?.click()`
+    const script =
+      `(() => { const s = ${selector}; let el = document.querySelector(s);` +
+      ' if (!el) { const roots = [document]; for (let i = 0; i < roots.length && roots.length < 15 && !el; i += 1) {' +
+      ' const r = roots[i]; try { el = r.querySelector(s); if (el) break; for (const n of r.querySelectorAll("*")) {' +
+      ' if (n.shadowRoot && roots.indexOf(n.shadowRoot) < 0) roots.push(n.shadowRoot);' +
+      ' if (n.tagName === "IFRAME") { try { if (n.contentDocument && roots.indexOf(n.contentDocument) < 0) roots.push(n.contentDocument) } catch (e) {} }' +
+      ' } } catch (e) {} } } if (el) el.click() })()'
     const encoded = Buffer.from(script, 'utf8').toString('base64')
     await this.run(['eval', '-b', encoded], run)
   }

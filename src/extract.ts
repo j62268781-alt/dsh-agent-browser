@@ -29,25 +29,50 @@ export const HANDLE_ATTRIBUTE = 'data-dsh-idx'
  */
 const SCRIPT_LINES = [
   '(() => {',
-  "  document.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx'))",
+  '  const roots = [document]',
+  '  for (let rIdx = 0; rIdx < roots.length && roots.length < 15; rIdx += 1) {',
+  '    const r = roots[rIdx]',
+  "    try { r.querySelectorAll('[data-dsh-idx]').forEach((el) => el.removeAttribute('data-dsh-idx')) } catch (err) {}",
+  '    let all = []',
+  "    try { all = Array.from(r.querySelectorAll('*')) } catch (err) { all = [] }",
+  '    for (const el of all) {',
+  '      if (roots.length >= 15) break',
+  '      if (el.shadowRoot && roots.indexOf(el.shadowRoot) < 0) roots.push(el.shadowRoot)',
+  "      if (el.tagName === 'IFRAME') {",
+  '        try {',
+  '          if (el.contentDocument && roots.indexOf(el.contentDocument) < 0) roots.push(el.contentDocument)',
+  '        } catch (err) {}',
+  '      }',
+  '    }',
+  '  }',
+  '  const queryAllRoots = (sel) => {',
+  '    const found = []',
+  '    for (const r of roots) {',
+  '      try {',
+  '        const list = r.querySelectorAll(sel)',
+  '        for (const item of list) if (found.indexOf(item) < 0) found.push(item)',
+  '      } catch (err) {}',
+  '    }',
+  '    return found',
+  '  }',
   '  const out = []',
   '  let idx = 0',
   '  const parentTextCache = new WeakMap()',
   '  const selector = \'a,button,input,select,textarea,summary,label[for],[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="listbox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="tab"],[aria-checked],[aria-selected],[onclick],[tabindex]\'',
-  '  let nodes = Array.from(new Set(document.querySelectorAll(selector)))',
+  '  let nodes = queryAllRoots(selector)',
   // **可排序表头**：jQuery tablesorter 这类插件把点击事件**委托**在 <th> 上
   // （没有 onclick 属性、没有 role/tabindex），只按标签/属性抓会整列漏掉。
   // 真机 ti-sort-table：18 个候选全是 edit/delete 链接，判断层根本看不到"排序"这个动作
   // → ambiguous / budget；而表头点一下确实能把 Last Name 排出来（Bach 到首位）。
   // 只收"看起来可排序"的表头（class 带 sort/header、role=columnheader、cursor:pointer），
   // 否则稠密表格页会凭空多出几十个噪声候选。
-  '  const headers = Array.from(document.querySelectorAll(\'th,[role="columnheader"]\'))',
+  '  const headers = queryAllRoots(\'th,[role="columnheader"]\')',
   '  for (const header of headers) {',
   '    if (nodes.indexOf(header) >= 0) continue',
   '    let sortable = false',
   "    try { sortable = /sort|header/i.test(String(header.className || '')) } catch (err) { sortable = false }",
   "    if (!sortable && header.getAttribute('role') === 'columnheader') sortable = true",
-  "    if (!sortable) { try { sortable = getComputedStyle(header).cursor === 'pointer' } catch (err) { sortable = false } }",
+  "    if (!sortable) { try { const win = (header.ownerDocument && header.ownerDocument.defaultView) || window; sortable = win.getComputedStyle(header).cursor === 'pointer' } catch (err) { sortable = false } }",
   '    if (sortable) nodes.push(header)',
   '  }',
   // **可见弹层里的"光标即落点"控件**：现代页面把关闭/确认挂在 div/p/span 上，
@@ -55,12 +80,12 @@ const SCRIPT_LINES = [
   // + CSS `cursor: pointer`，抽取只看到弹层背后那条被遮挡的链接 → 判断层无候选可选）。
   // 只在**弹层内部**收这类元素（不做全页扫描）：全页扫 cursor:pointer 会让稠密页凭空多出
   // 几十个噪声候选；弹层里的可点叶子本来就是"当前唯一该操作的东西"。
-  '  const layers = Array.from(document.querySelectorAll(\'[role="dialog"],dialog,[aria-modal="true"],[id*="modal"],[class*="modal"],[class*="Modal"]\'))',
+  '  const layers = queryAllRoots(\'[role="dialog"],dialog,[aria-modal="true"],[id*="modal"],[class*="modal"],[class*="Modal"]\')',
   '  const pointerLeaves = []',
   '  for (const layer of layers) {',
   '    if (pointerLeaves.length >= 20) break',
   "    let layerStyle = null",
-  "    try { layerStyle = getComputedStyle(layer) } catch (err) { layerStyle = null }",
+  "    try { const win = (layer.ownerDocument && layer.ownerDocument.defaultView) || window; layerStyle = win.getComputedStyle(layer) } catch (err) { layerStyle = null }",
   "    if (layerStyle !== null && (layerStyle.display === 'none' || layerStyle.visibility === 'hidden')) continue",
   '    const rect = layer.getBoundingClientRect()',
   '    if (rect.width < 40 || rect.height < 20) continue',
@@ -69,7 +94,7 @@ const SCRIPT_LINES = [
   '      if (pointerLeaves.length >= 20) break',
   '      if (nodes.indexOf(el) >= 0 || pointerLeaves.indexOf(el) >= 0) continue',
   '      let cursorPointer = false',
-  "      try { cursorPointer = getComputedStyle(el).cursor === 'pointer' } catch (err) { cursorPointer = false }",
+  "      try { const win = (el.ownerDocument && el.ownerDocument.defaultView) || window; cursorPointer = win.getComputedStyle(el).cursor === 'pointer' } catch (err) { cursorPointer = false }",
   '      if (!cursorPointer) continue',
   "      if (el.querySelector('a,button,input,select,textarea,[role],[onclick],[tabindex]') !== null) continue",
   "      const text = String(el.innerText || '').trim()",
@@ -114,7 +139,10 @@ const SCRIPT_LINES = [
   '  for (const el of nodes) {',
   '    const rect = el.getBoundingClientRect()',
   '    if (rect.width < 2 || rect.height < 2) continue',
-  '    const style = getComputedStyle(el)',
+  '    const ownerDoc = el.ownerDocument || document',
+  '    const ownerWin = ownerDoc.defaultView || window',
+  '    const rootNode = el.getRootNode ? el.getRootNode() : ownerDoc',
+  '    const style = ownerWin.getComputedStyle(el)',
   "    const tag = el.tagName.toLowerCase()",
   "    const type = String(el.getAttribute('type') || '').toLowerCase()",
   "    const acRaw = String(el.getAttribute('autocomplete') || '').toLowerCase().trim()",
@@ -127,7 +155,7 @@ const SCRIPT_LINES = [
   "    if (style.visibility === 'hidden' || style.display === 'none' || (style.opacity === '0' && !overlayToggle)) continue",
   "    let labelText = ''",
   "    if (el.labels && el.labels.length > 0) labelText = String(el.labels[0].innerText || '')",
-  "    if (!labelText && el.id) { const byFor = document.querySelector('label[for=\"' + el.id + '\"]'); if (byFor) labelText = String(byFor.innerText || '') }",
+  "    if (!labelText && el.id) { const scope = rootNode && rootNode.querySelector ? rootNode : ownerDoc; const byFor = scope.querySelector('label[for=\"' + el.id + '\"]'); if (byFor) labelText = String(byFor.innerText || '') }",
   "    if (!labelText) { const wrap = el.closest ? el.closest('label') : null; if (wrap) labelText = String(wrap.innerText || '') }",
   "    if (!labelText && (type === 'checkbox' || type === 'radio') && el.nextElementSibling && ['LABEL', 'SPAN'].includes(el.nextElementSibling.tagName)) {",
   "      labelText = String(el.nextElementSibling.innerText || el.nextElementSibling.textContent || '')",
@@ -186,19 +214,23 @@ const SCRIPT_LINES = [
   "        if (innerName !== '' && innerName === name) continue",
   '      }',
   '    }',
-  '    const cx = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2))',
-  '    const cy = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2))',
-  '    const top = document.elementFromPoint(cx, cy)',
+  '    const vpW = ownerWin.innerWidth || innerWidth',
+  '    const vpH = ownerWin.innerHeight || innerHeight',
+  '    const cx = Math.min(vpW - 1, Math.max(0, rect.left + rect.width / 2))',
+  '    const cy = Math.min(vpH - 1, Math.max(0, rect.top + rect.height / 2))',
+  '    const hitScope = rootNode && rootNode.elementFromPoint ? rootNode : ownerDoc',
+  '    const top = hitScope.elementFromPoint(cx, cy)',
   // **离屏 ≠ 被遮挡**：中心点在视口外时 elementFromPoint 只能拿到边缘元素，
   // 会把首屏之外的链接全标成 covered（bench fixture-dense：251 个元素被滤到只剩 37 个候选）。
   // 离屏元素要保留（CLI 点击会自动滚进视图），只有**视口内**才做遮挡判定。
-  '    const inView = rect.top + rect.height / 2 >= 0 && rect.top + rect.height / 2 <= innerHeight && rect.left + rect.width / 2 >= 0 && rect.left + rect.width / 2 <= innerWidth',
-  '    const covered = inView && top && top !== el && !el.contains(top) && !top.contains(el) ? 1 : 0',
-  "    el.setAttribute('data-dsh-idx', String(idx))",
+  '    const inView = rect.top + rect.height / 2 >= 0 && rect.top + rect.height / 2 <= vpH && rect.left + rect.width / 2 >= 0 && rect.left + rect.width / 2 <= vpW',
   // **显式 role 优先**：`<input role="combobox">`（react-select 等）被下面的 input 推断
   // 无条件覆盖成 textbox → 页面上一个 combobox 都没有 → 相关性门判定"缺角色 combobox"
   // 退回整树 → 45 个候选里判断层点了「Remove Purple」干扰项（真机 react-select，trace 直证）。
   "    const explicitRole = String(el.getAttribute('role') || '').toLowerCase()",
+  "    const sameComboboxControl = explicitRole === 'combobox' && Boolean(top && el.parentElement && el.parentElement.parentElement && el.parentElement.parentElement.contains(top))",
+  '    const covered = inView && top && top !== el && !el.contains(top) && !top.contains(el) && !sameComboboxControl ? 1 : 0',
+  "    el.setAttribute('data-dsh-idx', String(idx))",
   // 表头给判断层一个明确角色（`th` 当角色名没有意义：它说明不了"这列能排序"）。
   "    let role = explicitRole !== '' ? explicitRole : tag === 'th' ? 'columnheader' : tag",
   "    if (explicitRole === '') {",
@@ -273,7 +305,8 @@ const SCRIPT_LINES = [
   '      }',
   '    }',
   '    keptEls.push(el)',
-  "    out.push([idx, role, name, covered, extra, options, near, null, inMain, inputType, autocomplete, '', '', formId])",
+  '    const isDeep = rootNode !== document ? 1 : 0',
+  "    out.push([idx, role, name, covered, extra, options, near, null, inMain, inputType, autocomplete, '', '', formId, isDeep])",
   '    idx += 1',
   '    if (out.length >= 300) break',
   '  }',
@@ -320,7 +353,14 @@ const SCRIPT_LINES = [
   "      out[i][12] = groupLabels.get(chosenGroup) || ''",
   '    }',
   '  }',
-  "  const body = document.body ? document.body.innerText : ''",
+  "  let body = document.body ? document.body.innerText : ''",
+  '  for (let rIdx = 1; rIdx < roots.length; rIdx += 1) {',
+  '    try {',
+  '      const r = roots[rIdx]',
+  "      const subText = r.body ? r.body.innerText : (r.innerText || r.textContent || '')",
+  "      if (subText) body = body + String.fromCharCode(10) + subText",
+  '    } catch (err) {}',
+  '  }',
   '  return JSON.stringify({',
   '    items: out,',
   "    text: String(body || '').slice(0, 4000),",
@@ -370,6 +410,8 @@ export interface ExtractedItem {
   readonly groupLabel?: string
   /** 所属表单 ID；没有 DOM id 时为本次抽取内生成的编号。 */
   readonly formId?: string
+  /** 是否位于同源 iframe 或 open shadowRoot 内部。 */
+  readonly deep?: boolean
 }
 
 /**
@@ -416,8 +458,8 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
   const items: ExtractedItem[] = []
   for (const entry of value) {
     if (!Array.isArray(entry) || entry.length < 3) continue
-    const [index, role, name, covered, extra, options, near, tag, inMain, inputType, autocomplete, groupId, groupLabel, formId] = entry as [
-      unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?,
+    const [index, role, name, covered, extra, options, near, tag, inMain, inputType, autocomplete, groupId, groupLabel, formId, deep] = entry as [
+      unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?, unknown?,
     ]
     items.push({
       index: Number(index),
@@ -434,6 +476,7 @@ function parseItems(value: readonly unknown[]): ExtractedItem[] {
       ...(typeof groupId === 'string' && groupId !== '' ? { groupId } : {}),
       ...(typeof groupLabel === 'string' && groupLabel !== '' ? { groupLabel } : {}),
       ...(typeof formId === 'string' && formId !== '' ? { formId } : {}),
+      ...(Number(deep) === 1 ? { deep: true } : {}),
     })
   }
   return items
