@@ -20,7 +20,7 @@ agent-browser skills list            # 专用技能（electron/slack/dogfood/...
 
 | 文件 | 何时读 |
 |---|---|
-| `references/commands.md` | 需要 SKILL.md 未列的命令/参数（34KB，最全）|
+| `references/commands.md` | 需要 SKILL.md 未列的命令/参数（26KB，最全）|
 | `references/snapshot-refs.md` | 想优化 token、理解 `@eN` 生命周期与 `--delta` |
 | `references/session-management.md` | 多任务并行、`--cdp` 共享浏览器、`--pin-tab` |
 | `references/authentication.md` | 登录态、OAuth、2FA、auth vault、状态导入导出 |
@@ -39,8 +39,7 @@ agent-browser snapshot -i        # 页面变化后必须重新快照
 
 ## 复用窗口：默认不要反复开/关
 
-**同一个任务沿用同一个浏览器窗口/标签。** daemon 常驻，`snapshot`/`click`/`fill` 默认作用在
-**当前活动标签**上——连续操作不要每步 `open`，更不要 `close` 再重开：
+**同一个任务沿用同一个浏览器窗口/标签。** daemon 常驻，`snapshot`/`click`/`fill` 默认作用在**当前活动标签**上——连续操作不要每步 `open`，更不要 `close` 再重开：
 
 ```bash
 agent-browser open https://example.com/      # 整条任务只在起点开一次
@@ -51,37 +50,30 @@ agent-browser goto https://example.com/next  # 同站换页用 goto/点链接，
 ```
 
 - `open` 每次都会**新开一个标签**（还可能被站点弹窗抢走活动标签）；同站导航优先点链接或 `goto`。
-- `close` 会丢掉标签、滚动位置和登录态，下次要重新冷启动 Chrome（约 2–4s，且更容易触发风控）。
-  **任务结束时不要 close**：会话跨对话持久，下次直接接着用。
+- `close` 会丢掉标签、滚动位置和登录态，下次要重新冷启动 Chrome（约 2–4s，且更容易触发风控）。**任务结束时不要 close**：会话跨对话持久，下次直接接着用。
 - 只有这三种情况才 `close`：浏览器卡死 / 要换 `--profile` 或 `--session` / 要清空登录态。
-- 同一任务内的多页面用 `tab new` 开、`tab close` 关，回到原标签即可，不必关整个浏览器；
-  需要并行或隔离两个任务时才新开**会话**（`--session`）。
+- 同一任务内的多页面用 `tab new` 开、`tab close` 关，回到原标签即可，不必关整个浏览器；需要并行或隔离两个任务时才新开**会话**（`--session`）。
 
 ## `browser_run` 的能力边界（先看这个）
 
 决策循环（`browser_run`）只解决"**把页面推到目标状态**"这一类任务，能力是**有边界**的：
 
-**它覆盖**：点击、填值（值由调用方给）、原生 select、勾选/取消勾选、滚动、返回、等待、Enter 提交。
+**它覆盖**：点击、填值（值由调用方给）、原生 `select`、自定义下拉框（`role="combobox"`，如 `react-select`）、勾选/取消勾选、滚动、返回、等待、Enter 提交、悬停揭示、拖拽、**同源 `iframe`** 与 **open `shadow DOM`** 内的控件交互。
 
 **它不覆盖**（别硬塞给它，会白烧判断次数和 token）：
 
 | 场景 | 用什么 |
 |---|---|
-| iframe 里的表单/弹窗 | `browser_raw` 调 CLI，或让用户换页面；CLI 没有 frame 导航 |
-| shadow DOM 里的控件 | `browser_raw` 用 JS 穿透（`el.shadowRoot.querySelector(...)`） |
+| **跨域** `iframe`（如第三方支付/OAuth 框） | `browser_act` 按无障碍树 `@eN` 操作，或 `browser_raw` 调 `frame @eN` |
+| **closed** `shadow DOM` | 浏览器安全边界禁止 JS 穿透，改用无障碍树 `@eN` 或坐标点击 |
 | 上传/下载文件 | `browser_act upload`（传本地路径）/ CLI `download` |
-| 拖拽 | `browser_act drag`（value 给目标 ref） |
-| 右键/context menu | `browser_act mouse`/CLI `mouse down right` + `up` |
+| 右键/context menu | `browser_act`/CLI `mouse down right` + `up` |
 | 画布/canvas、复杂键盘宏 | 原子工具逐步做 |
 | 多标签流程 | `browser_session` / `tab` 管理，循环只认当前标签 |
 
-**有序子目标要显式拆**：`browser_run` 的 goal 是"一个结果"。
-"先登录、再加购、再结算" 不要再压成一个 goal（ykl 42 任务集里两条失败就是这种写法）；
-已知顺序时用插件工具 `browser_run(subgoals=[{goal,inputs?},…])` 一次给全，**顺序由你给、插件不重排**：
-每个子目标独立验证，只有上一阶段以 `needs_verification` 收尾才推进；`ambiguous` / `likely_done` /
-`budget` / `needs_confirmation` 会停在那个阶段交回给你。顺序不确定时仍然逐次调用。
-
-> CLI 本身没有 `subgoals` 参数，这是本插件工具层的编排；直接用 bash 调 CLI 时必须自己拆。
+- **有序子目标要显式拆**：`browser_run` 的单个 `goal` 面向一个阶段结果。已知顺序的多阶段流程用 `browser_run(subgoals=[{goal,inputs?},…])` 一次给全，**顺序由你给、插件不重排**：每个子目标独立验证，只有上一阶段以 `needs_verification` 收尾才推进；`ambiguous` / `likely_done` / `budget` / `needs_confirmation` 会停在那个阶段交回给你。顺序不确定时逐次调用。
+  > CLI 本身没有 `subgoals` 参数，这是本插件工具层的编排；直接用 bash 调 CLI 时必须自己拆。
+- **多 Agent 单会话串行约束**：本插件固定复用单一命名会话（默认 `dsh`）。在多 Agent Teams 中，**切勿让多个子 Agent 并发调用本插件工具**（会抢占同一活动标签页并互相覆盖 `[data-dsh-idx]` 句柄）；请串行委托给单个浏览器 Agent，或直接用 CLI `--session <name>` 拆立独立会话。
 
 ## 两个最容易做错的点
 
@@ -165,7 +157,7 @@ agent-browser auth login app
 
 | 现象 | 处理 |
 |---|---|
-| `Ref not found` | 页面已变，重新 `snapshot -i` |
+| `Ref not found` / `Could not locate` | 页面已变或元素已卸载，重新 `snapshot -i` |
 | 点击被遮挡 | 报 `covered by` 时先关掉遮挡元素再快照 |
 | `fill`/`type` 无效 | `focus @e1` + `keyboard inserttext "text"` |
 | JS 含特殊字符 | `cat <<'EOF' \| agent-browser eval --stdin` |
@@ -175,8 +167,7 @@ agent-browser auth login app
 
 ## 批量命令（batch）：每一步都省 60–120ms
 
-**这个 CLI 每次调用都要新起一个进程**（实测 `agent-browser --version` 就要 **64ms**，
-而真正的浏览器操作只占几毫秒）。所以"多调几条命令"的成本主要是**进程启动**，不是干活。
+**这个 CLI 每次调用都要新起一个进程**（实测 `agent-browser --version` 就要 **64ms**，而真正的浏览器操作只占几毫秒）。所以"多调几条命令"的成本主要是**进程启动**，不是干活。
 
 `batch` 在**一个进程**里顺序执行多条命令：
 
@@ -192,9 +183,6 @@ agent-browser batch 'fill @e1 "jev"' 'press Enter' 'wait 500' 'snapshot -i'
 - 适合批量：**观察组**（树 + 正文 + 标题）、**导航组**（open + wait + snapshot）、**表单组**（fill + press + wait + snapshot）；
 - **不要**把"需要看了结果再决定下一条"的命令硬塞进一条 batch——中间结果在进程内不可读。
 
-用本插件的工具时等价写法：`browser_snapshot` 带 `includeText: true` / `includeTitle: true`
-（内部就是一次 `batch`），比先 `browser_snapshot` 再 `browser_read` 再 `browser_get` 少两次进程启动、
-**也少两个模型回合**。
+用本插件的工具时等价写法：`browser_snapshot` 带 `includeText: true` / `includeTitle: true`（内部就是一次 `batch`），比先 `browser_snapshot` 再 `browser_read` 再 `browser_get` 少两次进程启动、**也少两个模型回合**。
 
-多步复用 daemon：`agent-browser batch "open X" "snapshot -i"`，或 `open X && wait --load load && snapshot -i`。
-**任务内复用同一个窗口/标签**；只有浏览器卡死、要换 `--profile`/`--session` 或清登录态时才 `agent-browser close`。
+多步复用 daemon：`agent-browser batch "open X" "snapshot -i"`，或 `open X && wait --load load && snapshot -i`。**任务内复用同一个窗口/标签**；只有浏览器卡死、要换 `--profile`/`--session` 或清登录态时才 `agent-browser close`。

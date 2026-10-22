@@ -134,6 +134,7 @@ test('插件补充会随工具/决策开关变化（工具关掉就说"用 bash 
   assert.match(on, /browser_snapshot/)
   assert.match(on, /browser_run\(goal, inputs\?, subgoals\?\)/)
   assert.match(on, /只有 `needs_verification` 才推进/)
+  assert.match(on, /单会话串行约束/)
   assert.match(on, /references\/commands\.md/)
 
   const off = pluginNote({ tools: false, decision: false })

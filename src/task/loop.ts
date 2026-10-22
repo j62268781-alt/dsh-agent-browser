@@ -279,14 +279,16 @@ export async function runTask(goal: string, deps: TaskDeps): Promise<TaskResult>
         const controls = lastActionWasText
           ? CONTROL_CANDIDATES
           : CONTROL_CANDIDATES.filter((candidate) => candidate.id !== 'control:press_enter')
+        const baseExtracted = candidatesFromExtracted(page.items, goal)
         const activeGoal = activeClauseOf(
           goal,
-          observedPage?.candidates ?? [],
-          pendingFieldOf(observedPage?.candidates ?? [], deps.inputs, goal, filledFields, refillExhausted, consumedByEnter, consumedValues) !== undefined,
-          (observedPage?.candidates ?? []).some((candidate) => isTargetToggleCandidate(candidate, goal)),
+          baseExtracted,
+          pendingFieldOf(baseExtracted, deps.inputs, goal, filledFields, refillExhausted, consumedByEnter, consumedValues) !== undefined,
+          baseExtracted.some((candidate) => isTargetToggleCandidate(candidate, goal) && !isAlreadySatisfied(candidate, goal, deps.inputs)),
         )
+        const rankedExtracted = activeGoal === goal ? baseExtracted : candidatesFromExtracted(page.items, activeGoal)
         const candidates = withActionCandidates(
-          scopeCandidatesOf(goal, [...candidatesFromExtracted(page.items, activeGoal), ...controls]),
+          scopeCandidatesOf(goal, [...rankedExtracted, ...controls]),
           goal,
           step,
           trace,

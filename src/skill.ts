@@ -78,17 +78,27 @@ export function pluginNote(options: { readonly tools: boolean; readonly decision
   if (options.tools) {
     lines.push(
       '',
-      '- `browser_snapshot` 取无障碍树 + `@eN`；`browser_act` 执行**一个**动作（可带 `expectUrl`/`expectName` 做执行前新鲜度断言）；',
-      '- `browser_read` 只读；`browser_session` 管 open/close/tabs；`browser_screenshot` 截图。',
+      '- `browser_snapshot` 取无障碍树 + `@eN`（可同时带 `includeText`/`includeTitle` 一次 `batch` 拿齐，省两次进程启动）',
+      '- `browser_act` 执行**一个**动作（支持 `expectUrl`/`expectName` 新鲜度断言）',
+      '- `browser_read` 只读抓取页面文本/元素属性；`browser_session` 管 open/close/tabs；`browser_screenshot` 截图',
+      '- **单会话串行约束**：插件工具共享单一命名会话（默认 `dsh`），**严禁多个并行 subagent/teammate 同时调用 `browser_*` 工具**（会互抢活动标签页并覆盖句柄）；多 Agent 请串行委派，或用 bash CLI 各自指定独立 `--session <name>`',
       options.decision
-        ? '- `browser_run(goal, inputs?, subgoals?)`：插件内部的有界循环，每步由判断模型在代码枚举的候选里选一个动作；结束时状态是 `needs_verification`，不是"已完成"。' +
-          '已知字段用 `inputs` 一次给全（插件在同一次调用里填/选/勾完，不再每个字段问一轮）；已知顺序用 `subgoals` 一次给全（每阶段独立验证，只有 `needs_verification` 才推进，遇到 ambiguous/likely_done/needs_confirmation 会停下交回）。'
-        : '- 「决策」当前关闭，所以没有 `browser_run`。',
+        ? '- `browser_run(goal, inputs?, subgoals?)`：用一句话目标驱动有界循环（原生支持同源 iframe / open shadow DOM / 自定义 combobox；跨域 iframe、closed shadow DOM、上传下载、右键菜单、画布、多标签用原子工具），结束时状态是 `needs_verification` 交回你做最终校验；' +
+          '已经知道要填什么时用 `inputs` 一次给全（插件同一次调用里填完，不逐字往返）；' +
+          '已知顺序的多步流程用 `subgoals` 一次给全（顺序由你给、每个子目标只有 `needs_verification` 才推进，遇到 ambiguous/likely_done/needs_confirmation 停下交回）'
+        : '- 「决策」当前关闭，所以没有 `browser_run`',
     )
   }
   lines.push('', '深入参考（绝对路径，按需读，勿一次全读）：', '')
-  for (const file of ['commands.md', 'snapshot-refs.md', 'session-management.md', 'authentication.md', 'trust-boundaries.md']) {
-    lines.push(`- \`${join(SKILL_ROOT, 'references', file)}\``)
+  const refs: readonly [string, string][] = [
+    ['commands.md', '全量命令与参数'],
+    ['snapshot-refs.md', '@eN 生命周期与 --delta'],
+    ['session-management.md', '多会话并行、--cdp、--pin-tab'],
+    ['authentication.md', '登录态、OAuth、2FA、auth vault'],
+    ['trust-boundaries.md', '安全边界与 --allowed-domains'],
+  ]
+  for (const [file, desc] of refs) {
+    lines.push(`- \`${join(SKILL_ROOT, 'references', file)}\`（${desc}）`)
   }
   return `${lines.join('\n')}\n`
 }

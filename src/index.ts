@@ -637,7 +637,8 @@ export class AgentBrowserService extends TypertRemoteService {
           '但如果你已经知道要填什么，**用 `inputs` 一次给进来**，插件会在同一次调用里填/选/勾完，省掉每个字段一轮往返。' +
           '结束时状态是 needs_verification（不是"已完成"）——它只负责把页面推到目标状态附近，最终校验由你来做。' +
           '**默认在当前页面上继续操作**（复用已打开的窗口/标签）；需要换站点时先 browser_session open，不要每个任务重开浏览器。' +
-          '**能力边界**：这个循环只做 click/填值/select/勾选/滚动/返回/等待/Enter；iframe、shadow DOM、上传/下载、右键菜单、画布、多标签流程请用 browser_act / browser_raw 直接做；' +
+          '**能力边界**：覆盖 click/填值/select/自定义 combobox/勾选/悬停/拖拽/滚动/返回/等待/Enter，以及**同源 iframe 与 open shadow DOM**；跨域 iframe（支付/验证码）、closed shadow DOM、上传/下载、右键菜单、画布、多标签跳转（target=_blank）请用 browser_act / browser_session(tabs) / browser_raw 直接做；' +
+          '**单会话串行**：插件共享同一命名会话，切勿派发多个并行 subagent/teammate 同时调用浏览器工具；' +
           '**已知顺序时用 `subgoals` 一次给全**（插件按顺序推进，每个子目标都要独立通过验证才走下一个）；不确定顺序时仍建议拆成多次 browser_run。' + UNTRUSTED,
         parameters: {
           goal: { type: 'string', required: true, description: '想达成的目标，一句话，含具体的最终结果特征' },
