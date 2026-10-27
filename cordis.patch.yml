@@ -2,4 +2,4 @@
 # 关闭「浏览器功能」= 这个 entry 的 enabled 为假 → 不再注册任何工具（模型面前零成本）。
 - insert:
     - id: agent-browser
-      name: dsh-agent-browser
+      name: '@j62268781-alt/dsh-agent-browser'

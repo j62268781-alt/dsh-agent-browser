@@ -24,8 +24,8 @@ importers:
         specifier: ^22.10.0
         version: 22.20.5
       dsh-judgment:
-        specifier: file:../dsh-judgment
-        version: file:../dsh-judgment(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/cosmokit@1.8.6)(@deepseek-ai/dsh-credentials@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.1(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/schemastery@3.18.5)
+        specifier: ^0.1.0
+        version: 0.1.0(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/cosmokit@1.8.6)(@deepseek-ai/dsh-credentials@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.1(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/schemastery@3.18.5)
       esbuild:
         specifier: ^0.25.0
         version: 0.25.0
@@ -443,8 +443,8 @@ packages:
   decimal.js@10.6.0:
     resolution: {integrity: sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==}
 
-  dsh-judgment@file:../dsh-judgment:
-    resolution: {directory: ../dsh-judgment, type: directory}
+  dsh-judgment@0.1.0:
+    resolution: {integrity: sha512-NdsEJYcmtRTzFT0Pn1K8OG0WHTaYTWsjzH/zoEf5ztXCNokWub0kAKKiZBDK+FQIjxmQadEpeo+CS+rIs0K+GQ==}
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.4
       '@deepseek-ai/cosmokit': ^1.8.5
@@ -883,7 +883,7 @@ snapshots:
 
   decimal.js@10.6.0: {}
 
-  dsh-judgment@file:../dsh-judgment(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/cosmokit@1.8.6)(@deepseek-ai/dsh-credentials@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.1(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/schemastery@3.18.5):
+  dsh-judgment@0.1.0(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/cosmokit@1.8.6)(@deepseek-ai/dsh-credentials@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.1(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/schemastery@3.18.5):
     dependencies:
       '@deepseek-ai/cordis': 4.0.5
       '@deepseek-ai/cosmokit': 1.8.6

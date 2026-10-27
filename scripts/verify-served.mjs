@@ -15,7 +15,8 @@ import { readFileSync } from 'node:fs'
 
 // 端口会随 app 重启变化：默认值只是方便本地跑，真的端口用 DSH_AUTHORITY 覆盖。
 const AUTHORITY = process.env.DSH_AUTHORITY ?? '127.0.0.1:52316'
-const PACKAGE = 'dsh-agent-browser'
+// boot 数据里的 bundle 名 = 包名。从 package.json 派生，改包名时不用再改这里。
+const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name
 
 /** boot 数据里必须出现的客户端产物；缺它就是没被 composer（或提供的是旧的一份）。 */
 const NEEDLES = ['.ab-summary', '.ab-checkMark', 'settings.section', '浏览器环境就绪', '检查安装', '安装中…', '内容边界标记', 'ab-select', '增加', '减少', 'src-json']

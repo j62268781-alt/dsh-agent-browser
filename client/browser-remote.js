@@ -16,7 +16,7 @@
  * 参照 dsh-judgment 的同款通路（`client/judgment-remote.js`）。
  */
 
-const PACKAGE = 'dsh-agent-browser'
+const PACKAGE = '@j62268781-alt/dsh-agent-browser'
 const SERVICE = 'browser'
 
 /** 名义 strict codec：客户端只校验 `mode`，不会调用 `create()`（纯为过闸）。 */

@@ -35,6 +35,14 @@
 ## 安装
 
 ```bash
+dsh plugin --profile desktop add @j62268781-alt/dsh-agent-browser
+```
+
+包在 [npm](https://www.npmjs.com/package/@j62268781-alt/dsh-agent-browser) 上
+（`dsh-agent-browser` 这个无 scope 名字在 npm 上已被他人占用，所以发到了
+`@j62268781-alt` scope 下）。想直接跟仓库最新提交，也可以照旧从 git 装：
+
+```bash
 dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
 ```
 

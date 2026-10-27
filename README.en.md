@@ -49,8 +49,17 @@ that a stale ref pointing at a deleted element is rejected instead of clicking s
 ## Install
 
 ```bash
-dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
+dsh plugin --profile desktop add @j62268781-alt/dsh-agent-browser
 brew install agent-browser      # requires >= 0.38.2; newer versions work too
+```
+
+Also [on npm](https://www.npmjs.com/package/@j62268781-alt/dsh-agent-browser). The unscoped
+name `dsh-agent-browser` was already taken on npm by an unrelated package, so this one is
+published under the `@j62268781-alt` scope. To track the repository instead of the published
+package, install from git:
+
+```bash
+dsh plugin --profile desktop add https://github.com/j62268781-alt/dsh-agent-browser.git
 ```
 
 Configure in **Settings → Browser**. No MCP server is configured: tools only exist while

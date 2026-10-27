@@ -31,6 +31,8 @@ const REPO = resolve(HERE, '..')
 const JUDGMENT = resolve(REPO, '..', 'dsh-judgment')
 const HOME_DEFAULT = join(REPO, '.live-dsh')
 const PROFILE = 'live'
+/** profile 里的依赖键与 bundles 条目都是**包名**：从 package.json 派生，改包名不用改这里。 */
+const PKG_NAME = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).name
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(`--${name}`)
@@ -64,15 +66,17 @@ const profileDir = join(liveHome, 'profiles', PROFILE)
 /* 2) 装插件（link: + 绝对符号链接） */
 const pkgFile = join(profileDir, 'package.json')
 const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
-pkg.dependencies = { ...(pkg.dependencies ?? {}), 'dsh-agent-browser': `link:${REPO}`, 'dsh-judgment': `link:${JUDGMENT}` }
+pkg.dependencies = { ...(pkg.dependencies ?? {}), [PKG_NAME]: `link:${REPO}`, 'dsh-judgment': `link:${JUDGMENT}` }
 const bundles = pkg.dsh.profile.bundles
-for (const name of ['dsh-judgment', 'dsh-agent-browser']) if (!bundles.includes(name)) bundles.push(name)
+for (const name of ['dsh-judgment', PKG_NAME]) if (!bundles.includes(name)) bundles.push(name)
 writeFileSync(pkgFile, `${JSON.stringify(pkg, null, 2)}\n`)
 
 const nodeModules = join(profileDir, 'node_modules')
 mkdirSync(nodeModules, { recursive: true })
-for (const [name, target] of [['dsh-agent-browser', REPO], ['dsh-judgment', JUDGMENT]]) {
+for (const [name, target] of [[PKG_NAME, REPO], ['dsh-judgment', JUDGMENT]]) {
+  // scoped 包要多一层目录（node_modules/@scope/pkg）。
   const link = join(nodeModules, name)
+  mkdirSync(dirname(link), { recursive: true })
   if (existsSync(link)) unlinkSync(link)
   symlinkSync(target, link)
 }
@@ -110,7 +114,7 @@ if (existsSync(credentials)) {
 
 console.log(`真机环境就绪：${liveHome}`)
 console.log(`  profile：${profileDir}`)
-console.log(`  插件：dsh-agent-browser ↔ ${REPO}`)
+console.log(`  插件：${PKG_NAME} ↔ ${REPO}`)
 console.log(`  用途：browser.action → typesafe（与 desktop profile 一致）`)
 
 const command = `DSH_HOME=${liveHome} dsh --profile ${PROFILE} "…任务文本…"`

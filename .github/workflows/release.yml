@@ -1,0 +1,149 @@
+# 打 tag 即发布到 npm。
+#
+# ── 为什么是这个触发方式 ──────────────────────────────────────────────
+#
+# 用 tag 触发，不用「push 到 main」。发版是个有意的动作，不该由一次普通
+# 提交顺带引发 —— 而且 tag 本身就是"这个 commit 对应 npm 上哪个版本"的凭据。
+#
+# ── 四个必须写死的东西（都是踩过的坑）────────────────────────────────
+#
+# ① registry 显式写死 https://registry.npmjs.org/
+#
+#    开发机上默认 registry 是 registry.npmmirror.com（只读镜像），只有
+#    `@j62268781-alt` 这个 scope 指向官方。GitHub runner 虽然干净，但只要
+#    将来有人在 runner 上或仓库 .npmrc 里配了镜像，就会复现同一个坑：
+#    登录/发布打向镜像 → ENEEDAUTH。setup-node 的 registry-url 会写对
+#    .npmrc，这里再显式传一次，两道保险。
+#
+# ② 版本一致性门禁（tag 必须等于 package.json 的 version）
+#
+#    忘了 bump 就 `npm version`/改 package.json 的话，npm 会因为"该版本已
+#    存在"而失败 —— 那是好结果。更糟的情况是版本号对但 tag 名写错，于是
+#    GitHub Release 指向的东西和 npm 上的对不上。所以在发布**之前**先拦。
+#
+# ③ verify 在发布前跑，不靠 prepublishOnly
+#
+#    prepublishOnly 也会跑 verify，但那是在 npm 已经接手之后。显式跑一遍能
+#    让失败停在"测试"这一步，日志更干净，也便于用 workflow_dispatch 单独验证。
+#
+# ④ 用 pnpm，不用 npm
+#
+#    本仓库只有 pnpm-lock.yaml（且 pnpm-workspace.yaml 里有 esbuild 的
+#    allowBuilds 白名单），npm ci 在这儿根本没有 lockfile 可用。
+#
+# ── 发布的内容从哪来 ────────────────────────────────────────────────
+#
+# `lib/` 是构建产物且**不入库**（.gitignore 里有），所以 publish 前必须构建：
+# 由 `prepublishOnly: pnpm verify` 保证。漏了这条，发出去的包里不会有
+# `lib/index.js` —— 装上去直接是"插件不加载"。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # 手动触发：用于首次验证流程，或发布失败后重试。
+  # 勾 dry-run 可以完整走一遍（含 verify）而不真的发布。
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "只演练不发布（npm publish --dry-run）"
+        type: boolean
+        default: true
+
+# 同一时间只允许一个发布在跑。两个 tag 几乎同时推上来时，避免并发 publish
+# 撞出 EPUBLISHCONFLICT 之外更难懂的错。
+concurrency:
+  group: release-npm
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 创建 GitHub Release
+  id-token: write # npm provenance（供应链证明）
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出源码
+        uses: actions/checkout@v4
+        with:
+          # 创建 Release 时 gh 需要 tag 信息；默认的浅克隆在 tag 触发下够用，
+          # 但多取一点历史让 --generate-notes 能算出范围。
+          fetch-depth: 0
+
+      - name: 装 pnpm
+        # 版本由 package.json 的 packageManager 字段决定。
+        uses: pnpm/action-setup@v4
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          # package.json 的 engines 要求 >=20。取 22（当前 LTS），
+          # 不用 26 —— 本地开发用的是 26，但 CI 该跑在 LTS 上。
+          node-version: 22
+          # ↓ 这一行会生成 .npmrc，把 NODE_AUTH_TOKEN 绑到官方 registry。
+          #   作用域包不会因此变成 private：package.json 的 publishConfig.access
+          #   已经是 public 了。
+          registry-url: https://registry.npmjs.org/
+          cache: pnpm
+
+      - name: 安装依赖
+        # 严格按 pnpm-lock.yaml 装，不更新 lockfile。
+        run: pnpm install --frozen-lockfile
+
+      - name: 版本一致性门禁
+        # tag v1.2.3 必须等于 package.json 的 version，否则直接失败。
+        # 手动触发时没有 tag，跳过。
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          echo "tag      : ${GITHUB_REF_NAME}  （去掉 v 前缀 → ${tag}）"
+          echo "package  : ${version}"
+          if [ "${tag}" != "${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json 的 ${version} 不一致 —— 先 bump 版本，或改 tag 名"
+            exit 1
+          fi
+          echo "✅ 一致"
+
+      - name: 自测
+        # 构建 host（tsc）+ client（esbuild）+ 全部单测。
+        run: pnpm verify
+
+      - name: 演练发布
+        if: github.event_name == 'workflow_dispatch' && inputs.dry-run
+        run: |
+          npm publish \
+            --registry=https://registry.npmjs.org/ \
+            --access public \
+            --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 发布到 npm
+        if: github.event_name == 'push' || inputs.dry-run != true
+        run: |
+          npm publish \
+            --registry=https://registry.npmjs.org/ \
+            --access public \
+            --provenance
+        env:
+          # Granular Access Token（read and write，scope 覆盖 @j62268781-alt）。
+          # 旧的 Automation token 已经不能新建了。
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 创建 GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 用 runner 自带的 gh，省一个第三方 action。
+          # 已经存在同 tag 的 Release 时不报错（重跑幂等）。
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag \
+          || echo "Release ${GITHUB_REF_NAME} 可能已存在，跳过"
