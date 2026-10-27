@@ -126,6 +126,19 @@ jobs:
       - name: 发布到 npm
         if: github.event_name == 'push' || inputs.dry-run != true
         run: |
+          pkg="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+
+          # 幂等：这个版本要是已经在 npm 上了，就别让工作流红在 E403
+          # 「cannot publish over the previously published versions」上。
+          # 两种来源都会走到这里：①有人在本机直接 `npm publish` 过，随后才推 tag
+          # ②上一次发布成功了但之后的步骤（比如建 Release）失败、需要重跑。
+          if npm view "${pkg}@${version}" version \
+               --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "::notice::${pkg}@${version} 已在 npm 上，跳过发布（本次只补 GitHub Release）"
+            exit 0
+          fi
+
           npm publish \
             --registry=https://registry.npmjs.org/ \
             --access public \
