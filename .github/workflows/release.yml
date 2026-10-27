@@ -154,9 +154,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 用 runner 自带的 gh，省一个第三方 action。
-          # 已经存在同 tag 的 Release 时不报错（重跑幂等）。
+          #
+          # 幂等只针对「已经建过这个 Release」这一种情况；别的失败（权限不足、token 不对、
+          # tag 不在远端）必须让工作流红——早先是 `gh release create ... || echo 跳过`，
+          # 那样真失败也显示成功，用户看不到 Release、也看不到红。
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::notice::Release ${GITHUB_REF_NAME} 已存在，跳过"
+            exit 0
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            --verify-tag \
-          || echo "Release ${GITHUB_REF_NAME} 可能已存在，跳过"
+            --verify-tag
