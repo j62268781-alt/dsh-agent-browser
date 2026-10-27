@@ -73,6 +73,14 @@ async function mount(Component, props) {
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('root'))
   root.render(React.createElement(Component, props))
+  // `root.render()` 只是**调度**一次渲染，并不保证已提交到 DOM。早先这里固定等 30ms 就
+  // 假定"第一棵树已经在了"，机器慢一点测试就会拿到半成品 DOM（事件派发到尚未接上
+  // React 监听器的节点上，什么都没发生）。等第一棵子树真的出现，再留一点时间让挂载
+  // 副作用（那次异步自检）起步。
+  await waitFor(
+    () => dom.window.document.getElementById('root').childElementCount > 0,
+    { label: '面板首次渲染' },
+  )
   await new Promise((resolve) => setTimeout(resolve, 30))
   return {
     document: dom.window.document,
@@ -84,7 +92,6 @@ async function mount(Component, props) {
 }
 
 const click = (element) => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
-const tick = () => new Promise((resolve) => setTimeout(resolve, 30))
 
 /**
  * 轮询到条件成立为止（默认最多 2s），超时直接报"在等什么"。
@@ -119,6 +126,24 @@ const waitJudgmentHint = (document, pattern) => waitFor(
 /** 收集页面上所有 `role="alert"` 的文本。 */
 const alertsOf = (document) => [...document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
 
+/**
+ * 等一次「把某字段写成某个值」的写入真正到达宿主。
+ *
+ * 控件点击/回车之后都是**异步写回**（`form.set` 返回 promise），早先只 `await tick()`（固定
+ * 30ms）再断言，在 CI 负载下会输——`form.calls.find(...)` 拿到 undefined，报
+ * `expected 1000, actual undefined`（run 40469118916 就是这么红的）。
+ */
+const waitWrite = (form, field, predicate = () => true, label = field) => waitFor(
+  () => form.calls.some((call) => call.field === field && predicate(call.next)),
+  { label: `写回 ${label}` },
+)
+
+/** 等控件的 DOM 值跟上（写入成功后 fakeForm 的订阅会触发重渲染）。 */
+const waitDomValue = (document, selector, expected, label = selector) => waitFor(
+  () => document.querySelector(selector)?.value === expected,
+  { label: `${label} 变为 ${expected}` },
+)
+
 test('点「增加毫秒」真的写回宿主：30000 → 30100', async () => {
   const { Panel } = await loadModule('client/panel.jsx')
   const form = fakeForm(VALUE)
@@ -129,11 +154,11 @@ test('点「增加毫秒」真的写回宿主：30000 → 30100', async () => {
     const up = view.document.querySelector('button[aria-label="增加毫秒"]')
     assert.ok(up, '找不到「增加毫秒」按钮')
     click(up)
-    await tick()
+    await waitWrite(form, 'limits', (next) => next.commandTimeoutMs === 30_100, 'limits.commandTimeoutMs')
     const write = form.calls.find((call) => call.field === 'limits')
     assert.ok(write, '点击后没有写回 limits')
     assert.equal(write.next.commandTimeoutMs, 30_100)
-    assert.equal(view.document.querySelector('input[aria-label="毫秒数"]').value, '30100')
+    await waitDomValue(view.document, 'input[aria-label="毫秒数"]', '30100')
   } finally {
     await view.unmount()
   }
@@ -147,10 +172,9 @@ test('点「减少毫秒」真的写回宿主：30000 → 29900', async () => {
   })
   try {
     click(view.document.querySelector('button[aria-label="减少毫秒"]'))
-    await tick()
-    const write = form.calls.find((call) => call.field === 'limits')
-    assert.equal(write?.next.commandTimeoutMs, 29_900)
-    assert.equal(view.document.querySelector('input[aria-label="毫秒数"]').value, '29900')
+    await waitWrite(form, 'limits', (next) => next.commandTimeoutMs === 29_900, 'limits.commandTimeoutMs')
+    assert.equal(form.calls.find((call) => call.field === 'limits')?.next.commandTimeoutMs, 29_900)
+    await waitDomValue(view.document, 'input[aria-label="毫秒数"]', '29900')
   } finally {
     await view.unmount()
   }
@@ -169,9 +193,9 @@ test('输入框里打精确毫秒：回车提交并夹到区间', async () => {
     input.dispatchEvent(new window.Event('input', { bubbles: true }))
     input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     input.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }))
-    await tick()
-    assert.equal(form.calls.find((call) => call.field === 'limits')?.next.commandTimeoutMs, 1000) // 夹到下限
-    assert.equal(view.document.querySelector('input[aria-label="毫秒数"]').value, '1000')
+    // 夹到下限 1000（下面两行都是等它落地，而不是等固定时长）
+    await waitWrite(form, 'limits', (next) => next.commandTimeoutMs === 1000, 'limits.commandTimeoutMs 夹到下限')
+    await waitDomValue(view.document, 'input[aria-label="毫秒数"]', '1000')
   } finally {
     await view.unmount()
   }
@@ -188,7 +212,7 @@ test('空闲超时选「自定义」把预设折算成毫秒写进去；选回�
     assert.ok(select, '找不到空闲超时下拉')
     select.value = '__custom__'
     select.dispatchEvent(new window.Event('change', { bubbles: true }))
-    await tick()
+    await waitWrite(form, 'browser', (next) => next.idleTimeout === '1800000', 'browser.idleTimeout')
     assert.equal(form.calls.find((call) => call.field === 'browser')?.next.idleTimeout, '1800000')
 
     // 自定义状态下出现毫秒输入
@@ -207,7 +231,7 @@ test('开关也走同一条写入路径（对照组）', async () => {
   try {
     const screenshot = view.document.querySelector('input[aria-label="截图工具"]')
     click(screenshot)
-    await tick()
+    await waitWrite(form, 'tools', (next) => next.screenshot === false, 'tools.screenshot')
     const write = form.calls.find((call) => call.field === 'tools')
     assert.ok(write, '开关点击后没有写回 tools')
     assert.equal(write.next.screenshot, false)
@@ -225,7 +249,10 @@ test('宿主静默拒绝（set resolve false）时必须报错，不能假装成
   })
   try {
     click(view.document.querySelector('button[aria-label="增加毫秒"]'))
-    await tick()
+    await waitFor(
+      () => alertsOf(view.document).some((text) => /拒绝/.test(text)),
+      { label: '写入被拒绝时的报错' },
+    )
     const alerts = [...view.document.querySelectorAll('[role="alert"]')]
     const rejection = alerts.find((node) => /拒绝/.test(node.textContent))
     assert.ok(rejection, `写入被拒绝却没显示错误；现有 alert：${alerts.map((n) => n.textContent).join(' | ')}`)
