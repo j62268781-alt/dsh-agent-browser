@@ -163,6 +163,11 @@ test('ctx.skills 不在：跳过并继续（可选服务，绝不拖垮插件）
  *
  * 真机回归的由来：初版把版本写成区间 `>=0.38 <0.39`，用户升到 0.39.1 之后设置页直接报
  * 「环境不完整」——一个能正常工作的 CLI 被判成了故障。这条测试钉住的就是"更新版本要放行"。
+ *
+ * ⚠️ 开头必须先**把 stdin 读到 EOF**：插件调用 CLI 时总会 `child.stdin.end(prompt)`，
+ * 真 CLI 会读 stdin；这个假脚本若直接退出，父进程那次写入就会撞 **EPIPE**，而 `child.stdin`
+ * 上没有 error 监听 → 变成未捕获异常，node --test 记成 uncaughtException 让**无关的用例**
+ * 变红（CI 上 `自检：CLI 版本比最低支持版本新` 就这么挂的）。读干净 stdin 后脚本行为与真 CLI 一致。
  */
 async function fakeCli(version, { doctor } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fake-ab-'))
@@ -170,6 +175,7 @@ async function fakeCli(version, { doctor } = {}) {
   // 参数里夹着全局的 `--session <name>`，所以逐个别扫，不能假设 `$1` 就是子命令。
   await writeFile(file, [
     '#!/bin/sh',
+    'cat > /dev/null',
     'for arg in "$@"; do',
     '  if [ "$arg" = "--version" ]; then echo "agent-browser ' + version + '"; exit 0; fi',
     '  if [ "$arg" = "doctor" ]; then echo \'' + JSON.stringify(doctor ?? { checks: [] }) + '\'; exit 0; fi',

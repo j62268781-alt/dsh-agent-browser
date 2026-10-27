@@ -86,6 +86,39 @@ async function mount(Component, props) {
 const click = (element) => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
 const tick = () => new Promise((resolve) => setTimeout(resolve, 30))
 
+/**
+ * 轮询到条件成立为止（默认最多 2s），超时直接报"在等什么"。
+ *
+ * 为什么需要：挂载时那次自检是**异步**的（`browser.probe()` → `setProbe` → React 调度器
+ * 在之后的任务里 flush），而 `mount()` 只等固定 30ms。断言「开关可点」「冒出一条 alert」
+ * 这类**正向**信号时，早先等于赌这 30ms 够用——本机够，CI（Linux、多个测试文件并行抢 CPU）
+ * 不够，于是 `decision.disabled` 还停在初始的 true，报 `expected false, actual true`。
+ * 反过来，断言「必须置灰」的用例在状态没落地时**也**成立，所以它们一直是绿的。
+ * 改成等状态落地，测试才与机器快慢无关。
+ */
+async function waitFor(predicate, { timeout = 2000, label = '条件' } = {}) {
+  const startedAt = Date.now()
+  for (;;) {
+    if (await predicate()) return
+    if (Date.now() - startedAt > timeout) throw new Error(`等待超时（${timeout}ms）：${label}`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+/**
+ * 等「决策」那一行切到指定依赖状态。
+ *
+ * 四种状态在页面上各有一句固定说明（见 `JUDGMENT_HINTS`），用它判断**自检结果已落地**——
+ * 只看 `disabled` 不行：`checking` 也是置灰，会与 `missing` 混淆。
+ */
+const waitJudgmentHint = (document, pattern) => waitFor(
+  () => pattern.test(document.body.textContent),
+  { label: `面板进入 ${pattern} 状态` },
+)
+
+/** 收集页面上所有 `role="alert"` 的文本。 */
+const alertsOf = (document) => [...document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
+
 test('点「增加毫秒」真的写回宿主：30000 → 30100', async () => {
   const { Panel } = await loadModule('client/panel.jsx')
   const form = fakeForm(VALUE)
@@ -236,9 +269,10 @@ test('决策：依赖缺失时开关置灰，并说清"需要 dsh-judgment"', as
   try {
     const decision = view.document.querySelector('input[aria-label="决策"]')
     assert.ok(decision, '找不到决策开关')
-    assert.equal(decision.disabled, true, '依赖不在时必须置灰')
-    const text = view.document.body.textContent
-    assert.match(text, /dsh-judgment/)
+    // 先等自检明确回「没有」：`checking` 状态下也是置灰，不等就等于没验证。
+    await waitJudgmentHint(view.document, /需要 dsh-judgment 提供的 ctx\.judgment/)
+    assert.equal(view.document.querySelector('input[aria-label="决策"]').disabled, true, '依赖不在时必须置灰')
+    assert.match(view.document.body.textContent, /dsh-judgment/)
   } finally {
     await view.unmount()
   }
@@ -250,8 +284,9 @@ test('决策：依赖在时开关可点（置灰条件不能误伤）', async ()
     form: fakeForm(VALUE), entryId: 'agent-browser', primitives: undefined, browser: probeWith(true),
   })
   try {
-    const decision = view.document.querySelector('input[aria-label="决策"]')
-    assert.equal(decision.disabled, false)
+    // 自检回「有」之后才可点：等提示切到 ready 态，再断言开关。
+    await waitJudgmentHint(view.document, /依赖 dsh-judgment（已就绪）/)
+    assert.equal(view.document.querySelector('input[aria-label="决策"]').disabled, false)
   } finally {
     await view.unmount()
   }
@@ -264,8 +299,10 @@ test('决策：配置里已开启但依赖缺失 → 明确报错（不是只有
     form: fakeForm(onConfig), entryId: 'agent-browser', primitives: undefined, browser: probeWith(false),
   })
   try {
-    const alerts = [...view.document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
-    assert.ok(alerts.some((text) => /dsh-judgment/.test(text) && /browser_run/.test(text)), `现有 alert：${alerts.join(' | ')}`)
+    await waitFor(
+      () => alertsOf(view.document).some((text) => /dsh-judgment/.test(text) && /browser_run/.test(text)),
+      { label: '出现「已开启但依赖缺失」的报错' },
+    )
   } finally {
     await view.unmount()
   }
@@ -301,9 +338,8 @@ test('决策：host 半是旧码（载荷版本不匹配）→ 也不许开启',
     },
   })
   try {
-    const decision = view.document.querySelector('input[aria-label="决策"]')
-    assert.equal(decision.disabled, true, '版本不匹配时无法确认依赖，不许开启')
-    assert.match(view.document.body.textContent, /无法确认 dsh-judgment/)
+    await waitJudgmentHint(view.document, /无法确认 dsh-judgment 是否可用/)
+    assert.equal(view.document.querySelector('input[aria-label="决策"]').disabled, true, '版本不匹配时无法确认依赖，不许开启')
   } finally {
     await view.unmount()
   }
@@ -318,13 +354,13 @@ test('决策：开启前向宿主现问一次依赖，宿主说没有 → 不写
   }
   const view = await mount(Panel, { form, entryId: 'agent-browser', primitives: undefined, browser })
   try {
-    const decision = view.document.querySelector('input[aria-label="决策"]')
-    assert.equal(decision.disabled, false, '自检回来说可用 → 可点')
-    click(decision)
-    await tick()
+    await waitJudgmentHint(view.document, /依赖 dsh-judgment（已就绪）/)
+    click(view.document.querySelector('input[aria-label="决策"]'))
+    await waitFor(
+      () => alertsOf(view.document).some((text) => /dsh-judgment/.test(text)),
+      { label: '现问依赖后报错' },
+    )
     assert.equal(form.calls.some((call) => call.field === 'tools'), false, '依赖不可用就不能写配置')
-    const alerts = [...view.document.querySelectorAll('[role="alert"]')].map((node) => node.textContent)
-    assert.ok(alerts.some((text) => /dsh-judgment/.test(text)), `现有 alert：${alerts.join(' | ')}`)
   } finally {
     await view.unmount()
   }
