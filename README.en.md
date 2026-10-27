@@ -106,7 +106,7 @@ pnpm install && pnpm build && pnpm test && pnpm verify:remote && pnpm probe
 - `src/extract.ts`: in-page DOM candidate extraction (one `eval` returns visible candidates, states, `near` context, page text, title, and URL).
 - `src/task/`: modular decision loop split by responsibility (`types.ts`, `utils.ts`, `candidates.ts`, `gates.ts`, `judge.ts`, `actions.ts`, `loop.ts`, `index.ts`).When Jev cannot confidently progress (alternate probability `< 0.25` or ambiguous candidates), `browser_run` stops early and hands back the top actionable `candidates` (including `ref` selectors) and `pageText` so the upstream LLM can take over in one `browser_act` call without an extra snapshot roundtrip.
 - `bench/`: 39-task live benchmark suite with per-task storage isolation and navigation diagnostics (`run.mjs`, `score.mjs`, `nav.mjs`, `tasks.mjs`).
-- `tests/`: 177 unit and regression tests covering tool surface, self-check, extraction, deterministic gates, and loop handoff.
+- `tests/`: 201 unit and regression tests covering tool surface, self-check, extraction, deterministic gates, and loop handoff.
 
 Host half is a Node module: **restart DSH after changing it**. The client half reloads on refresh.
 Config changes re-apply the entry, so tool registration follows the switches without a restart.

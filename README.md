@@ -172,7 +172,7 @@ engine 与自定义路径）；CLI 不可用时退回文件系统 / PATH 探测�
 ```bash
 pnpm install
 pnpm build            # host(tsc) + 客户端(esbuild → lib/client.js)
-pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑 + 决策循环回归（177 项单测，离线可跑）
+pnpm test             # 注册面 + 自检 + 页面渲染 + 纯逻辑 + 决策循环回归（201 项单测，离线可跑）
 pnpm typecheck
 pnpm verify:remote    # Remote 通路交叉验证（17 项）：host SRC fallback ↔ 手写 contribution
 pnpm verify:served    # 问运行中的应用：boot 数据里有没有本插件的客户端半（7 项）
@@ -202,7 +202,7 @@ src/
 client/               设置页（统一 JSX，esbuild 打成 window.__ModuleLoader__ 单文件）
 skills/               随包发布的核心 skill（SKILL.md + references/）
 bench/                39 任务真机基准套件（tasks.mjs · run.mjs · score.mjs · nav.mjs 状态隔离与导航诊断）
-tests/                注册面 · 自检 · 抽取与门控纯逻辑 · 决策循环与基准单测（共 177 项）
+tests/                注册面 · 自检 · 抽取与门控纯逻辑 · 决策循环与基准单测（共 201 项）
 scripts/              probe.mjs（真 CLI）· verify-remote.mjs（Remote 通路）· e2e-run.mjs
 ```
 
